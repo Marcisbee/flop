@@ -1,0 +1,51 @@
+{
+  "entry": [
+    "mod.ts",
+    "client.ts"
+  ],
+  "lsp": {
+    "deno": {
+      "command": [
+        "deno",
+        "lsp"
+      ],
+      "extensions": [
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx"
+      ]
+    }
+  },
+  "test": {
+    "deno": {
+      "command": [
+        "deno",
+        "test",
+        "--allow-read",
+        "--allow-write",
+        "--allow-net",
+        "--allow-env"
+      ],
+      "extensions": [
+        "_test.ts",
+        ".test.ts"
+      ]
+    }
+  },
+  "setup": {
+    "commands": [
+      "deno cache mod.ts client.ts main.ts"
+    ]
+  },
+  "dev": {
+    "processes": [
+      {
+        "id": "server",
+        "command": "deno run --watch --allow-read --allow-write --allow-net --allow-env main.ts app.ts",
+        "port": 1985,
+        "tunnel": true
+      }
+    ]
+  }
+}
