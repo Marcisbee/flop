@@ -14,6 +14,7 @@ export type {
   FlopSchema,
   InferSchema,
   InferInsertSchema,
+  InferParams,
   MigrationStep,
 } from "./src/types.ts";
 

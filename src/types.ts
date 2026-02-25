@@ -247,6 +247,17 @@ export type InferSchema<S extends Record<string, SchemaField>> = {
   [K in keyof S]: InferFieldType<S[K]>;
 };
 
+// Infer value type from either a FieldBuilder<T> (via _build) or a raw SchemaField
+export type InferInputFieldType<F> =
+  F extends { _build(): SchemaField<infer T> } ? T
+  : F extends SchemaField ? InferFieldType<F>
+  : unknown;
+
+// Infer params object from a schema of field builders / SchemaFields
+export type InferParams<S extends Record<string, any>> = {
+  [K in keyof S]: InferInputFieldType<S[K]>;
+};
+
 // For insert: required fields are required, others optional
 // Fields with autogenerate are always optional on insert
 type RequiredInsertKeys<S extends Record<string, SchemaField>> = {

@@ -69,15 +69,10 @@ export async function startServer(
 
   console.log(`
 ┌─────────────────────────────────────┐
-│           ╦  ╦                      │
-│   ┌─┐    ╠══╣    ┌─┐               │
-│   │ │    ║  ║    │ │     flop       │
-│   └─┘    ╩  ╩    └─┘               │
-│                                     │
-│   Server:  http://localhost:${String(port).padEnd(5)} │
-│   Admin:   http://localhost:${String(port).padEnd(5)}/_│
-│   Tables:  ${String(db.tables.size).padEnd(25)} │
-│   Routes:  ${String(routes.length).padEnd(25)} │
+│   Server:  http://localhost:${String(port).padEnd(7)} │
+│   Admin:   http://localhost:${(String(port) + "/_").padEnd(7)} │
+│   Tables:  ${String(db.tables.size).padEnd(25)}│
+│   Routes:  ${String(routes.length).padEnd(25)}│
 ${setupLine}└─────────────────────────────────────┘
 `);
 

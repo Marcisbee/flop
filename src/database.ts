@@ -6,6 +6,7 @@ import type {
   StoredMeta, StoredTableMeta,
   MigrationStep,
   TableDef,
+  InferParams,
 } from "./types.ts";
 import { TableBuilder, compileSchema, type SchemaFieldInput } from "./table.ts";
 import { Reducer, View } from "./endpoint.ts";
@@ -640,10 +641,10 @@ export class Database {
   }
 
   // Create a Reducer bound to this database
-  reduce<P extends Record<string, SchemaFieldInput>>(
+  reduce<P extends Record<string, SchemaFieldInput>, R = unknown>(
     params: P,
-    handler: (ctx: ReduceContext, params: Record<string, unknown>) => unknown,
-  ): Reducer {
+    handler: (ctx: ReduceContext, params: InferParams<P>) => R,
+  ): Reducer<InferParams<P>, R> {
     const db = this;
     return new Reducer(params, (ctx: any, parsedParams: any) => {
       // Build the context with table proxies
@@ -656,10 +657,10 @@ export class Database {
   }
 
   // Create a View bound to this database
-  view<P extends Record<string, SchemaFieldInput>>(
+  view<P extends Record<string, SchemaFieldInput>, R = unknown>(
     params: P,
-    handler: (ctx: ViewContext, params: Record<string, unknown>) => unknown,
-  ): View {
+    handler: (ctx: ViewContext, params: InferParams<P>) => R,
+  ): View<InferParams<P>, R> {
     const db = this;
     const v = new View(params, (ctx: any, parsedParams: any) => {
       const viewCtx: ViewContext = {
