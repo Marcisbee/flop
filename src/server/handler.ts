@@ -65,6 +65,14 @@ export function createHandler(
         return addCors(resp, corsHeaders);
       }
 
+      // Multiplexed SSE — single connection for multiple views
+      if (pathname === "/sse" && req.headers.get("accept") === "text/event-stream") {
+        return addCors(
+          handleMultiplexedSSE(req, url, routes, db, jwtSecret),
+          corsHeaders,
+        );
+      }
+
       // Route matching
       const route = matchRoute(pathname, routes);
       if (!route) {
@@ -284,6 +292,123 @@ function handleSSE(
       );
 
       // Clean up on disconnect
+      req.signal.addEventListener("abort", () => {
+        closed = true;
+        unsubscribe();
+        try {
+          controller.close();
+        } catch {
+          // Already closed
+        }
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    },
+  });
+}
+
+function handleMultiplexedSSE(
+  req: Request,
+  url: URL,
+  routes: Route[],
+  db: Database,
+  jwtSecret: string,
+): Response {
+  const viewNames = (url.searchParams.get("views") ?? "").split(",").filter(Boolean);
+  if (viewNames.length === 0) {
+    return jsonResponse({ error: "No views specified. Use ?views=name1,name2" }, 400);
+  }
+
+  // Resolve views and parse per-view params
+  const views: { name: string; view: View; params: Record<string, string> }[] = [];
+  const allTables = new Set<string>();
+
+  for (const name of viewNames) {
+    const route = routes.find((r) => r.name === name && r.endpoint instanceof View);
+    if (!route) {
+      return jsonResponse({ error: `View not found: ${name}` }, 404);
+    }
+
+    // Check access
+    const authResult = enforceAccess(req, route, jwtSecret);
+    if (authResult.denied) {
+      return authResult.response!;
+    }
+
+    // Extract per-view params: "<viewName>.<param>=value"
+    const params: Record<string, string> = {};
+    const prefix = name + ".";
+    for (const [key, value] of url.searchParams) {
+      if (key.startsWith(prefix)) {
+        params[key.slice(prefix.length)] = value;
+      }
+    }
+
+    const view = route.endpoint as View;
+    for (const t of view._dependentTables) allTables.add(t);
+    views.push({ name, view, params });
+  }
+
+  const encoder = new TextEncoder();
+  const tableList = [...allTables];
+
+  // Build auth context once (use first view's check — they're all from same request)
+  const token = extractBearerToken(req);
+  const payload = token ? verifyJWT(token, jwtSecret) : null;
+  const requestCtx: RequestContext = {
+    auth: payload ? jwtToAuthContext(payload) : null,
+    headers: req.headers,
+    url,
+  };
+
+  const stream = new ReadableStream({
+    start(controller) {
+      let closed = false;
+
+      const enqueue = (eventType: string, payload: unknown) => {
+        if (closed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`),
+          );
+        } catch {
+          // Controller closed
+        }
+      };
+
+      // Send snapshots for all views in parallel
+      (async () => {
+        const promises = views.map(async ({ name, view, params }) => {
+          try {
+            const result = await view._handler({ request: requestCtx }, params);
+            enqueue(`snapshot:${name}`, result);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Error";
+            enqueue(`error:${name}`, { error: msg });
+          }
+        });
+        await Promise.all(promises);
+      })();
+
+      // Single PubSub subscription for all dependent tables
+      const unsubscribe = db.getPubSub().subscribe(
+        tableList,
+        (event) => {
+          enqueue("change", {
+            table: event.table,
+            op: event.op,
+            rowId: event.rowId,
+            data: event.data,
+          });
+        },
+      );
+
       req.signal.addEventListener("abort", () => {
         closed = true;
         unsubscribe();
