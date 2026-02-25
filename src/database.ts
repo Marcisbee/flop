@@ -24,6 +24,11 @@ import { PubSub, type ChangeEvent } from "./realtime/pubsub.ts";
 export interface DatabaseConfig {
   dataDir?: string;
   maxCachePages?: number;
+  /** WAL sync mode:
+   *  "full" (default) — fsync after every commit batch (safest, slower)
+   *  "normal" — write to OS buffer only, fsync on checkpoint (faster, loses last few seconds on power loss)
+   */
+  syncMode?: "full" | "normal";
 }
 
 // Per-transaction WAL buffer: tableName -> { records, txIds }
@@ -685,9 +690,13 @@ export class TableInstance {
   }
 
   async checkpoint(): Promise<void> {
-    await this.tableFile.flush();
-    await writeIndexFile(`${this.dataDir}/${this.name}.idx`, this.primaryIndex);
-    await this.wal.truncate();
+    return this._withWriteLock(async () => {
+      await this.tableFile.flush();
+      await writeIndexFile(`${this.dataDir}/${this.name}.idx`, this.primaryIndex);
+      // Ensure WAL is durable before truncating (critical for syncMode: "normal")
+      await this.wal.fsync();
+      await this.wal.truncate();
+    });
   }
 
   async close(): Promise<void> {
@@ -717,12 +726,14 @@ export class Database {
   // Group commit queue: transactions waiting to be fsynced together
   private _commitQueue: CommitSlot[] = [];
   private _commitDraining = false;
+  private _syncMode: "full" | "normal";
 
   constructor(
     private tableDefs: Record<string, TableBuilder<any>>,
     config?: DatabaseConfig,
   ) {
     this.dataDir = config?.dataDir ?? "./data";
+    this._syncMode = config?.syncMode ?? "full";
   }
 
   async open(): Promise<void> {
@@ -854,15 +865,15 @@ export class Database {
           }
         }
 
-        // Flush all dirty WALs (one write per table) then fsync all in parallel
+        // Flush all dirty WALs (one write per table), fsync only in "full" mode
         const flushPromises: Promise<void>[] = [];
         const checkpointTables: TableInstance[] = [];
+        const doFsync = this._syncMode === "full";
         for (const [tableName, entry] of merged) {
           const table = this.tables.get(tableName);
           if (!table) continue;
-          flushPromises.push(
-            table.wal.flushBatch(entry.records, entry.txIds).then(() => table.wal.fsync()),
-          );
+          const p = table.wal.flushBatch(entry.records, entry.txIds);
+          flushPromises.push(doFsync ? p.then(() => table.wal.fsync()) : p);
           // Track WAL entry count for auto-checkpoint
           table._walEntryCount += entry.records.length + entry.txIds.length;
           if (table._walEntryCount >= TableInstance.WAL_CHECKPOINT_THRESHOLD) {
@@ -874,10 +885,14 @@ export class Database {
         // Resolve all waiters
         for (const slot of batch) slot.resolve();
 
-        // Auto-checkpoint tables with large WALs (non-blocking, after resolving waiters)
-        for (const table of checkpointTables) {
-          table._walEntryCount = 0;
-          table.checkpoint().catch(() => {});
+        // Auto-checkpoint tables with large WALs (after resolving waiters)
+        if (checkpointTables.length > 0) {
+          const cpPromises: Promise<void>[] = [];
+          for (const table of checkpointTables) {
+            table._walEntryCount = 0;
+            cpPromises.push(table.checkpoint().catch(() => {}));
+          }
+          await Promise.all(cpPromises);
         }
       } catch (err) {
         // Reject all waiters
@@ -895,6 +910,10 @@ export class Database {
   }
 
   async close(): Promise<void> {
+    // Wait for any in-flight group commit drain to finish
+    while (this._commitDraining || this._commitQueue.length > 0) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
     for (const table of this.tables.values()) {
       await table.close();
     }
