@@ -137,6 +137,64 @@ export class WAL {
     await this.file.sync();
   }
 
+  // Build a WAL record in memory (no I/O)
+  buildRecord(txId: number, op: WALOp, data: Uint8Array): Uint8Array {
+    const recordLen = 4 + 1 + 4 + data.byteLength + 4;
+    const buf = allocBuffer(4 + recordLen);
+
+    let offset = 0;
+    writeUint32(buf, offset, recordLen);
+    offset += 4;
+    writeUint32(buf, offset, txId);
+    offset += 4;
+    writeUint8(buf, offset, op);
+    offset += 1;
+    writeUint32(buf, offset, data.byteLength);
+    offset += 4;
+    buf.set(data, offset);
+    offset += data.byteLength;
+
+    const checksum = crc32(buf.subarray(0, offset));
+    writeUint32(buf, offset, checksum);
+
+    return buf;
+  }
+
+  // Flush multiple pre-built records + commit markers in a single write + fsync
+  async flushBatch(records: Uint8Array[], txIds: number[]): Promise<void> {
+    // Build commit records for each txId
+    const commitRecords: Uint8Array[] = [];
+    for (const txId of txIds) {
+      commitRecords.push(this.buildRecord(txId, WALOp.Commit, new Uint8Array(0)));
+    }
+
+    // Calculate total size
+    let totalSize = 0;
+    for (const r of records) totalSize += r.byteLength;
+    for (const r of commitRecords) totalSize += r.byteLength;
+
+    // Concatenate everything into one buffer
+    const buf = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const r of records) {
+      buf.set(r, offset);
+      offset += r.byteLength;
+    }
+    for (const r of commitRecords) {
+      buf.set(r, offset);
+      offset += r.byteLength;
+    }
+
+    // Single seek + single write + single fsync
+    await this.file.seek(0, Deno.SeekMode.End);
+    await this.file.write(buf);
+  }
+
+  // Just fsync (called once after all WALs have been flushed)
+  async fsync(): Promise<void> {
+    await this.file.sync();
+  }
+
   // Replay all entries (for crash recovery)
   async replay(): Promise<WALEntry[]> {
     const entries: WALEntry[] = [];

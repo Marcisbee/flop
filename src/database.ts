@@ -26,6 +26,9 @@ export interface DatabaseConfig {
   maxCachePages?: number;
 }
 
+// Per-transaction WAL buffer: tableName -> { records, txIds }
+export type TxWalBuffer = Map<string, { records: Uint8Array[]; txIds: number[] }>;
+
 function validateFieldValue(field: CompiledField, value: unknown): void {
   switch (field.kind) {
     case "enum": {
@@ -83,7 +86,7 @@ export class TableInstance {
   readonly def: TableDef;
   readonly serializer: RowSerializer;
   private tableFile!: TableFile;
-  private wal!: WAL;
+  wal!: WAL;
   readonly primaryIndex = new HashIndex();
   readonly secondaryIndexes: Map<string, HashIndex | MultiIndex> = new Map();
   private migrationChains: Map<number, MigrationChain> = new Map();
@@ -91,11 +94,13 @@ export class TableInstance {
   private meta!: StoredTableMeta;
   private dataDir = "";
   private pubsub?: PubSub;
+  // Back-reference to Database for group commit
+  _db?: Database;
   // Async write lock to prevent concurrent page mutations
   private _writeLock: Promise<void> = Promise.resolve();
-  // Transaction batching: skip per-op WAL commit+fsync when true
-  _inTransaction = false;
-  _txWalIds: number[] = [];
+  // WAL entry counter for auto-checkpoint
+  _walEntryCount = 0;
+  static readonly WAL_CHECKPOINT_THRESHOLD = 10000;
 
   private _withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
     const prev = this._writeLock;
@@ -275,10 +280,18 @@ export class TableInstance {
   }
 
   async insert(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+    // Use group commit: buffer WAL in memory, write lock for page safety, then enqueue
+    if (this._db) {
+      const txBuf: TxWalBuffer = new Map();
+      const result = await this._withWriteLock(() => this._insert(data, txBuf));
+      if (txBuf.size > 0) await this._db._enqueueCommit(txBuf);
+      return result;
+    }
     return this._withWriteLock(() => this._insert(data));
   }
 
-  private async _insert(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+  // txBuf: when provided, buffer WAL record there instead of writing to disk
+  async _insert(data: Record<string, unknown>, txBuf?: TxWalBuffer): Promise<Record<string, unknown>> {
     const row = { ...data };
 
     // Apply autogenerate and defaults
@@ -330,9 +343,16 @@ export class TableInstance {
     // Serialize and write
     const serialized = this.serializer.serialize(row, this.currentSchemaVersion);
 
-    // WAL
+    // WAL — buffer in memory during transactions, write immediately otherwise
     const txId = this.wal.beginTransaction();
-    await this.wal.append(txId, WALOp.Insert, serialized);
+    if (txBuf) {
+      let entry = txBuf.get(this.name);
+      if (!entry) { entry = { records: [], txIds: [] }; txBuf.set(this.name, entry); }
+      entry.records.push(this.wal.buildRecord(txId, WALOp.Insert, serialized));
+      entry.txIds.push(txId);
+    } else {
+      await this.wal.append(txId, WALOp.Insert, serialized);
+    }
 
     // Write to page
     const { pageNumber, page } = await this.tableFile.findOrAllocatePage(serialized.byteLength);
@@ -360,9 +380,7 @@ export class TableInstance {
       }
     }
 
-    if (this._inTransaction) {
-      this._txWalIds.push(txId);
-    } else {
+    if (!txBuf) {
       await this.wal.commit(txId);
     }
 
@@ -402,10 +420,16 @@ export class TableInstance {
   }
 
   async update(key: string, updates: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    if (this._db) {
+      const txBuf: TxWalBuffer = new Map();
+      const result = await this._withWriteLock(() => this._update(key, updates, txBuf));
+      if (txBuf.size > 0) await this._db._enqueueCommit(txBuf);
+      return result;
+    }
     return this._withWriteLock(() => this._update(key, updates));
   }
 
-  private async _update(key: string, updates: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  async _update(key: string, updates: Record<string, unknown>, txBuf?: TxWalBuffer): Promise<Record<string, unknown> | null> {
     const existing = await this.get(key);
     if (!existing) return null;
 
@@ -448,7 +472,14 @@ export class TableInstance {
     const serialized = this.serializer.serialize(newRow, this.currentSchemaVersion);
 
     const txId = this.wal.beginTransaction();
-    await this.wal.append(txId, WALOp.Update, serialized);
+    if (txBuf) {
+      let entry = txBuf.get(this.name);
+      if (!entry) { entry = { records: [], txIds: [] }; txBuf.set(this.name, entry); }
+      entry.records.push(this.wal.buildRecord(txId, WALOp.Update, serialized));
+      entry.txIds.push(txId);
+    } else {
+      await this.wal.append(txId, WALOp.Update, serialized);
+    }
 
     const page = await this.tableFile.getPage(pointer.pageNumber);
     const updated = page.updateRow(pointer.slotIndex, serialized);
@@ -481,9 +512,7 @@ export class TableInstance {
       this.tableFile.markPageDirty(pointer.pageNumber);
     }
 
-    if (this._inTransaction) {
-      this._txWalIds.push(txId);
-    } else {
+    if (!txBuf) {
       await this.wal.commit(txId);
     }
 
@@ -498,10 +527,16 @@ export class TableInstance {
   }
 
   async delete(key: string): Promise<boolean> {
+    if (this._db) {
+      const txBuf: TxWalBuffer = new Map();
+      const result = await this._withWriteLock(() => this._delete(key, txBuf));
+      if (txBuf.size > 0) await this._db._enqueueCommit(txBuf);
+      return result;
+    }
     return this._withWriteLock(() => this._delete(key));
   }
 
-  private async _delete(key: string): Promise<boolean> {
+  async _delete(key: string, txBuf?: TxWalBuffer): Promise<boolean> {
     const existing = await this.get(key);
     if (!existing) return false;
 
@@ -512,7 +547,15 @@ export class TableInstance {
     await deleteRowFiles(this.dataDir, this.name, key);
 
     const txId = this.wal.beginTransaction();
-    await this.wal.append(txId, WALOp.Delete, new TextEncoder().encode(key));
+    const deleteData = new TextEncoder().encode(key);
+    if (txBuf) {
+      let entry = txBuf.get(this.name);
+      if (!entry) { entry = { records: [], txIds: [] }; txBuf.set(this.name, entry); }
+      entry.records.push(this.wal.buildRecord(txId, WALOp.Delete, deleteData));
+      entry.txIds.push(txId);
+    } else {
+      await this.wal.append(txId, WALOp.Delete, deleteData);
+    }
 
     // Delete from page
     const page = await this.tableFile.getPage(pointer.pageNumber);
@@ -533,9 +576,7 @@ export class TableInstance {
       }
     }
 
-    if (this._inTransaction) {
-      this._txWalIds.push(txId);
-    } else {
+    if (!txBuf) {
       await this.wal.commit(txId);
     }
 
@@ -547,18 +588,6 @@ export class TableInstance {
     });
 
     return true;
-  }
-
-  async _commitPendingWal(): Promise<void> {
-    // Write all commit markers without fsync
-    for (const txId of this._txWalIds) {
-      await this.wal.commitNoSync(txId);
-    }
-    // Single fsync for all commits
-    if (this._txWalIds.length > 0) {
-      await this.wal.sync();
-    }
-    this._txWalIds = [];
   }
 
   count(): number {
@@ -634,6 +663,14 @@ export class TableInstance {
   }
 }
 
+// ---- Group commit types ----
+
+interface CommitSlot {
+  walBuffers: TxWalBuffer;
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
 // ---- Database class ----
 
 export class Database {
@@ -643,6 +680,9 @@ export class Database {
   private pubsub = new PubSub();
   private _opened = false;
   private _tableProxies: Record<string, TableProxy> | null = null;
+  // Group commit queue: transactions waiting to be fsynced together
+  private _commitQueue: CommitSlot[] = [];
+  private _commitDraining = false;
 
   constructor(
     private tableDefs: Record<string, TableBuilder<any>>,
@@ -664,6 +704,7 @@ export class Database {
     for (const [name, builder] of Object.entries(this.tableDefs)) {
       const def = builder._toTableDef(name);
       const instance = new TableInstance(name, def);
+      instance._db = this;
       await instance.open(this.dataDir, this.meta, this.pubsub);
       this.tables.set(name, instance);
     }
@@ -731,32 +772,85 @@ export class Database {
     return v;
   }
 
-  // Run multiple operations in a single transaction (one fsync instead of N)
+  // Run multiple operations in a single transaction with group commit
   async transaction<T>(fn: (db: Record<string, TableProxy>) => Promise<T>): Promise<T> {
-    // Set all tables to transaction mode
-    for (const table of this.tables.values()) {
-      table._inTransaction = true;
+    // Phase 1: Execute fn() with local WAL buffers (no I/O, no locks)
+    const txBuf: TxWalBuffer = new Map();
+    const txProxies = createTransactionProxies(this, txBuf);
+    const result = await fn(txProxies);
+
+    // Phase 2: If there are WAL records, enqueue for group commit
+    if (txBuf.size > 0) {
+      await this._enqueueCommit(txBuf);
     }
-    try {
-      const result = await fn(this._tableProxies!);
-      // Commit all pending WAL entries (one fsync per table that was written)
-      for (const table of this.tables.values()) {
-        if (table._txWalIds.length > 0) {
-          await table._commitPendingWal();
+
+    return result;
+  }
+
+  // Enqueue WAL buffers for group commit — returns when fsync is done
+  _enqueueCommit(walBuffers: TxWalBuffer): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this._commitQueue.push({ walBuffers, resolve, reject });
+
+      // If no drain is in progress, become the leader
+      if (!this._commitDraining) {
+        this._commitDraining = true;
+        // Yield one microtick to let other concurrent transactions join the queue
+        Promise.resolve().then(() => this._drainCommitQueue());
+      }
+    });
+  }
+
+  // Leader: flush + fsync all queued transactions in one batch
+  private async _drainCommitQueue(): Promise<void> {
+    while (this._commitQueue.length > 0) {
+      // Snapshot the current queue
+      const batch = this._commitQueue;
+      this._commitQueue = [];
+
+      try {
+        // Merge all WAL buffers by table name
+        const merged = new Map<string, { records: Uint8Array[]; txIds: number[] }>();
+        for (const slot of batch) {
+          for (const [tableName, entry] of slot.walBuffers) {
+            let m = merged.get(tableName);
+            if (!m) { m = { records: [], txIds: [] }; merged.set(tableName, m); }
+            for (const r of entry.records) m.records.push(r);
+            for (const id of entry.txIds) m.txIds.push(id);
+          }
         }
-      }
-      return result;
-    } catch (err) {
-      // On error, clear pending IDs without committing
-      for (const table of this.tables.values()) {
-        table._txWalIds = [];
-      }
-      throw err;
-    } finally {
-      for (const table of this.tables.values()) {
-        table._inTransaction = false;
+
+        // Flush all dirty WALs (one write per table) then fsync all in parallel
+        const flushPromises: Promise<void>[] = [];
+        const checkpointTables: TableInstance[] = [];
+        for (const [tableName, entry] of merged) {
+          const table = this.tables.get(tableName);
+          if (!table) continue;
+          flushPromises.push(
+            table.wal.flushBatch(entry.records, entry.txIds).then(() => table.wal.fsync()),
+          );
+          // Track WAL entry count for auto-checkpoint
+          table._walEntryCount += entry.records.length + entry.txIds.length;
+          if (table._walEntryCount >= TableInstance.WAL_CHECKPOINT_THRESHOLD) {
+            checkpointTables.push(table);
+          }
+        }
+        await Promise.all(flushPromises);
+
+        // Resolve all waiters
+        for (const slot of batch) slot.resolve();
+
+        // Auto-checkpoint tables with large WALs (non-blocking, after resolving waiters)
+        for (const table of checkpointTables) {
+          table._walEntryCount = 0;
+          table.checkpoint().catch(() => {});
+        }
+      } catch (err) {
+        // Reject all waiters
+        for (const slot of batch) slot.reject(err as Error);
       }
     }
+    this._commitDraining = false;
   }
 
   async checkpoint(): Promise<void> {
@@ -843,6 +937,32 @@ function createTableProxies(db: Database): Record<string, TableProxy> {
     };
 
     // Pre-build index accessors for all schema fields
+    for (const field of table.def.compiledSchema.fields) {
+      if (!(field.name in proxy)) {
+        proxy[field.name] = createIndexAccessor(table, field.name);
+      }
+    }
+
+    proxies[name] = proxy as TableProxy;
+  }
+
+  return proxies;
+}
+
+// Transaction proxies — bypass write locks, buffer WAL into local txBuf
+function createTransactionProxies(db: Database, txBuf: TxWalBuffer): Record<string, TableProxy> {
+  const proxies: Record<string, TableProxy> = {};
+
+  for (const [name, table] of db.tables) {
+    const proxy: any = {
+      insert: (data: Record<string, unknown>) => table._insert(data, txBuf),
+      get: (key: string) => table.get(key),
+      update: (key: string, data: Record<string, unknown>) => table._update(key, data, txBuf),
+      delete: (key: string) => table._delete(key, txBuf),
+      scan: (limit?: number, offset?: number) => table.scan(limit, offset),
+      count: () => table.count(),
+    };
+
     for (const field of table.def.compiledSchema.fields) {
       if (!(field.name in proxy)) {
         proxy[field.name] = createIndexAccessor(table, field.name);

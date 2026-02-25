@@ -25,6 +25,8 @@ export class TableFile {
   private _header!: TableFileHeader;
   private _pageCache!: PageCache;
   private _closed = false;
+  // Hint: last page that had free space — try it first to avoid linear scan
+  private _lastFreePage = -1;
 
   constructor(path: string) {
     this.path = path;
@@ -178,17 +180,30 @@ export class TableFile {
     pageNumber: number;
     page: Page;
   }> {
-    // Search existing pages (simple linear scan — can be optimized with free space hints)
-    for (let p = this._header.pageCount - 1; p >= 0; p--) {
-      const page = await this.getPage(p);
-      if (page.freeSpace >= rowDataSize + 4) {
-        // +4 for slot entry
-        return { pageNumber: p, page };
+    const needed = rowDataSize + 4; // +4 for slot entry
+
+    // Fast path: try the last known free page first
+    if (this._lastFreePage >= 0 && this._lastFreePage < this._header.pageCount) {
+      const page = await this.getPage(this._lastFreePage);
+      if (page.freeSpace >= needed) {
+        return { pageNumber: this._lastFreePage, page };
+      }
+    }
+
+    // Try the last page (most likely to have space for append-heavy workloads)
+    const lastPage = this._header.pageCount - 1;
+    if (lastPage >= 0 && lastPage !== this._lastFreePage) {
+      const page = await this.getPage(lastPage);
+      if (page.freeSpace >= needed) {
+        this._lastFreePage = lastPage;
+        return { pageNumber: lastPage, page };
       }
     }
 
     // No space found, allocate new page
-    return await this.allocatePage();
+    const result = await this.allocatePage();
+    this._lastFreePage = result.pageNumber;
+    return result;
   }
 
   get pageCount(): number {
