@@ -632,12 +632,12 @@ HMAC-SHA256 via Web Crypto API.
 
 | Method | Path | Access | Description |
 |--------|------|--------|-------------|
-| POST | `/_auth/register` | Public | Register new user (role: `["user"]`) |
-| POST | `/_auth/password` | Public | Login with email/password |
-| POST | `/_auth/refresh` | Public | Exchange refresh token for new access token |
-| POST | `/_auth/verify` | Auth | Request email verification (not yet implemented) |
-| POST | `/_auth/reset-password` | Public | Request password reset (not yet implemented) |
-| POST | `/_auth/change-email` | Auth | Request email change (not yet implemented) |
+| POST | `/api/auth/register` | Public | Register new user (role: `["user"]`) |
+| POST | `/api/auth/password` | Public | Login with email/password |
+| POST | `/api/auth/refresh` | Public | Exchange refresh token for new access token |
+| POST | `/api/auth/verify` | Auth | Request email verification (not yet implemented) |
+| POST | `/api/auth/reset-password` | Public | Request password reset (not yet implemented) |
+| POST | `/api/auth/change-email` | Auth | Request email change (not yet implemented) |
 
 ### 9.5 Token Extraction
 
@@ -657,25 +657,29 @@ Bearer token extracted from:
 ### 10.1 Route Discovery
 
 On startup, all named exports from the user module are inspected:
-- `Reducer` instances → `POST /reduce/<export_name>`
-- `View` instances → `GET /view/<export_name>`
+- `Reducer` instances → `POST /api/reduce/<export_name>`
+- `View` instances → `GET /api/view/<export_name>`
 
 ### 10.2 Request Flow
 
 ```
 Request
   ├── OPTIONS → CORS preflight (204)
-  ├── /_* (not _auth, _files, _schema) → Admin handler
-  ├── /_files/* → Static file serving
-  ├── /_schema → JSON schema endpoint
-  ├── /_auth/* → Auth endpoints
-  └── /reduce/* or /view/* → Route matching
-       ├── Access enforcement (public/auth/roles)
-       ├── SSE check (Accept: text/event-stream) → SSE handler
-       ├── WebSocket check (Upgrade: websocket) → WS handler
-       └── Normal HTTP
-            ├── Reducer: parse JSON body → handler → { ok, data }
-            └── View: parse query params → handler → { ok, data }
+  ├── /_* → Admin handler
+  ├── /api/* → API routing
+  │    ├── /api/files/* → File serving
+  │    ├── /api/schema → JSON schema endpoint
+  │    ├── /api/auth/* → Auth endpoints
+  │    ├── /api/sse → Multiplexed SSE
+  │    └── /api/reduce/* or /api/view/* → Route matching
+  │         ├── Access enforcement (public/auth/roles)
+  │         ├── SSE check (Accept: text/event-stream) → SSE handler
+  │         ├── WebSocket check (Upgrade: websocket) → WS handler
+  │         └── Normal HTTP
+  │              ├── Reducer: parse JSON body → handler → { ok, data }
+  │              └── View: parse query params → handler → { ok, data }
+  ├── /assets/* → Static file serving
+  └── Page routes → SSR shell (if pages defined)
 ```
 
 ### 10.3 CORS
@@ -689,14 +693,14 @@ Access-Control-Allow-Headers: Content-Type, Authorization
 
 ### 10.4 Schema Endpoint
 
-`GET /_schema` returns JSON describing all routes:
+`GET /api/schema` returns JSON describing all routes:
 ```json
 {
   "endpoints": [
     {
       "name": "send_message",
       "method": "POST",
-      "path": "/reduce/send_message",
+      "path": "/api/reduce/send_message",
       "type": "reducer",
       "access": "authenticated",
       "params": { "text": { "type": "string", "required": false } }
@@ -833,7 +837,7 @@ interface FileRef {
   name: string;   // sanitized filename
   size: number;   // bytes
   mime: string;    // MIME type
-  url: string;     // "/_files/users/abc123/avatar/photo.png"
+  url: string;     // "/api/files/users/abc123/avatar/photo.png"
 }
 ```
 
@@ -848,7 +852,7 @@ interface FileRef {
 - **Store:** sanitize filename, write to disk, return `FileRef`
 - **Update:** diff old/new refs, delete orphaned files
 - **Delete row:** `deleteRowFiles(dataDir, tableName, rowId)` removes entire row directory
-- **Serve:** `GET /_files/*` streams file with `Cache-Control: public, max-age=31536000, immutable`
+- **Serve:** `GET /api/files/*` streams file with `Cache-Control: public, max-age=31536000, immutable`
 
 ### 13.5 Filename Sanitization
 
@@ -878,9 +882,9 @@ sub.on("data", (data) => console.log(data));
 
 ### 14.2 Namespaces (Proxy-based)
 
-- `client.view.<name>(params)` → `GET /view/<name>?params`
-- `client.reduce.<name>(params)` → `POST /reduce/<name>` with JSON body
-- `client.subscribe.<name>(params)` → SSE `EventSource` to `/view/<name>?params&_token=...`
+- `client.view.<name>(params)` → `GET /api/view/<name>?params`
+- `client.reduce.<name>(params)` → `POST /api/reduce/<name>` with JSON body
+- `client.subscribe.<name>(params)` → SSE `EventSource` to `/api/view/<name>?params&_token=...`
 
 All implemented via ES `Proxy` — no code generation needed.
 
