@@ -829,10 +829,8 @@ export class Database {
       // If no drain is in progress, become the leader
       if (!this._commitDraining) {
         this._commitDraining = true;
-        // Use setTimeout(0) to give a full event loop tick for batching.
-        // This lets concurrent write-lock holders finish and enqueue,
-        // resulting in larger batches and fewer fsyncs.
-        setTimeout(() => this._drainCommitQueue(), 0);
+        // Yield one microtick to let other concurrent transactions join the queue
+        Promise.resolve().then(() => this._drainCommitQueue());
       }
     });
   }
