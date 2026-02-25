@@ -77,7 +77,7 @@ export function createHandler(
       }
 
       // Permission enforcement
-      const authResult = await enforceAccess(req, route, jwtSecret);
+      const authResult = enforceAccess(req, route, jwtSecret);
       if (authResult.denied) {
         return addCors(authResult.response!, corsHeaders);
       }
@@ -171,18 +171,18 @@ interface AccessResult {
   response?: Response;
 }
 
-async function enforceAccess(
+function enforceAccess(
   req: Request,
   route: Route,
   jwtSecret: string,
-): Promise<AccessResult> {
+): AccessResult {
   const policy = route.access;
 
   if (policy.type === "public") {
     // Still try to parse auth if present
     const token = extractBearerToken(req);
     if (token) {
-      const payload = await verifyJWT(token, jwtSecret);
+      const payload = verifyJWT(token, jwtSecret);
       return { denied: false, auth: payload ? jwtToAuthContext(payload) : null };
     }
     return { denied: false, auth: null };
@@ -197,7 +197,7 @@ async function enforceAccess(
     };
   }
 
-  const payload = await verifyJWT(token, jwtSecret);
+  const payload = verifyJWT(token, jwtSecret);
   if (!payload) {
     return {
       denied: true,

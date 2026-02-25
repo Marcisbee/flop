@@ -102,7 +102,7 @@ export class TableInstance {
   _walEntryCount = 0;
   static readonly WAL_CHECKPOINT_THRESHOLD = 10000;
 
-  private _withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+  _withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
     const prev = this._writeLock;
     let resolve: () => void;
     this._writeLock = new Promise<void>((r) => { resolve = r; });
@@ -180,6 +180,19 @@ export class TableInstance {
       }
     } catch {
       await this.rebuildIndex();
+    }
+
+    // Auto-create unique indexes for fields with .unique() flag
+    for (const field of this.def.compiledSchema.fields) {
+      if (field.unique && !field.autoGenPattern) {
+        const indexKey = field.name;
+        const alreadyDefined = this.def.indexes.some(
+          (idx) => idx.fields.length === 1 && idx.fields[0] === field.name,
+        );
+        if (!alreadyDefined) {
+          this.def.indexes.push({ fields: [field.name], unique: true });
+        }
+      }
     }
 
     // Set up secondary indexes
@@ -637,6 +650,27 @@ export class TableInstance {
     return undefined;
   }
 
+  // Read a row directly from a page pointer (for secondary index lookups)
+  async getByPointer(pointer: RowPointer): Promise<Record<string, unknown> | null> {
+    const page = await this.tableFile.getPage(pointer.pageNumber);
+    const rawData = page.readRow(pointer.slotIndex);
+    if (!rawData) return null;
+
+    const { row, schemaVersion } = this.serializer.deserialize(rawData, 0);
+
+    if (schemaVersion < this.currentSchemaVersion) {
+      const chain = this.migrationChains.get(schemaVersion);
+      if (chain) {
+        const rawFields = deserializeRawFields(rawData, 0);
+        const oldSchema = this.meta.schemas[schemaVersion];
+        const oldRow = deserializeWithSchema(rawFields.values, oldSchema);
+        return chain.migrate(oldRow);
+      }
+    }
+
+    return row;
+  }
+
   findAllByIndex(fields: string[], value: unknown): Set<RowPointer> {
     const indexKey = fields.join(",");
     const idx = this.secondaryIndexes.get(indexKey);
@@ -795,8 +829,10 @@ export class Database {
       // If no drain is in progress, become the leader
       if (!this._commitDraining) {
         this._commitDraining = true;
-        // Yield one microtick to let other concurrent transactions join the queue
-        Promise.resolve().then(() => this._drainCommitQueue());
+        // Use setTimeout(0) to give a full event loop tick for batching.
+        // This lets concurrent write-lock holders finish and enqueue,
+        // resulting in larger batches and fewer fsyncs.
+        setTimeout(() => this._drainCommitQueue(), 0);
       }
     });
   }
@@ -904,7 +940,7 @@ function createIndexAccessor(table: TableInstance, fieldName: string) {
     find: (value: unknown) => {
       const pointer = table.findByIndex([fieldName], value);
       if (!pointer) return Promise.resolve(null);
-      return table.get(String(value));
+      return table.getByPointer(pointer);
     },
     findAll: async (value: unknown) => {
       const pointers = table.findAllByIndex([fieldName], value);
@@ -949,16 +985,16 @@ function createTableProxies(db: Database): Record<string, TableProxy> {
   return proxies;
 }
 
-// Transaction proxies — bypass write locks, buffer WAL into local txBuf
+// Transaction proxies — use write locks for page safety, buffer WAL into local txBuf
 function createTransactionProxies(db: Database, txBuf: TxWalBuffer): Record<string, TableProxy> {
   const proxies: Record<string, TableProxy> = {};
 
   for (const [name, table] of db.tables) {
     const proxy: any = {
-      insert: (data: Record<string, unknown>) => table._insert(data, txBuf),
+      insert: (data: Record<string, unknown>) => table._withWriteLock(() => table._insert(data, txBuf)),
       get: (key: string) => table.get(key),
-      update: (key: string, data: Record<string, unknown>) => table._update(key, data, txBuf),
-      delete: (key: string) => table._delete(key, txBuf),
+      update: (key: string, data: Record<string, unknown>) => table._withWriteLock(() => table._update(key, data, txBuf)),
+      delete: (key: string) => table._withWriteLock(() => table._delete(key, txBuf)),
       scan: (limit?: number, offset?: number) => table.scan(limit, offset),
       count: () => table.count(),
     };

@@ -2,10 +2,11 @@
 
 import type { AuthContext } from "../types.ts";
 import type { TableInstance } from "../database.ts";
+import { createHmac } from "node:crypto";
 
 const encoder = new TextEncoder();
 
-// HMAC-SHA256 JWT implementation using Web Crypto API
+// HMAC-SHA256 JWT implementation using sync node:crypto for speed
 
 export interface JWTPayload {
   sub: string;
@@ -16,73 +17,61 @@ export interface JWTPayload {
   exp: number;
 }
 
-function base64url(data: Uint8Array): string {
-  return btoa(String.fromCharCode(...data))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+function base64urlEncode(str: string): string {
+  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function base64urlDecode(str: string): Uint8Array {
+function base64urlDecode(str: string): string {
   const padded = str.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+  return atob(padded);
 }
 
-// Cache imported CryptoKey per secret to avoid re-importing on every request
-const keyCache = new Map<string, CryptoKey>();
-
-async function getHmacKey(secret: string): Promise<CryptoKey> {
-  let key = keyCache.get(secret);
-  if (key) return key;
-  key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  keyCache.set(secret, key);
-  return key;
+function hmacSign(data: string, secret: string): string {
+  return createHmac("sha256", secret).update(data).digest("base64url");
 }
 
-async function hmacSign(data: string, secret: string): Promise<string> {
-  const key = await getHmacKey(secret);
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(data));
-  return base64url(new Uint8Array(signature));
-}
-
-async function hmacVerify(data: string, signature: string, secret: string): Promise<boolean> {
-  const expected = await hmacSign(data, secret);
-  return expected === signature;
-}
-
-export async function createJWT(payload: JWTPayload, secret: string): Promise<string> {
-  const header = base64url(encoder.encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
-  const body = base64url(encoder.encode(JSON.stringify(payload)));
-  const signature = await hmacSign(`${header}.${body}`, secret);
+export function createJWT(payload: JWTPayload, secret: string): string {
+  const header = base64urlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const body = base64urlEncode(JSON.stringify(payload));
+  const signature = hmacSign(`${header}.${body}`, secret);
   return `${header}.${body}.${signature}`;
 }
 
-export async function verifyJWT(token: string, secret: string): Promise<JWTPayload | null> {
+// JWT verification cache: token -> payload (avoids re-verifying the same token)
+const jwtCache = new Map<string, { payload: JWTPayload; expireAt: number }>();
+const JWT_CACHE_MAX = 10000;
+
+export function verifyJWT(token: string, secret: string): JWTPayload | null {
+  // Check cache first
+  const cached = jwtCache.get(token);
+  if (cached) {
+    if (cached.expireAt > Date.now()) return cached.payload;
+    jwtCache.delete(token);
+  }
+
   const parts = token.split(".");
   if (parts.length !== 3) return null;
 
   const [header, body, signature] = parts;
 
-  const valid = await hmacVerify(`${header}.${body}`, signature, secret);
-  if (!valid) return null;
+  const expected = hmacSign(`${header}.${body}`, secret);
+  if (signature !== expected) return null;
 
-  const payload = JSON.parse(new TextDecoder().decode(base64urlDecode(body))) as JWTPayload;
+  const payload = JSON.parse(base64urlDecode(body)) as JWTPayload;
 
   // Check expiration
   if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
     return null;
   }
+
+  // Cache the result (expire 60s before token expiry, or 5 min for tokens without exp)
+  const expireAt = payload.exp ? (payload.exp * 1000 - 60000) : (Date.now() + 300000);
+  if (jwtCache.size >= JWT_CACHE_MAX) {
+    // Evict oldest entry
+    const firstKey = jwtCache.keys().next().value!;
+    jwtCache.delete(firstKey);
+  }
+  jwtCache.set(token, { payload, expireAt });
 
   return payload;
 }
@@ -277,9 +266,12 @@ export class AuthService {
   }
 
   private async findByEmail(email: string): Promise<Record<string, unknown> | null> {
-    // Scan for email match (ideally would use a secondary index)
-    const rows = await this.authTable.scan(10000);
-    return rows.find((r) => r.email === email) ?? null;
+    // Use secondary index on email field for O(1) lookup
+    const pointer = this.authTable.findByIndex(["email"], email);
+    if (pointer) {
+      return this.authTable.getByPointer(pointer);
+    }
+    return null;
   }
 
   private async issueToken(id: string, email: string, name: string, roles: string[]): Promise<string> {
