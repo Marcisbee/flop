@@ -170,10 +170,13 @@ function handleListTables(db: Database): Response {
     tables.push({
       name,
       schema: Object.fromEntries(
-        table.def.compiledSchema.fields.map((f) => [
-          f.name,
-          { type: f.kind, required: f.required, unique: f.unique },
-        ]),
+        table.def.compiledSchema.fields.map((f) => {
+          const entry: Record<string, unknown> = { type: f.kind, required: f.required, unique: f.unique };
+          if (f.refTableName) entry.refTable = f.refTableName;
+          if (f.refField) entry.refField = f.refField;
+          if (f.enumValues) entry.enumValues = f.enumValues;
+          return [f.name, entry];
+        }),
       ),
       rowCount: table.primaryIndex.size,
     });

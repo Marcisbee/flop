@@ -614,6 +614,11 @@ export class Database {
       this.tables.set(name, instance);
     }
 
+    // Re-resolve ref table names now that all table names are assigned
+    for (const builder of Object.values(this.tableDefs)) {
+      builder._resolveRefs();
+    }
+
     // Save meta (may have new schema versions)
     await writeMetaFile(metaPath, this.meta);
   }

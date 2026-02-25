@@ -139,6 +139,31 @@ let currentPage = 1;
 let tablesCache = [];
 let rowsCache = [];
 let editingCell = null;
+let refDataCache = {}; // { tableName: [{id, label}, ...] }
+
+async function fetchRefOptions(tableName) {
+  if (refDataCache[tableName]) return refDataCache[tableName];
+  try {
+    const data = await api('/tables/' + tableName + '/rows?limit=500');
+    const rows = data.rows || [];
+    const options = rows.map(r => {
+      const keys = Object.keys(r);
+      const id = r[keys[0]];
+      // Use second column as label, or first if only one column
+      const label = keys.length > 1 ? (r[keys[1]] || id) : id;
+      return { id: String(id), label: String(label) };
+    });
+    refDataCache[tableName] = options;
+    return options;
+  } catch {
+    return [];
+  }
+}
+
+// Invalidate ref cache when SSE events come in for referenced tables
+function invalidateRefCache(tableName) {
+  delete refDataCache[tableName];
+}
 
 // ---- URL hash sync ----
 function syncToHash() {
@@ -167,6 +192,7 @@ function connectSSE() {
       const evt = JSON.parse(e.data);
       // Refresh sidebar counts
       loadTables(true);
+      invalidateRefCache(evt.table);
       // If the changed table is the one we're viewing, flash and refresh
       if (currentTable && evt.table === currentTable) {
         loadRows(true).then(() => {
@@ -282,7 +308,26 @@ function renderContent(data) {
         html += '</div>';
         continue;
       }
-      if (f.type === 'roles' || f.type === 'set' || f.type === 'refMulti' || f.type === 'fileMulti') {
+      if (f.type === 'ref' && f.refTable) {
+        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + ' &rarr; ' + escapeHtml(f.refTable) + '</span></label>';
+        html += '<select data-col="' + escapeHtml(col) + '" data-ref="' + escapeHtml(f.refTable) + '" class="ref-select"><option value="">— loading... —</option></select>';
+        html += '</div>';
+        continue;
+      }
+      if (f.type === 'refMulti' && f.refTable) {
+        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + ' &rarr; ' + escapeHtml(f.refTable) + '</span></label>';
+        html += '<select data-col="' + escapeHtml(col) + '" data-ref="' + escapeHtml(f.refTable) + '" class="ref-select" multiple><option value="">— loading... —</option></select>';
+        html += '</div>';
+        continue;
+      }
+      if (f.type === 'enum' && f.enumValues) {
+        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + '</span></label>';
+        html += '<select data-col="' + escapeHtml(col) + '"><option value="">—</option>';
+        f.enumValues.forEach(function(v) { html += '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>'; });
+        html += '</select></div>';
+        continue;
+      }
+      if (f.type === 'roles' || f.type === 'set' || f.type === 'fileMulti') {
         html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + '</span></label>';
         html += '<input data-col="' + escapeHtml(col) + '" placeholder="[&quot;value1&quot;,&quot;value2&quot;]">';
         html += '</div>';
@@ -306,7 +351,7 @@ function renderContent(data) {
         html += '</div>';
         continue;
       }
-      // Default: string, enum, ref
+      // Default: string, etc.
       html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + (f.required ? ' *' : '') + '</span></label>';
       html += '<input data-col="' + escapeHtml(col) + '" placeholder="' + escapeHtml(col) + '">';
       html += '</div>';
@@ -367,10 +412,39 @@ function renderContent(data) {
   }
 
   content.innerHTML = html;
+  // Populate ref selects asynchronously
+  populateRefSelects();
+}
+
+async function populateRefSelects() {
+  const selects = document.querySelectorAll('select.ref-select');
+  for (const sel of selects) {
+    const refTable = sel.getAttribute('data-ref');
+    if (!refTable) continue;
+    const isMulti = sel.hasAttribute('multiple');
+    const currentVal = sel.getAttribute('data-current') || '';
+    const options = await fetchRefOptions(refTable);
+    sel.innerHTML = '';
+    if (!isMulti) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '—';
+      sel.appendChild(empty);
+    }
+    options.forEach(function(opt) {
+      const o = document.createElement('option');
+      o.value = opt.id;
+      o.textContent = opt.id + (opt.label !== opt.id ? ' — ' + opt.label : '');
+      if (currentVal === opt.id) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
 }
 
 // ---- Inline editing ----
 function startEdit(td) {
+  // If we're already editing this cell, don't restart
+  if (editingCell === td) return;
   if (editingCell) commitEdit(editingCell);
   editingCell = td;
   const raw = td.getAttribute('data-raw');
@@ -392,7 +466,63 @@ function startEdit(td) {
       sel.appendChild(opt);
     });
     sel.onchange = () => commitEdit(td);
-    sel.onblur = () => commitEdit(td);
+    sel.onblur = () => { td._blurTimer = setTimeout(() => commitEdit(td), 80); };
+    sel.onfocus = () => { clearTimeout(td._blurTimer); };
+    td.textContent = '';
+    td.appendChild(sel);
+    sel.focus();
+    return;
+  }
+
+  if (f && f.type === 'ref' && f.refTable) {
+    const sel = document.createElement('select');
+    sel.className = 'cell-input';
+    const loading = document.createElement('option');
+    loading.value = raw;
+    loading.textContent = raw + ' (loading...)';
+    loading.selected = true;
+    sel.appendChild(loading);
+    sel.onchange = () => commitEdit(td);
+    sel.onblur = () => { td._blurTimer = setTimeout(() => commitEdit(td), 80); };
+    sel.onfocus = () => { clearTimeout(td._blurTimer); };
+    td.textContent = '';
+    td.appendChild(sel);
+    sel.focus();
+    // Load options async
+    fetchRefOptions(f.refTable).then(options => {
+      sel.innerHTML = '';
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '—';
+      sel.appendChild(empty);
+      options.forEach(function(opt) {
+        const o = document.createElement('option');
+        o.value = opt.id;
+        o.textContent = opt.id + (opt.label !== opt.id ? ' — ' + opt.label : '');
+        if (raw === opt.id) o.selected = true;
+        sel.appendChild(o);
+      });
+    });
+    return;
+  }
+
+  if (f && f.type === 'enum' && f.enumValues) {
+    const sel = document.createElement('select');
+    sel.className = 'cell-input';
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = '—';
+    sel.appendChild(empty);
+    f.enumValues.forEach(function(v) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = v;
+      if (raw === v) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => commitEdit(td);
+    sel.onblur = () => { td._blurTimer = setTimeout(() => commitEdit(td), 80); };
+    sel.onfocus = () => { clearTimeout(td._blurTimer); };
     td.textContent = '';
     td.appendChild(sel);
     sel.focus();
@@ -402,7 +532,9 @@ function startEdit(td) {
   const inp = document.createElement('input');
   inp.className = 'cell-input';
   inp.value = raw;
-  inp.onblur = () => commitEdit(td);
+  inp.onblur = () => { td._blurTimer = setTimeout(() => commitEdit(td), 80); };
+  inp.onfocus = () => { clearTimeout(td._blurTimer); };
+  inp.onmousedown = (e) => { e.stopPropagation(); };
   inp.onkeydown = (e) => { if(e.key==='Enter') commitEdit(td); if(e.key==='Escape') cancelEdit(td); };
   td.textContent = '';
   td.appendChild(inp);
@@ -412,6 +544,7 @@ function startEdit(td) {
 
 async function commitEdit(td) {
   if (!td || !td.classList.contains('editing')) return;
+  clearTimeout(td._blurTimer);
   const input = td.querySelector('input, select');
   if (!input) return;
   const newVal = input.value;
@@ -487,15 +620,23 @@ async function submitCreate() {
     if (isAutoField(col)) continue;
     const input = document.querySelector('#create-form [data-col="' + col + '"]');
     if (!input) continue;
+
+    const f = schema[col];
+    // Handle multi-select for refMulti
+    if (f.type === 'refMulti' && input.tagName === 'SELECT' && input.multiple) {
+      const selected = Array.from(input.selectedOptions).map(function(o) { return o.value; }).filter(Boolean);
+      if (selected.length > 0) data[col] = selected;
+      continue;
+    }
+
     let val = input.value;
     if (val === '') continue;
 
-    const f = schema[col];
     if (f.type === 'number' || f.type === 'integer' || f.type === 'timestamp') {
       data[col] = Number(val);
     } else if (f.type === 'boolean') {
       data[col] = val === 'true';
-    } else if (f.type === 'json' || f.type === 'vector' || f.type === 'roles' || f.type === 'set' || f.type === 'refMulti' || f.type === 'fileMulti') {
+    } else if (f.type === 'json' || f.type === 'vector' || f.type === 'roles' || f.type === 'set' || f.type === 'fileMulti') {
       try { data[col] = JSON.parse(val); } catch { data[col] = val; }
     } else {
       data[col] = val;

@@ -56,6 +56,20 @@ class TableBuilder<S extends Record<string, SchemaFieldInput>> {
       migrations: this.migrations,
     };
   }
+
+  /** @internal Re-resolve ref table names after all table names are assigned */
+  _resolveRefs(): void {
+    for (const [fieldName, fieldBuilder] of Object.entries(this.schema)) {
+      const field: SchemaField =
+        typeof (fieldBuilder as any)._build === "function"
+          ? (fieldBuilder as any)._build()
+          : fieldBuilder;
+      if (field.refTable && (field.refTable as any).name) {
+        const compiled = this.compiledSchema.fieldMap.get(fieldName);
+        if (compiled) compiled.refTableName = (field.refTable as any).name;
+      }
+    }
+  }
 }
 
 function compileSchema(schema: Record<string, SchemaFieldInput>): CompiledSchema {

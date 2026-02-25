@@ -15,7 +15,7 @@ const messages = table({
   schema: {
     id: t.string().autogenerate(/[a-z0-9]{15}/),
     text: t.string().required(),
-    authorId: t.string().required(),
+    author: t.refSingle(users, "id").required(),
     createdAt: t.timestamp().default("now"),
   },
 });
@@ -29,7 +29,7 @@ export const send_message = db.reduce(
       throw new Error("Not logged in")
     }
 
-    return ctx.db.messages.insert({ text, authorId: ctx.request.auth.id });
+    return ctx.db.messages.insert({ text, author: ctx.request.auth.id });
   },
 );
 
