@@ -1,4 +1,5 @@
 // Embedded admin panel UI — served as inline HTML/CSS/JS
+// Uses Preact + HTM via ESM CDN imports (no build step)
 
 export function renderLoginPage(): string {
   return `<!DOCTYPE html>
@@ -6,15 +7,24 @@ export function renderLoginPage(): string {
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin - Login</title>
-<style>${baseCSS}</style>
+<style>${loginCSS}</style>
 </head>
 <body>
 <div class="login-container">
-  <h1>flop <span class="badge">admin</span></h1>
+  <div class="logo">
+    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M8 10h16v2H8zm0 5h12v2H8zm0 5h14v2H8z" fill="#fff" opacity=".9"/></svg>
+    <span class="logo-text">flop</span>
+  </div>
   <form id="login-form">
-    <input type="email" id="email" placeholder="Email" required autofocus>
-    <input type="password" id="password" placeholder="Password" required>
-    <button type="submit">Login</button>
+    <div class="field">
+      <label for="email">Email</label>
+      <input type="email" id="email" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" required>
+    </div>
+    <button type="submit">Sign In</button>
     <div id="error" class="error hidden"></div>
   </form>
 </div>
@@ -51,18 +61,33 @@ export function renderSetupPage(): string {
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin - Setup</title>
-<style>${baseCSS}</style>
+<style>${loginCSS}</style>
 </head>
 <body>
 <div class="login-container">
-  <h1>flop <span class="badge">setup</span></h1>
-  <p style="color:#888;font-size:13px;margin-bottom:16px;text-align:center">Create your admin account</p>
+  <div class="logo">
+    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M8 10h16v2H8zm0 5h12v2H8zm0 5h14v2H8z" fill="#fff" opacity=".9"/></svg>
+    <span class="logo-text">flop</span>
+  </div>
+  <p class="subtitle">Create your admin account</p>
   <form id="setup-form">
-    <input type="email" id="email" placeholder="Email" required autofocus>
-    <input type="text" id="name" placeholder="Name (optional)">
-    <input type="password" id="password" placeholder="Password" required minlength="6">
-    <input type="password" id="confirm" placeholder="Confirm password" required minlength="6">
-    <button type="submit" style="width:100%">Create Admin</button>
+    <div class="field">
+      <label for="email">Email</label>
+      <input type="email" id="email" required autofocus>
+    </div>
+    <div class="field">
+      <label for="name">Name (optional)</label>
+      <input type="text" id="name">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" required minlength="6">
+    </div>
+    <div class="field">
+      <label for="confirm">Confirm Password</label>
+      <input type="password" id="confirm" required minlength="6">
+    </div>
+    <button type="submit">Create Admin</button>
     <div id="error" class="error hidden"></div>
   </form>
 </div>
@@ -105,24 +130,18 @@ export function renderAdminPage(): string {
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin</title>
-<style>${baseCSS}${adminCSS}</style>
+<style>${adminCSS}</style>
 </head>
 <body>
-<div id="app">
-  <nav>
-    <h1>flop <span class="badge">admin</span></h1>
-    <div id="nav-tables"></div>
-    <div class="nav-bottom">
-      <button onclick="downloadBackup()" class="btn-sm">Download Backup</button>
-      <label class="btn-sm">Upload Backup<input type="file" accept=".tar.gz,.gz" onchange="uploadBackup(this)" hidden></label>
-      <button onclick="logout()" class="btn-sm btn-danger">Logout</button>
-    </div>
-  </nav>
-  <main id="content">
-    <div class="empty">Select a table from the sidebar</div>
-  </main>
-</div>
-<script>
+<div id="app"></div>
+<script type="module">
+import { h, render, Component } from 'https://esm.sh/preact@10.25.4';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'https://esm.sh/preact@10.25.4/hooks';
+import htm from 'https://esm.sh/htm@3.1.1';
+
+const html = htm.bind(h);
+
+// ── Auth ──
 let TOKEN = localStorage.getItem('flop_admin_token');
 if (!TOKEN) window.location.href = '/_/login';
 
@@ -142,10 +161,7 @@ async function refreshToken() {
     TOKEN = data.token;
     localStorage.setItem('flop_admin_token', data.token);
     return data.token;
-  }).catch(err => {
-    _refreshing = null;
-    throw err;
-  });
+  }).catch(err => { _refreshing = null; throw err; });
   return _refreshing;
 }
 
@@ -156,769 +172,735 @@ async function api(path, opts = {}) {
   });
   let r = await doFetch();
   if (r.status === 401) {
-    try {
-      await refreshToken();
-      r = await doFetch();
-    } catch {
-      return;
-    }
+    try { await refreshToken(); r = await doFetch(); } catch { return; }
   }
   if (r.status === 401 || r.status === 403) { logout(); throw new Error('Unauthorized'); }
   if (r.headers.get('content-type')?.includes('json')) return r.json();
   return r;
 }
 
-let currentTable = null;
-let currentPage = 1;
-let tablesCache = [];
-let rowsCache = [];
-let editingCell = null;
-let refDataCache = {}; // { tableName: [{id, label}, ...] }
+function logout() {
+  localStorage.removeItem('flop_admin_token');
+  localStorage.removeItem('flop_admin_refresh');
+  window.location.href = '/_/login';
+}
 
+// ── Ref data cache ──
+const refCache = {};
 async function fetchRefOptions(tableName) {
-  if (refDataCache[tableName]) return refDataCache[tableName];
+  if (refCache[tableName]) return refCache[tableName];
   try {
     const data = await api('/tables/' + tableName + '/rows?limit=500');
     const rows = data.rows || [];
     const options = rows.map(r => {
       const keys = Object.keys(r);
       const id = r[keys[0]];
-      // Use second column as label, or first if only one column
       const label = keys.length > 1 ? (r[keys[1]] || id) : id;
       return { id: String(id), label: String(label) };
     });
-    refDataCache[tableName] = options;
+    refCache[tableName] = options;
     return options;
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
-// Invalidate ref cache when SSE events come in for referenced tables
-function invalidateRefCache(tableName) {
-  delete refDataCache[tableName];
-}
+// ── Icons (inline SVG) ──
+const icons = {
+  table: html\`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M14 1H2a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1V2a1 1 0 00-1-1zM2 2h12v3H2V2zm0 4h5v4H2V6zm0 5h5v3H2v-3zm12 3H8v-3h6v3zm0-4H8V6h6v4z"/></svg>\`,
+  plus: html\`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>\`,
+  trash: html\`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3h3v1h-1v9a1 1 0 01-1 1H5a1 1 0 01-1-1V4H3V3h3V2a1 1 0 011-1h2a1 1 0 011 1v1zM5 4v9h6V4H5zm1 1h1v7H6V5zm3 0h1v7H9V5zM7 2v1h2V2H7z"/></svg>\`,
+  download: html\`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 13h7a.5.5 0 010 1h-7a.5.5 0 010-1zM7.5 2v7.793L5.354 7.646a.5.5 0 10-.708.708l3 3a.5.5 0 00.708 0l3-3a.5.5 0 00-.708-.708L8.5 9.793V2a.5.5 0 00-1 0z"/></svg>\`,
+  upload: html\`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 13h7a.5.5 0 010 1h-7a.5.5 0 010-1zM7.5 11V3.207L5.354 5.354a.5.5 0 11-.708-.708l3-3a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 3.207V11a.5.5 0 01-1 0z"/></svg>\`,
+  signout: html\`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.854 8.354a.5.5 0 000-.708l-3-3a.5.5 0 10-.708.708L10.293 7.5H4a.5.5 0 000 1h6.293l-2.147 2.146a.5.5 0 00.708.708l3-3z"/><path d="M14.5 1a.5.5 0 01.5.5v13a.5.5 0 01-1 0v-13a.5.5 0 01.5-.5z"/></svg>\`,
+  search: html\`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/></svg>\`,
+  chevLeft: html\`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 010 .708L5.707 8l5.647 5.646a.5.5 0 01-.708.708l-6-6a.5.5 0 010-.708l6-6a.5.5 0 01.708 0z"/></svg>\`,
+  chevRight: html\`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 01.708 0l6 6a.5.5 0 010 .708l-6 6a.5.5 0 01-.708-.708L10.293 8 4.646 2.354a.5.5 0 010-.708z"/></svg>\`,
+  db: html\`<svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><ellipse cx="8" cy="3.5" rx="5.5" ry="2"/><path d="M13.5 5.5c0 1.1-2.46 2-5.5 2s-5.5-.9-5.5-2"/><path d="M2.5 3.5v9c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-9" fill="none" stroke="currentColor" stroke-width="1"/><path d="M13.5 8.5c0 1.1-2.46 2-5.5 2s-5.5-.9-5.5-2" fill="none" stroke="currentColor" stroke-width="1"/></svg>\`,
+};
 
-// ---- URL hash sync ----
-function syncToHash() {
-  if (currentTable) {
-    window.location.hash = currentPage > 1 ? currentTable + '/' + currentPage : currentTable;
-  } else {
-    window.location.hash = '';
-  }
-}
-
-function readFromHash() {
-  const h = window.location.hash.slice(1);
-  if (!h) return;
-  const parts = h.split('/');
-  currentTable = decodeURIComponent(parts[0]);
-  currentPage = parts[1] ? parseInt(parts[1], 10) || 1 : 1;
-}
-
-// ---- SSE for live updates ----
-let evtSource = null;
-let _rowsDebounce = null;
-let _navDirty = false;
-function connectSSE() {
-  if (evtSource) evtSource.close();
-  evtSource = new EventSource('/_/api/events?_token=' + TOKEN);
-
-  // Initial snapshot: table counts
-  evtSource.addEventListener('snapshot', (e) => {
-    try {
-      const { tableCounts } = JSON.parse(e.data);
-      if (tableCounts && tablesCache) {
-        for (const t of tablesCache) {
-          if (tableCounts[t.name] !== undefined) t.rowCount = tableCounts[t.name];
-        }
-        renderNav();
-      }
-    } catch {}
-  });
-
-  // Incremental change events
-  evtSource.addEventListener('change', (e) => {
-    try {
-      const evt = JSON.parse(e.data);
-
-      // Update nav counts incrementally (O(1), no server recalc)
-      if (tablesCache) {
-        const tbl = tablesCache.find(t => t.name === evt.table);
-        if (tbl) {
-          if (evt.op === 'insert') tbl.rowCount++;
-          else if (evt.op === 'delete') tbl.rowCount = Math.max(0, tbl.rowCount - 1);
-          // Batch nav DOM update with rAF
-          if (!_navDirty) {
-            _navDirty = true;
-            requestAnimationFrame(() => {
-              renderNav();
-              _navDirty = false;
-            });
-          }
-        }
-      }
-
-      invalidateRefCache(evt.table);
-
-      // Debounce row refresh when viewing the changed table
-      if (currentTable && evt.table === currentTable) {
-        if (_rowsDebounce) clearTimeout(_rowsDebounce);
-        _rowsDebounce = setTimeout(() => {
-          _rowsDebounce = null;
-          loadRows(true).then(() => {
-            const rowEl = document.querySelector('tr[data-id="' + CSS.escape(evt.rowId) + '"]');
-            if (rowEl) {
-              rowEl.classList.add('flash-' + evt.op);
-              setTimeout(() => rowEl.classList.remove('flash-' + evt.op), 800);
-            }
-          });
-        }, 500);
-      }
-    } catch {}
-  });
-
-  evtSource.onerror = () => {
-    // Reconnect after 3s
-    evtSource.close();
-    setTimeout(connectSSE, 3000);
-  };
-}
-
-// ---- Tables ----
-async function loadTables(silent) {
-  try {
-    const data = await api('/tables');
-    tablesCache = data.tables;
-    renderNav();
-  } catch(err) {
-    if (!silent) throw err;
-  }
-}
-
-function renderNav() {
-  const nav = document.getElementById('nav-tables');
-  // Fast path: if buttons already exist, just update counts and active state in-place
-  const existing = nav.querySelectorAll('.nav-btn');
-  if (existing.length === tablesCache.length) {
-    let match = true;
-    for (let i = 0; i < tablesCache.length; i++) {
-      if (existing[i].dataset.table !== tablesCache[i].name) { match = false; break; }
-    }
-    if (match) {
-      for (let i = 0; i < tablesCache.length; i++) {
-        const btn = existing[i];
-        const countEl = btn.querySelector('.count');
-        if (countEl) countEl.textContent = tablesCache[i].rowCount;
-        btn.classList.toggle('active', tablesCache[i].name === currentTable);
-      }
-      return;
-    }
-  }
-  // Full rebuild only when table list changes
-  nav.innerHTML = tablesCache.map(t => {
-    const active = t.name === currentTable ? ' active' : '';
-    return '<button class="nav-btn' + active + '" data-table="' + escapeHtml(t.name) + '" onclick="selectTable(this.dataset.table)">' +
-      escapeHtml(t.name) + ' <span class="count">' + t.rowCount + '</span></button>';
-  }).join('');
-}
-
-// ---- Table selection ----
-async function selectTable(name) {
-  currentTable = name;
-  currentPage = 1;
-  syncToHash();
-  renderNav();
-  await loadRows();
-}
-
-// ---- Rows ----
-async function loadRows(silent) {
-  if (!currentTable) return;
-  try {
-    const data = await api('/tables/' + currentTable + '/rows?page=' + currentPage + '&limit=50');
-    rowsCache = data.rows || [];
-    renderContent(data);
-  } catch(err) {
-    if (!silent) throw err;
-  }
-}
-
-function escapeHtml(s) {
-  if (s == null) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function getTableSchema() {
-  const t = tablesCache.find(t => t.name === currentTable);
+// ── Helpers ──
+function getTableSchema(tables, tableName) {
+  const t = tables.find(t => t.name === tableName);
   return t ? t.schema : null;
 }
-
-function isReadOnly(col) {
-  const schema = getTableSchema();
-  if (!schema || !schema[col]) return false;
-  const f = schema[col];
-  return f.type === 'bcrypt';
-}
-
-function isAutoField(col) {
-  // Primary key (first column) is typically autogenerated
-  const schema = getTableSchema();
+function isAutoField(schema, col) {
   if (!schema) return false;
-  const cols = Object.keys(schema);
-  return cols[0] === col;
+  return Object.keys(schema)[0] === col;
+}
+function isReadOnly(schema, col) {
+  if (!schema || !schema[col]) return false;
+  return schema[col].type === 'bcrypt';
+}
+function truncate(s, n = 60) {
+  if (s == null) return '';
+  const str = String(s);
+  return str.length > n ? str.slice(0, n) + '...' : str;
 }
 
-function renderContent(data) {
-  const content = document.getElementById('content');
-  const schema = getTableSchema();
-  const schemaCols = schema ? Object.keys(schema) : [];
-  const cols = schemaCols.length > 0 ? schemaCols : (data.rows.length > 0 ? Object.keys(data.rows[0]) : []);
+// ── Components ──
 
-  let html = '<div class="table-header"><h2>' + escapeHtml(currentTable) + '</h2>';
-  html += '<div class="table-actions">';
-  html += '<span class="meta">Page ' + data.page + '/' + data.pages + ' (' + data.total + ' rows)</span>';
-  html += '<button onclick="showCreateForm()" class="btn-create">+ New Row</button>';
-  html += '</div></div>';
+function Sidebar({ tables, currentTable, onSelect, onBackup, onRestore, onLogout }) {
+  return html\`
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo-sm">\${icons.db}<span>flop</span></div>
+      </div>
+      <div class="sidebar-section-label">TABLES</div>
+      <div class="sidebar-tables">
+        \${tables.map(t => html\`
+          <button
+            key=\${t.name}
+            class=\${"sidebar-item" + (t.name === currentTable ? " active" : "")}
+            onClick=\${() => onSelect(t.name)}
+          >
+            <span class="sidebar-item-icon">\${icons.table}</span>
+            <span class="sidebar-item-label">\${t.name}</span>
+            <span class="sidebar-item-count">\${t.rowCount}</span>
+          </button>
+        \`)}
+      </div>
+      <div class="sidebar-footer">
+        <button class="sidebar-action" onClick=\${onBackup}>\${icons.download} Backup</button>
+        <label class="sidebar-action">
+          \${icons.upload} Restore
+          <input type="file" accept=".tar.gz,.gz" onChange=\${onRestore} hidden />
+        </label>
+        <button class="sidebar-action danger" onClick=\${onLogout}>\${icons.signout} Sign Out</button>
+      </div>
+    </div>
+  \`;
+}
 
-  // Create row form (hidden by default)
-  html += '<div id="create-form" class="create-form hidden">';
-  html += '<div class="create-form-header"><strong>New Row</strong><button onclick="hideCreateForm()" class="btn-close">x</button></div>';
-  html += '<div class="create-form-fields">';
-  if (schema) {
-    for (const col of cols) {
-      const f = schema[col];
-      if (!f) continue;
-      // Skip auto-generated fields
-      if (isAutoField(col)) continue;
-      // Skip bcrypt fields in create — they need special handling
-      if (f.type === 'bcrypt') {
-        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + '</span></label>';
-        html += '<input data-col="' + escapeHtml(col) + '" type="password" placeholder="Enter password">';
-        html += '</div>';
-        continue;
-      }
-      if (f.type === 'ref' && f.refTable) {
-        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + ' &rarr; ' + escapeHtml(f.refTable) + '</span></label>';
-        html += '<select data-col="' + escapeHtml(col) + '" data-ref="' + escapeHtml(f.refTable) + '" class="ref-select"><option value="">— loading... —</option></select>';
-        html += '</div>';
-        continue;
-      }
-      if (f.type === 'refMulti' && f.refTable) {
-        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + ' &rarr; ' + escapeHtml(f.refTable) + '</span></label>';
-        html += '<select data-col="' + escapeHtml(col) + '" data-ref="' + escapeHtml(f.refTable) + '" class="ref-select" multiple><option value="">— loading... —</option></select>';
-        html += '</div>';
-        continue;
-      }
-      if (f.type === 'enum' && f.enumValues) {
-        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + '</span></label>';
-        html += '<select data-col="' + escapeHtml(col) + '"><option value="">—</option>';
-        f.enumValues.forEach(function(v) { html += '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>'; });
-        html += '</select></div>';
-        continue;
-      }
-      if (f.type === 'roles' || f.type === 'set' || f.type === 'fileMulti') {
-        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + '</span></label>';
-        html += '<input data-col="' + escapeHtml(col) + '" placeholder="[&quot;value1&quot;,&quot;value2&quot;]">';
-        html += '</div>';
-        continue;
-      }
-      if (f.type === 'json' || f.type === 'vector') {
-        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + '</span></label>';
-        html += '<input data-col="' + escapeHtml(col) + '" placeholder="JSON value">';
-        html += '</div>';
-        continue;
-      }
-      if (f.type === 'boolean') {
-        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + '</span></label>';
-        html += '<select data-col="' + escapeHtml(col) + '"><option value="">—</option><option value="true">true</option><option value="false">false</option></select>';
-        html += '</div>';
-        continue;
-      }
+function EmptyState() {
+  return html\`
+    <div class="empty-state">
+      <div class="empty-icon">\${icons.table}</div>
+      <div class="empty-title">Select a table</div>
+      <div class="empty-desc">Choose a table from the sidebar to browse its data</div>
+    </div>
+  \`;
+}
+
+function CellEditor({ value, field, onCommit, onCancel }) {
+  const ref = useRef(null);
+  const [val, setVal] = useState(value ?? '');
+
+  useEffect(() => {
+    if (ref.current) { ref.current.focus(); if (ref.current.select) ref.current.select(); }
+  }, []);
+
+  const commit = useCallback(() => onCommit(val), [val, onCommit]);
+
+  const onKey = useCallback((e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') onCancel();
+  }, [commit, onCancel]);
+
+  if (field && field.type === 'boolean') {
+    return html\`<select ref=\${ref} class="cell-editor" value=\${val} onChange=\${e => onCommit(e.target.value)} onBlur=\${commit} onKeyDown=\${onKey}>
+      <option value="">null</option>
+      <option value="true">true</option>
+      <option value="false">false</option>
+    </select>\`;
+  }
+
+  if (field && field.type === 'enum' && field.enumValues) {
+    return html\`<select ref=\${ref} class="cell-editor" value=\${val} onChange=\${e => onCommit(e.target.value)} onBlur=\${commit} onKeyDown=\${onKey}>
+      <option value="">--</option>
+      \${field.enumValues.map(v => html\`<option key=\${v} value=\${v}>\${v}</option>\`)}
+    </select>\`;
+  }
+
+  if (field && field.type === 'ref' && field.refTable) {
+    const [options, setOptions] = useState([]);
+    useEffect(() => { fetchRefOptions(field.refTable).then(setOptions); }, [field.refTable]);
+    return html\`<select ref=\${ref} class="cell-editor" value=\${val} onChange=\${e => onCommit(e.target.value)} onBlur=\${commit} onKeyDown=\${onKey}>
+      <option value="">--</option>
+      \${options.map(o => html\`<option key=\${o.id} value=\${o.id}>\${o.id}\${o.label !== o.id ? ' - ' + o.label : ''}</option>\`)}
+    </select>\`;
+  }
+
+  return html\`<input ref=\${ref} class="cell-editor" value=\${val}
+    onInput=\${e => setVal(e.target.value)}
+    onBlur=\${commit}
+    onKeyDown=\${onKey}
+  />\`;
+}
+
+function DataTable({ tableName, tables, onReload }) {
+  const [rows, setRows] = useState([]);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [editing, setEditing] = useState(null); // {pk, col}
+  const [showCreate, setShowCreate] = useState(false);
+  const [createErr, setCreateErr] = useState('');
+  const [search, setSearch] = useState('');
+  const searchTimer = useRef(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const formRef = useRef({});
+
+  const schema = getTableSchema(tables, tableName);
+  const cols = useMemo(() => schema ? Object.keys(schema) : (rows.length > 0 ? Object.keys(rows[0]) : []), [schema, rows]);
+
+  const loadRows = useCallback(async (p, q) => {
+    const pg = p || page;
+    const sq = q !== undefined ? q : searchQuery;
+    const params = new URLSearchParams({ page: pg, limit: 50 });
+    if (sq) params.set('search', sq);
+    const data = await api('/tables/' + tableName + '/rows?' + params);
+    if (data) {
+      setRows(data.rows || []);
+      setTotalPages(data.pages);
+      setTotal(data.total);
+    }
+  }, [tableName, page, searchQuery]);
+
+  useEffect(() => {
+    setPage(1);
+    setSearch('');
+    setSearchQuery('');
+    setShowCreate(false);
+    setEditing(null);
+  }, [tableName]);
+
+  useEffect(() => { loadRows(page, searchQuery); }, [tableName, page, searchQuery]);
+
+  const onSearchInput = useCallback((e) => {
+    const v = e.target.value;
+    setSearch(v);
+    clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => {
+      setSearchQuery(v);
+      setPage(1);
+    }, 300);
+  }, []);
+
+  const commitEdit = useCallback(async (pk, col, newVal) => {
+    setEditing(null);
+    const f = schema ? schema[col] : null;
+    let parsed = newVal;
+    if (f) {
       if (f.type === 'number' || f.type === 'integer' || f.type === 'timestamp') {
-        html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + '</span></label>';
-        html += '<input data-col="' + escapeHtml(col) + '" type="number" placeholder="' + f.type + '">';
-        html += '</div>';
-        continue;
+        parsed = newVal === '' ? null : Number(newVal);
+      } else if (f.type === 'boolean') {
+        parsed = newVal === '' ? null : newVal === 'true';
+      } else if (['json','vector','roles','set','refMulti','fileMulti'].includes(f.type)) {
+        try { parsed = JSON.parse(newVal); } catch { parsed = newVal; }
       }
-      // Default: string, etc.
-      html += '<div class="form-field"><label>' + escapeHtml(col) + ' <span class="field-type">' + f.type + (f.required ? ' *' : '') + '</span></label>';
-      html += '<input data-col="' + escapeHtml(col) + '" placeholder="' + escapeHtml(col) + '">';
-      html += '</div>';
     }
-  }
-  html += '</div>';
-  html += '<div class="create-form-actions"><button onclick="submitCreate()" class="btn-save">Create</button>';
-  html += '<div id="create-error" class="error hidden"></div></div>';
-  html += '</div>';
-
-  // Table
-  html += '<div class="table-wrap"><table><thead><tr>';
-  cols.forEach(c => {
-    const f = schema ? schema[c] : null;
-    const refLabel = f && f.refTable ? ' &rarr; ' + escapeHtml(f.refTable) + '.' + escapeHtml(f.refField || 'id') : '';
-    const typeLabel = f ? ' <span class="col-type">' + f.type + refLabel + '</span>' : '';
-    html += '<th>' + escapeHtml(c) + typeLabel + '</th>';
-  });
-  html += '<th class="actions-col">Actions</th></tr></thead><tbody>';
-
-  if (data.rows.length === 0) {
-    html += '<tr><td colspan="' + (cols.length + 1) + '" class="empty-row">No rows</td></tr>';
-  }
-
-  data.rows.forEach(row => {
-    const pk = row[cols[0]];
-    html += '<tr data-id="' + escapeHtml(pk) + '">';
-    cols.forEach(c => {
-      let val = row[c];
-      const ro = isReadOnly(c) || isAutoField(c);
-      const f = schema ? schema[c] : null;
-      const isRef = f && (f.type === 'ref' || f.type === 'refMulti') && f.refTable;
-      const isObj = typeof val === 'object' && val !== null;
-      const display = isObj ? JSON.stringify(val) : val;
-      const redacted = typeof val === 'string' && val === '[REDACTED]';
-      const truncated = typeof display === 'string' && display.length > 80
-        ? escapeHtml(display.slice(0, 80)) + '...'
-        : escapeHtml(display);
-
-      if (ro || redacted) {
-        html += '<td class="cell-ro">' + (truncated || '<em>null</em>') + '</td>';
-      } else {
-        const refAttr = isRef ? ' data-ref="' + escapeHtml(f.refTable) + '"' : '';
-        html += '<td class="cell-edit' + (isRef ? ' ref-cell' : '') + '" data-pk="' + escapeHtml(pk) + '" data-col="' + escapeHtml(c) + '" data-raw="' + escapeHtml(isObj ? JSON.stringify(val) : String(val ?? '')) + '"' + refAttr + ' onclick="startEdit(this)">';
-        html += (truncated || '<em>null</em>');
-        html += '</td>';
-      }
-    });
-    html += '<td><button data-pk="' + escapeHtml(pk) + '" onclick="deleteRow(this.dataset.pk)" class="btn-sm btn-danger">Delete</button></td>';
-    html += '</tr>';
-  });
-
-  html += '</tbody></table></div>';
-
-  // Pagination
-  if (data.pages > 1) {
-    html += '<div class="pagination">';
-    if (currentPage > 1) html += '<button onclick="prevPage()">Prev</button>';
-    html += '<span>Page ' + data.page + ' of ' + data.pages + '</span>';
-    if (currentPage < data.pages) html += '<button onclick="nextPage()">Next</button>';
-    html += '</div>';
-  }
-
-  content.innerHTML = html;
-  // Populate ref selects and resolve ref cell labels asynchronously
-  populateRefSelects();
-  resolveRefCells();
-}
-
-async function populateRefSelects() {
-  const selects = document.querySelectorAll('select.ref-select');
-  for (const sel of selects) {
-    const refTable = sel.getAttribute('data-ref');
-    if (!refTable) continue;
-    const isMulti = sel.hasAttribute('multiple');
-    const currentVal = sel.getAttribute('data-current') || '';
-    const options = await fetchRefOptions(refTable);
-    sel.innerHTML = '';
-    if (!isMulti) {
-      const empty = document.createElement('option');
-      empty.value = '';
-      empty.textContent = '—';
-      sel.appendChild(empty);
-    }
-    options.forEach(function(opt) {
-      const o = document.createElement('option');
-      o.value = opt.id;
-      o.textContent = opt.id + (opt.label !== opt.id ? ' — ' + opt.label : '');
-      if (currentVal === opt.id) o.selected = true;
-      sel.appendChild(o);
-    });
-  }
-}
-
-async function resolveRefCells() {
-  const cells = document.querySelectorAll('td.ref-cell');
-  // Group by ref table to batch fetches
-  const byTable = {};
-  cells.forEach(function(td) {
-    const ref = td.getAttribute('data-ref');
-    if (!ref) return;
-    if (!byTable[ref]) byTable[ref] = [];
-    byTable[ref].push(td);
-  });
-  for (const refTable of Object.keys(byTable)) {
-    const options = await fetchRefOptions(refTable);
-    const lookup = {};
-    options.forEach(function(opt) { lookup[opt.id] = opt.label; });
-    byTable[refTable].forEach(function(td) {
-      const raw = td.getAttribute('data-raw');
-      if (!raw) return;
-      const label = lookup[raw];
-      if (label && label !== raw) {
-        td.innerHTML = '<span class="ref-id">' + escapeHtml(raw) + '</span> <span class="ref-label">' + escapeHtml(label) + '</span>';
-      }
-    });
-  }
-}
-
-// ---- Inline editing ----
-function startEdit(td) {
-  // If we're already editing this cell, don't restart
-  if (editingCell === td) return;
-  if (editingCell) commitEdit(editingCell);
-  editingCell = td;
-  const raw = td.getAttribute('data-raw');
-  const col = td.getAttribute('data-col');
-  const schema = getTableSchema();
-  const f = schema ? schema[col] : null;
-
-  td.classList.add('editing');
-
-  if (f && f.type === 'boolean') {
-    const cur = raw === 'true' ? 'true' : raw === 'false' ? 'false' : '';
-    const sel = document.createElement('select');
-    sel.className = 'cell-input';
-    ['', 'true', 'false'].forEach(v => {
-      const opt = document.createElement('option');
-      opt.value = v;
-      opt.textContent = v || 'null';
-      if (v === cur) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    sel.onchange = () => commitEdit(td);
-    sel.onblur = () => { td._blurTimer = setTimeout(() => commitEdit(td), 80); };
-    sel.onfocus = () => { clearTimeout(td._blurTimer); };
-    td.textContent = '';
-    td.appendChild(sel);
-    sel.focus();
-    return;
-  }
-
-  if (f && f.type === 'ref' && f.refTable) {
-    const sel = document.createElement('select');
-    sel.className = 'cell-input';
-    const loading = document.createElement('option');
-    loading.value = raw;
-    loading.textContent = raw + ' (loading...)';
-    loading.selected = true;
-    sel.appendChild(loading);
-    sel.onchange = () => commitEdit(td);
-    sel.onblur = () => { td._blurTimer = setTimeout(() => commitEdit(td), 80); };
-    sel.onfocus = () => { clearTimeout(td._blurTimer); };
-    td.textContent = '';
-    td.appendChild(sel);
-    sel.focus();
-    // Load options async
-    fetchRefOptions(f.refTable).then(options => {
-      sel.innerHTML = '';
-      const empty = document.createElement('option');
-      empty.value = '';
-      empty.textContent = '—';
-      sel.appendChild(empty);
-      options.forEach(function(opt) {
-        const o = document.createElement('option');
-        o.value = opt.id;
-        o.textContent = opt.id + (opt.label !== opt.id ? ' — ' + opt.label : '');
-        if (raw === opt.id) o.selected = true;
-        sel.appendChild(o);
-      });
-    });
-    return;
-  }
-
-  if (f && f.type === 'enum' && f.enumValues) {
-    const sel = document.createElement('select');
-    sel.className = 'cell-input';
-    const empty = document.createElement('option');
-    empty.value = '';
-    empty.textContent = '—';
-    sel.appendChild(empty);
-    f.enumValues.forEach(function(v) {
-      const o = document.createElement('option');
-      o.value = v;
-      o.textContent = v;
-      if (raw === v) o.selected = true;
-      sel.appendChild(o);
-    });
-    sel.onchange = () => commitEdit(td);
-    sel.onblur = () => { td._blurTimer = setTimeout(() => commitEdit(td), 80); };
-    sel.onfocus = () => { clearTimeout(td._blurTimer); };
-    td.textContent = '';
-    td.appendChild(sel);
-    sel.focus();
-    return;
-  }
-
-  const inp = document.createElement('input');
-  inp.className = 'cell-input';
-  inp.value = raw;
-  inp.onblur = () => { td._blurTimer = setTimeout(() => commitEdit(td), 80); };
-  inp.onfocus = () => { clearTimeout(td._blurTimer); };
-  inp.onmousedown = (e) => { e.stopPropagation(); };
-  inp.onkeydown = (e) => { if(e.key==='Enter') commitEdit(td); if(e.key==='Escape') cancelEdit(td); };
-  td.textContent = '';
-  td.appendChild(inp);
-  inp.focus();
-  inp.select();
-}
-
-async function commitEdit(td) {
-  if (!td || !td.classList.contains('editing')) return;
-  clearTimeout(td._blurTimer);
-  const input = td.querySelector('input, select');
-  if (!input) return;
-  const newVal = input.value;
-  const oldVal = td.getAttribute('data-raw');
-  const pk = td.getAttribute('data-pk');
-  const col = td.getAttribute('data-col');
-
-  td.classList.remove('editing');
-  editingCell = null;
-
-  if (newVal === oldVal) {
-    await loadRows();
-    return;
-  }
-
-  // Parse value based on schema type
-  const schema = getTableSchema();
-  const f = schema ? schema[col] : null;
-  let parsed = newVal;
-  if (f) {
-    if (f.type === 'number' || f.type === 'integer' || f.type === 'timestamp') {
-      parsed = newVal === '' ? null : Number(newVal);
-    } else if (f.type === 'boolean') {
-      parsed = newVal === '' ? null : newVal === 'true';
-    } else if (f.type === 'json' || f.type === 'vector' || f.type === 'roles' || f.type === 'set' || f.type === 'refMulti' || f.type === 'fileMulti') {
-      try { parsed = JSON.parse(newVal); } catch { parsed = newVal; }
-    }
-  }
-
-  try {
-    const update = {};
-    update[col] = parsed;
-    await api('/tables/' + currentTable + '/rows/' + pk, {
+    await api('/tables/' + tableName + '/rows/' + pk, {
       method: 'PUT',
-      body: JSON.stringify(update)
+      body: JSON.stringify({ [col]: parsed })
     });
-    td.classList.add('flash-update');
-    setTimeout(() => td.classList.remove('flash-update'), 800);
-  } catch(err) {
-    td.classList.add('flash-error');
-    setTimeout(() => td.classList.remove('flash-error'), 800);
-  }
-  await loadRows();
-}
+    loadRows();
+  }, [schema, tableName, loadRows]);
 
-function cancelEdit(td) {
-  td.classList.remove('editing');
-  editingCell = null;
-  loadRows();
-}
+  const deleteRow = useCallback(async (pk) => {
+    if (!confirm('Delete row ' + pk + '?')) return;
+    await api('/tables/' + tableName + '/rows/' + pk, { method: 'DELETE' });
+    loadRows();
+    onReload();
+  }, [tableName, loadRows, onReload]);
 
-// ---- Create row ----
-function showCreateForm() {
-  document.getElementById('create-form').classList.remove('hidden');
-  const first = document.querySelector('#create-form input, #create-form select');
-  if (first) first.focus();
-}
-
-function hideCreateForm() {
-  document.getElementById('create-form').classList.add('hidden');
-  document.getElementById('create-error').classList.add('hidden');
-}
-
-async function submitCreate() {
-  const schema = getTableSchema();
-  if (!schema) return;
-  const cols = Object.keys(schema);
-  const data = {};
-  const errEl = document.getElementById('create-error');
-  errEl.classList.add('hidden');
-
-  for (const col of cols) {
-    if (isAutoField(col)) continue;
-    const input = document.querySelector('#create-form [data-col="' + col + '"]');
-    if (!input) continue;
-
-    const f = schema[col];
-    // Handle multi-select for refMulti
-    if (f.type === 'refMulti' && input.tagName === 'SELECT' && input.multiple) {
-      const selected = Array.from(input.selectedOptions).map(function(o) { return o.value; }).filter(Boolean);
-      if (selected.length > 0) data[col] = selected;
-      continue;
+  const submitCreate = useCallback(async () => {
+    if (!schema) return;
+    setCreateErr('');
+    const data = {};
+    for (const col of Object.keys(schema)) {
+      if (isAutoField(schema, col)) continue;
+      const val = formRef.current[col];
+      if (val === undefined || val === '') continue;
+      const f = schema[col];
+      if (f.type === 'number' || f.type === 'integer' || f.type === 'timestamp') data[col] = Number(val);
+      else if (f.type === 'boolean') data[col] = val === 'true';
+      else if (['json','vector','roles','set','refMulti','fileMulti'].includes(f.type)) {
+        try { data[col] = JSON.parse(val); } catch { data[col] = val; }
+      } else data[col] = val;
     }
-
-    let val = input.value;
-    if (val === '') continue;
-
-    if (f.type === 'number' || f.type === 'integer' || f.type === 'timestamp') {
-      data[col] = Number(val);
-    } else if (f.type === 'boolean') {
-      data[col] = val === 'true';
-    } else if (f.type === 'json' || f.type === 'vector' || f.type === 'roles' || f.type === 'set' || f.type === 'fileMulti') {
-      try { data[col] = JSON.parse(val); } catch { data[col] = val; }
-    } else {
-      data[col] = val;
+    try {
+      await api('/tables/' + tableName + '/rows', { method: 'POST', body: JSON.stringify(data) });
+      setShowCreate(false);
+      formRef.current = {};
+      loadRows();
+      onReload();
+    } catch(err) {
+      setCreateErr(err.message || 'Create failed');
     }
+  }, [schema, tableName, loadRows, onReload]);
+
+  return html\`
+    <div class="panel">
+      <div class="panel-toolbar">
+        <div class="panel-title">
+          <span class="panel-title-icon">\${icons.table}</span>
+          \${tableName}
+          <span class="panel-meta">\${total} rows</span>
+        </div>
+        <div class="panel-actions">
+          <div class="search-box">
+            \${icons.search}
+            <input type="text" placeholder="Search..." value=\${search} onInput=\${onSearchInput} />
+          </div>
+          <button class="btn btn-primary" onClick=\${() => setShowCreate(!showCreate)}>
+            \${icons.plus} New Row
+          </button>
+        </div>
+      </div>
+
+      \${showCreate && html\`
+        <\${CreateForm} schema=\${schema} cols=\${cols} formRef=\${formRef}
+          onSubmit=\${submitCreate} onCancel=\${() => setShowCreate(false)} error=\${createErr} />
+      \`}
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              \${cols.map(c => {
+                const f = schema ? schema[c] : null;
+                const typeStr = f ? f.type + (f.refTable ? ' -> ' + f.refTable : '') : '';
+                return html\`<th key=\${c}>
+                  <span class="th-name">\${c}</span>
+                  \${typeStr && html\`<span class="th-type">\${typeStr}</span>\`}
+                </th>\`;
+              })}
+              <th class="th-actions"></th>
+            </tr>
+          </thead>
+          <tbody>
+            \${rows.length === 0 && html\`
+              <tr><td colspan=\${cols.length + 1} class="empty-row">No rows found</td></tr>
+            \`}
+            \${rows.map(row => {
+              const pk = row[cols[0]];
+              return html\`
+                <tr key=\${pk}>
+                  \${cols.map(c => {
+                    const val = row[c];
+                    const ro = isReadOnly(schema, c) || isAutoField(schema, c);
+                    const f = schema ? schema[c] : null;
+                    const isObj = typeof val === 'object' && val !== null;
+                    const display = isObj ? JSON.stringify(val) : val;
+                    const redacted = val === '[REDACTED]';
+                    const isEditing = editing && editing.pk === String(pk) && editing.col === c;
+
+                    if (isEditing) {
+                      return html\`<td key=\${c} class="td-editing">
+                        <\${CellEditor}
+                          value=\${isObj ? JSON.stringify(val) : String(val ?? '')}
+                          field=\${f}
+                          onCommit=\${(v) => commitEdit(pk, c, v)}
+                          onCancel=\${() => setEditing(null)}
+                        />
+                      </td>\`;
+                    }
+
+                    if (ro || redacted) {
+                      return html\`<td key=\${c} class="td-readonly">\${display != null ? truncate(display) : html\`<span class="null">null</span>\`}</td>\`;
+                    }
+
+                    return html\`<td key=\${c} class="td-editable" onClick=\${() => setEditing({ pk: String(pk), col: c })}>
+                      \${display != null ? truncate(display) : html\`<span class="null">null</span>\`}
+                    </td>\`;
+                  })}
+                  <td class="td-actions">
+                    <button class="btn-icon danger" onClick=\${() => deleteRow(pk)} title="Delete">\${icons.trash}</button>
+                  </td>
+                </tr>
+              \`;
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      \${totalPages > 1 && html\`
+        <div class="pagination">
+          <button class="btn-icon" disabled=\${page <= 1} onClick=\${() => setPage(p => p - 1)}>\${icons.chevLeft}</button>
+          <span class="page-info">Page \${page} of \${totalPages}</span>
+          <button class="btn-icon" disabled=\${page >= totalPages} onClick=\${() => setPage(p => p + 1)}>\${icons.chevRight}</button>
+        </div>
+      \`}
+    </div>
+  \`;
+}
+
+function CreateForm({ schema, cols, formRef, onSubmit, onCancel, error }) {
+  const fields = cols.filter(c => !isAutoField(schema, c));
+  return html\`
+    <div class="create-panel">
+      <div class="create-header">
+        <span>New Row</span>
+        <button class="btn-icon" onClick=\${onCancel}>&times;</button>
+      </div>
+      <div class="create-fields">
+        \${fields.map(col => {
+          const f = schema[col];
+          if (!f) return null;
+          return html\`<\${FormField} key=\${col} col=\${col} field=\${f} formRef=\${formRef} />\`;
+        })}
+      </div>
+      <div class="create-actions">
+        <button class="btn btn-primary" onClick=\${onSubmit}>Create</button>
+        <button class="btn" onClick=\${onCancel}>Cancel</button>
+        \${error && html\`<span class="create-error">\${error}</span>\`}
+      </div>
+    </div>
+  \`;
+}
+
+function FormField({ col, field, formRef }) {
+  const [val, setVal] = useState('');
+  const [refOpts, setRefOpts] = useState([]);
+
+  useEffect(() => { formRef.current[col] = val; }, [val, col]);
+  useEffect(() => {
+    if ((field.type === 'ref' || field.type === 'refMulti') && field.refTable) {
+      fetchRefOptions(field.refTable).then(setRefOpts);
+    }
+  }, [field]);
+
+  const typeLabel = field.type + (field.refTable ? ' -> ' + field.refTable : '') + (field.required ? ' *' : '');
+
+  if (field.type === 'bcrypt') {
+    return html\`<div class="form-field">
+      <label>\${col} <span class="type-badge">\${typeLabel}</span></label>
+      <input type="password" placeholder="Enter password" value=\${val} onInput=\${e => setVal(e.target.value)} />
+    </div>\`;
   }
 
-  try {
-    await api('/tables/' + currentTable + '/rows', {
+  if (field.type === 'boolean') {
+    return html\`<div class="form-field">
+      <label>\${col} <span class="type-badge">\${typeLabel}</span></label>
+      <select value=\${val} onChange=\${e => setVal(e.target.value)}>
+        <option value="">--</option><option value="true">true</option><option value="false">false</option>
+      </select>
+    </div>\`;
+  }
+
+  if (field.type === 'enum' && field.enumValues) {
+    return html\`<div class="form-field">
+      <label>\${col} <span class="type-badge">\${typeLabel}</span></label>
+      <select value=\${val} onChange=\${e => setVal(e.target.value)}>
+        <option value="">--</option>
+        \${field.enumValues.map(v => html\`<option key=\${v} value=\${v}>\${v}</option>\`)}
+      </select>
+    </div>\`;
+  }
+
+  if ((field.type === 'ref') && field.refTable) {
+    return html\`<div class="form-field">
+      <label>\${col} <span class="type-badge">\${typeLabel}</span></label>
+      <select value=\${val} onChange=\${e => setVal(e.target.value)}>
+        <option value="">--</option>
+        \${refOpts.map(o => html\`<option key=\${o.id} value=\${o.id}>\${o.id}\${o.label !== o.id ? ' - ' + o.label : ''}</option>\`)}
+      </select>
+    </div>\`;
+  }
+
+  if (field.type === 'number' || field.type === 'integer' || field.type === 'timestamp') {
+    return html\`<div class="form-field">
+      <label>\${col} <span class="type-badge">\${typeLabel}</span></label>
+      <input type="number" value=\${val} onInput=\${e => setVal(e.target.value)} />
+    </div>\`;
+  }
+
+  return html\`<div class="form-field">
+    <label>\${col} <span class="type-badge">\${typeLabel}</span></label>
+    <input type="text" placeholder=\${col} value=\${val} onInput=\${e => setVal(e.target.value)} />
+  </div>\`;
+}
+
+// ── Main App ──
+function App() {
+  const [tables, setTables] = useState([]);
+  const [currentTable, setCurrentTable] = useState(null);
+  const evtRef = useRef(null);
+
+  const loadTables = useCallback(async () => {
+    const data = await api('/tables');
+    if (data) setTables(data.tables);
+  }, []);
+
+  // SSE
+  useEffect(() => {
+    function connect() {
+      if (evtRef.current) evtRef.current.close();
+      const es = new EventSource('/_/api/events?_token=' + TOKEN);
+      evtRef.current = es;
+
+      es.addEventListener('snapshot', (e) => {
+        try {
+          const { tableCounts } = JSON.parse(e.data);
+          if (tableCounts) {
+            setTables(prev => prev.map(t => tableCounts[t.name] !== undefined ? { ...t, rowCount: tableCounts[t.name] } : t));
+          }
+        } catch {}
+      });
+
+      es.addEventListener('change', (e) => {
+        try {
+          const evt = JSON.parse(e.data);
+          delete refCache[evt.table];
+          setTables(prev => prev.map(t => {
+            if (t.name !== evt.table) return t;
+            let count = t.rowCount;
+            if (evt.op === 'insert') count++;
+            else if (evt.op === 'delete') count = Math.max(0, count - 1);
+            return { ...t, rowCount: count };
+          }));
+        } catch {}
+      });
+
+      es.onerror = () => { es.close(); setTimeout(connect, 3000); };
+    }
+    connect();
+    return () => { if (evtRef.current) evtRef.current.close(); };
+  }, []);
+
+  useEffect(() => { loadTables(); }, []);
+
+  // Hash sync
+  useEffect(() => {
+    function read() {
+      const h = window.location.hash.slice(1);
+      if (h) setCurrentTable(decodeURIComponent(h.split('/')[0]));
+    }
+    read();
+    window.addEventListener('hashchange', read);
+    return () => window.removeEventListener('hashchange', read);
+  }, []);
+
+  const selectTable = useCallback((name) => {
+    setCurrentTable(name);
+    window.location.hash = name;
+  }, []);
+
+  const handleBackup = useCallback(async () => {
+    const res = await fetch('/_/api/backup', { headers: { 'Authorization': 'Bearer ' + TOKEN } });
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'flop-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.tar.gz';
+    a.click();
+  }, []);
+
+  const handleRestore = useCallback(async (e) => {
+    const file = e.target.files[0];
+    if (!file || !confirm('This will REPLACE all data. Continue?')) return;
+    const res = await fetch('/_/api/backup', {
       method: 'POST',
-      body: JSON.stringify(data)
+      headers: { 'Authorization': 'Bearer ' + TOKEN },
+      body: file,
     });
-    hideCreateForm();
-    // Clear inputs
-    document.querySelectorAll('#create-form input, #create-form select').forEach(i => {
-      if (i.tagName === 'SELECT') i.selectedIndex = 0;
-      else i.value = '';
-    });
-    await loadRows();
-    await loadTables();
-  } catch(err) {
-    errEl.textContent = err.message || 'Create failed';
-    errEl.classList.remove('hidden');
-  }
+    const data = await res.json();
+    alert(data.message || data.error || 'Done');
+    window.location.reload();
+  }, []);
+
+  return html\`
+    <\${Sidebar}
+      tables=\${tables}
+      currentTable=\${currentTable}
+      onSelect=\${selectTable}
+      onBackup=\${handleBackup}
+      onRestore=\${handleRestore}
+      onLogout=\${logout}
+    />
+    <div class="main">
+      \${currentTable
+        ? html\`<\${DataTable} key=\${currentTable} tableName=\${currentTable} tables=\${tables} onReload=\${loadTables} />\`
+        : html\`<\${EmptyState} />\`
+      }
+    </div>
+  \`;
 }
 
-// ---- Pagination ----
-function prevPage() { currentPage--; syncToHash(); loadRows(); }
-function nextPage() { currentPage++; syncToHash(); loadRows(); }
-
-// ---- Delete ----
-async function deleteRow(id) {
-  if (!confirm('Delete row ' + id + '?')) return;
-  await api('/tables/' + currentTable + '/rows/' + id, { method: 'DELETE' });
-  await loadRows();
-  await loadTables();
-}
-
-// ---- Backup ----
-async function downloadBackup() {
-  const res = await fetch('/_/api/backup', {
-    headers: { 'Authorization': 'Bearer ' + TOKEN }
-  });
-  const blob = await res.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'flop-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.tar.gz';
-  a.click();
-}
-
-async function uploadBackup(input) {
-  const file = input.files[0];
-  if (!file) return;
-  if (!confirm('This will REPLACE all data. Continue?')) return;
-  const res = await fetch('/_/api/backup', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + TOKEN },
-    body: file,
-  });
-  const data = await res.json();
-  alert(data.message || data.error || 'Done');
-  window.location.reload();
-}
-
-function logout() {
-  localStorage.removeItem('flop_admin_token');
-  localStorage.removeItem('flop_admin_refresh');
-  if (evtSource) evtSource.close();
-  window.location.href = '/_/login';
-}
-
-// ---- Init ----
-readFromHash();
-loadTables().then(() => {
-  if (currentTable) {
-    renderNav();
-    loadRows();
-  }
-  connectSSE();
-});
-window.addEventListener('hashchange', () => {
-  const prev = currentTable;
-  const prevPage = currentPage;
-  readFromHash();
-  if (currentTable !== prev || currentPage !== prevPage) {
-    renderNav();
-    loadRows();
-  }
-});
+render(html\`<\${App} />\`, document.getElementById('app'));
 </script>
 </body></html>`;
 }
 
-const baseCSS = `
+// ── Theme tokens ──
+
+const themeVars = `
+:root {
+  --accent: #0078d4;
+  --accent-hover: #006cbd;
+  --error: #f48771;
+
+  /* Dark theme (default) */
+  --bg: #1e1e1e;
+  --bg-surface: #252526;
+  --bg-hover: #2a2d2e;
+  --bg-active: #37373d;
+  --bg-input: #3c3c3c;
+  --border: #3c3c3c;
+  --border-input: #4a4a4a;
+  --text: #cccccc;
+  --text-heading: #ffffff;
+  --text-muted: #999999;
+  --text-faint: #888888;
+  --text-dimmed: #666666;
+  --text-ghost: #555555;
+  --row-border: #2a2a2a;
+  --danger: #cc6666;
+  --danger-hover-bg: #2d1f1f;
+  --danger-hover-text: #f48771;
+  --scrollbar-thumb: #424242;
+  --scrollbar-thumb-hover: #4a4a4a;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --accent: #0078d4;
+    --accent-hover: #106ebe;
+    --error: #d32f2f;
+
+    --bg: #f3f3f3;
+    --bg-surface: #ffffff;
+    --bg-hover: #e8e8e8;
+    --bg-active: #d6ebff;
+    --bg-input: #ffffff;
+    --border: #e0e0e0;
+    --border-input: #cecece;
+    --text: #333333;
+    --text-heading: #1e1e1e;
+    --text-muted: #666666;
+    --text-faint: #888888;
+    --text-dimmed: #999999;
+    --text-ghost: #aaaaaa;
+    --row-border: #f0f0f0;
+    --danger: #d32f2f;
+    --danger-hover-bg: #fdecea;
+    --danger-hover-text: #c62828;
+    --scrollbar-thumb: #c1c1c1;
+    --scrollbar-thumb-hover: #a8a8a8;
+  }
+}
+`;
+
+// ── Styles ──
+
+const loginCSS = `
+${themeVars}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0a0a0a;color:#e0e0e0;font-size:14px}
-h1{font-size:1.4rem;font-weight:700;letter-spacing:-0.5px}
-h1 .badge{font-size:0.65rem;background:#333;padding:2px 6px;border-radius:4px;vertical-align:middle;color:#888}
-input{width:100%;padding:10px 12px;background:#111;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:14px;margin-bottom:10px}
-input:focus{outline:none;border-color:#555}
-button{cursor:pointer;padding:10px 16px;background:#1a1a2e;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:14px}
-button:hover{background:#252545}
-.error{color:#ff6b6b;font-size:13px;margin-top:8px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.login-container{width:100%;max-width:320px;padding:32px}
+.logo{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:32px}
+.logo-text{font-size:24px;font-weight:700;color:var(--text-heading);letter-spacing:-0.5px}
+.subtitle{text-align:center;color:var(--text-faint);font-size:13px;margin-bottom:20px}
+.field{margin-bottom:16px}
+.field label{display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+.field input{width:100%;padding:8px 10px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:14px;outline:none}
+.field input:focus{border-color:var(--accent)}
+button[type="submit"]{width:100%;padding:10px;background:var(--accent);border:none;border-radius:4px;color:#ffffff;font-size:14px;font-weight:500;cursor:pointer;margin-top:4px}
+button[type="submit"]:hover{background:var(--accent-hover)}
+.error{color:var(--error);font-size:13px;margin-top:12px;text-align:center}
 .hidden{display:none}
-.login-container{max-width:340px;margin:120px auto;padding:32px;background:#111;border:1px solid #222;border-radius:12px}
-.login-container h1{margin-bottom:24px;text-align:center}
 `;
 
 const adminCSS = `
-#app{display:flex;height:100vh}
-nav{width:240px;background:#111;border-right:1px solid #222;padding:16px;display:flex;flex-direction:column;gap:8px;flex-shrink:0}
-nav h1{margin-bottom:16px}
-.nav-btn{display:flex;justify-content:space-between;width:100%;text-align:left;padding:8px 12px;background:transparent;border:1px solid transparent;border-radius:6px;font-size:13px}
-.nav-btn:hover{background:#1a1a1a;border-color:#333}
-.nav-btn.active{background:#1a1a2e;border-color:#333}
-.count{color:#666;font-size:12px}
-.nav-bottom{margin-top:auto;display:flex;flex-direction:column;gap:6px}
-.btn-sm{padding:6px 10px;font-size:12px;text-align:center}
-.btn-danger{color:#ff6b6b;border-color:#3a1a1a}
-.btn-danger:hover{background:#2a1111}
-main{flex:1;overflow:auto;padding:24px}
-.empty{color:#555;text-align:center;padding:80px 0;font-size:15px}
-.empty-row{color:#555;text-align:center;padding:24px 0}
-.table-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-.table-actions{display:flex;align-items:center;gap:12px}
-.meta{color:#666;font-size:13px}
-.btn-create{padding:6px 14px;font-size:12px;background:#1a2e1a;border-color:#2a3a2a;color:#8f8}
-.btn-create:hover{background:#253525}
-.table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;padding:8px 12px;background:#111;border-bottom:1px solid #222;color:#888;font-weight:500;position:sticky;top:0}
-th .col-type{font-weight:400;color:#555;font-size:11px}
-td{padding:8px 12px;border-bottom:1px solid #1a1a1a;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.actions-col{width:80px}
-tr:hover td{background:#111}
-em{color:#444}
-.cell-edit{cursor:pointer;transition:background .15s}
-.cell-edit:hover{background:#1a1a2e!important}
-.cell-ro{color:#777}
-.editing{padding:0!important;background:#0a0a1a!important}
-.cell-input{width:100%;padding:8px 12px;background:#0a0a1a;border:2px solid #3a3a6a;color:#e0e0e0;font-size:13px;font-family:inherit;outline:none;border-radius:0;margin:0}
-select.cell-input{-webkit-appearance:auto;appearance:auto}
-@keyframes flashInsert{0%{background:#1a3a1a}100%{background:transparent}}
-@keyframes flashUpdate{0%{background:#1a1a3a}100%{background:transparent}}
-@keyframes flashDelete{0%{background:#3a1a1a}100%{background:transparent}}
-@keyframes flashError{0%{background:#3a1a1a}100%{background:transparent}}
-.flash-insert td,.flash-insert{animation:flashInsert .8s ease-out}
-.flash-update td,.flash-update{animation:flashUpdate .8s ease-out}
-.flash-delete td,.flash-delete{animation:flashDelete .8s ease-out}
-.flash-error{animation:flashError .8s ease-out}
-.create-form{background:#111;border:1px solid #222;border-radius:8px;padding:16px;margin-bottom:16px}
-.create-form-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.btn-close{padding:4px 8px;font-size:12px;background:transparent;border:none;color:#888;cursor:pointer}
-.btn-close:hover{color:#fff}
-.create-form-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:12px}
-.form-field label{display:block;font-size:12px;color:#888;margin-bottom:4px}
-.form-field .field-type{color:#555}
-.form-field input,.form-field select{margin-bottom:0;padding:8px 10px;font-size:13px}
-.create-form-actions{display:flex;align-items:center;gap:12px}
-.btn-save{padding:8px 20px;font-size:13px;background:#1a2e1a;border-color:#2a3a2a;color:#8f8}
-.btn-save:hover{background:#253525}
-.pagination{display:flex;align-items:center;gap:12px;margin-top:16px;justify-content:center}
-.pagination span{color:#666;font-size:13px}
-.ref-id{color:#666;font-size:11px}
-.ref-label{color:#b0b0e0}
+${themeVars}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px;overflow:hidden}
+#app{display:flex;height:100vh;width:100vw}
+
+/* Sidebar */
+.sidebar{width:240px;background:var(--bg-surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;user-select:none}
+.sidebar-header{padding:12px 16px;display:flex;align-items:center;border-bottom:1px solid var(--border)}
+.logo-sm{display:flex;align-items:center;gap:8px;color:var(--text);font-size:15px;font-weight:600}
+.logo-sm svg{color:var(--accent)}
+.sidebar-section-label{padding:8px 16px 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-faint)}
+.sidebar-tables{flex:1;overflow-y:auto;padding:4px 8px}
+.sidebar-item{display:flex;align-items:center;width:100%;padding:5px 8px;background:none;border:none;border-radius:4px;color:var(--text);font-size:13px;cursor:pointer;gap:6px;text-align:left}
+.sidebar-item:hover{background:var(--bg-hover)}
+.sidebar-item.active{background:var(--bg-active);color:var(--text-heading)}
+.sidebar-item-icon{color:var(--text-faint);display:flex;flex-shrink:0}
+.sidebar-item.active .sidebar-item-icon{color:var(--text)}
+.sidebar-item-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-item-count{color:var(--text-dimmed);font-size:11px;font-variant-numeric:tabular-nums}
+.sidebar-item.active .sidebar-item-count{color:var(--text-muted)}
+.sidebar-footer{border-top:1px solid var(--border);padding:8px;display:flex;flex-direction:column;gap:2px}
+.sidebar-action{display:flex;align-items:center;gap:6px;padding:5px 8px;background:none;border:none;border-radius:4px;color:var(--text-muted);font-size:12px;cursor:pointer;text-align:left}
+.sidebar-action:hover{background:var(--bg-hover);color:var(--text)}
+.sidebar-action.danger{color:var(--danger)}
+.sidebar-action.danger:hover{background:var(--danger-hover-bg);color:var(--danger-hover-text)}
+
+/* Main content */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+
+/* Empty state */
+.empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--text-dimmed)}
+.empty-icon{opacity:0.3}
+.empty-icon svg{width:48px;height:48px}
+.empty-title{font-size:16px;color:var(--text-faint)}
+.empty-desc{font-size:13px;color:var(--text-dimmed)}
+
+/* Panel (table view) */
+.panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
+.panel-toolbar{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0}
+.panel-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--text-heading)}
+.panel-title-icon{color:var(--text-faint);display:flex}
+.panel-meta{color:var(--text-dimmed);font-size:12px;font-weight:400}
+.panel-actions{display:flex;align-items:center;gap:8px}
+
+/* Search */
+.search-box{display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;padding:0 8px}
+.search-box:focus-within{border-color:var(--accent)}
+.search-box svg{color:var(--text-faint);flex-shrink:0}
+.search-box input{background:none;border:none;color:var(--text);font-size:13px;padding:5px 0;outline:none;width:160px}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:12px;cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--bg-hover)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#ffffff}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-icon{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;background:none;border:1px solid transparent;border-radius:4px;color:var(--text-faint);cursor:pointer;padding:0}
+.btn-icon:hover{background:var(--bg-hover);color:var(--text)}
+.btn-icon.danger:hover{background:var(--danger-hover-bg);color:var(--danger-hover-text)}
+.btn-icon:disabled{opacity:0.3;cursor:default;background:none}
+
+/* Table */
+.table-container{flex:1;overflow:auto}
+table{width:100%;border-collapse:collapse}
+thead{position:sticky;top:0;z-index:1}
+th{text-align:left;padding:6px 12px;background:var(--bg-surface);border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap}
+.th-name{color:var(--text)}
+.th-type{color:var(--text-ghost);font-weight:400;font-size:11px;margin-left:4px}
+.th-actions{width:40px}
+td{padding:5px 12px;border-bottom:1px solid var(--row-border);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
+tbody tr:hover{background:var(--bg-hover)}
+.td-editable{cursor:pointer}
+.td-editable:hover{background:var(--bg-active) !important}
+.td-readonly{color:var(--text-faint)}
+.td-editing{padding:0 !important}
+.td-actions{text-align:center}
+.null{color:var(--text-ghost);font-style:italic}
+.empty-row{color:var(--text-dimmed);text-align:center;padding:32px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:13px}
+
+/* Cell editor */
+.cell-editor{width:100%;padding:5px 12px;background:var(--bg);border:1px solid var(--accent);color:var(--text);font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px;outline:none}
+select.cell-editor{appearance:auto}
+
+/* Pagination */
+.pagination{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 16px;background:var(--bg-surface);border-top:1px solid var(--border);flex-shrink:0}
+.page-info{color:var(--text-faint);font-size:12px}
+
+/* Create form */
+.create-panel{background:var(--bg-surface);border-bottom:1px solid var(--border);padding:12px 16px}
+.create-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:13px;font-weight:500;color:var(--text-heading)}
+.create-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:10px}
+.form-field label{display:block;font-size:11px;color:var(--text-muted);margin-bottom:4px}
+.type-badge{color:var(--text-dimmed);font-size:10px}
+.form-field input,.form-field select{width:100%;padding:5px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:3px;color:var(--text);font-size:13px;outline:none}
+.form-field input:focus,.form-field select:focus{border-color:var(--accent)}
+.create-actions{display:flex;align-items:center;gap:8px}
+.create-error{color:var(--error);font-size:12px}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-hover)}
+::-webkit-scrollbar-corner{background:transparent}
 `;
