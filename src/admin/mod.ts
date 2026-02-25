@@ -211,7 +211,23 @@ async function handleListRows(db: Database, tableName: string, url: URL): Promis
   const search = url.searchParams.get("search") ?? "";
   const offset = (page - 1) * limit;
 
-  let rows = await table.scan(10000); // Scan all for total count
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await table.scan(10000);
+  } catch {
+    // Scan can fail during concurrent heavy writes; return empty with a hint
+    return jsonResponse({ rows: [], total: 0, page, pages: 0, limit, busy: true });
+  }
+
+  // Sort by primary key for stable ordering across edits
+  if (rows.length > 0) {
+    const pk = table.def.compiledSchema.fields[0].name;
+    rows.sort((a, b) => {
+      const va = a[pk], vb = b[pk];
+      if (typeof va === "number" && typeof vb === "number") return va - vb;
+      return String(va ?? "").localeCompare(String(vb ?? ""));
+    });
+  }
 
   // Search filter
   if (search) {

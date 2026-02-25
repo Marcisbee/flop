@@ -218,10 +218,6 @@ const icons = {
 };
 
 // ── Helpers ──
-function getTableSchema(tables, tableName) {
-  const t = tables.find(t => t.name === tableName);
-  return t ? t.schema : null;
-}
 function isAutoField(schema, col) {
   if (!schema) return false;
   return Object.keys(schema)[0] === col;
@@ -234,6 +230,27 @@ function truncate(s, n = 60) {
   if (s == null) return '';
   const str = String(s);
   return str.length > n ? str.slice(0, n) + '...' : str;
+}
+
+// ── Toast ──
+let _toastSet = null;
+let _toastId = 0;
+function showToast(message, type = 'success') {
+  if (_toastSet) _toastSet(prev => [...prev, { id: ++_toastId, message, type }]);
+}
+
+function Toasts() {
+  const [items, setItems] = useState([]);
+  _toastSet = setItems;
+  useEffect(() => {
+    if (items.length === 0) return;
+    const t = setTimeout(() => setItems(prev => prev.slice(1)), 2500);
+    return () => clearTimeout(t);
+  }, [items]);
+  if (items.length === 0) return null;
+  return html\`<div class="toast-container">
+    \${items.map(t => html\`<div key=\${t.id} class=\${"toast toast-" + t.type}>\${t.message}</div>\`)}
+  </div>\`;
 }
 
 // ── Components ──
@@ -282,13 +299,14 @@ function EmptyState() {
 
 function CellEditor({ value, field, onCommit, onCancel }) {
   const ref = useRef(null);
+  const done = useRef(false);
   const [val, setVal] = useState(value ?? '');
 
   useEffect(() => {
     if (ref.current) { ref.current.focus(); if (ref.current.select) ref.current.select(); }
   }, []);
 
-  const commit = useCallback(() => onCommit(val), [val, onCommit]);
+  const commit = useCallback(() => { if (done.current) return; done.current = true; onCommit(val); }, [val, onCommit]);
 
   const onKey = useCallback((e) => {
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
@@ -326,7 +344,7 @@ function CellEditor({ value, field, onCommit, onCancel }) {
   />\`;
 }
 
-function DataTable({ tableName, tables, onReload }) {
+function DataTable({ tableName, schema, onReload, sseSignal }) {
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -339,7 +357,6 @@ function DataTable({ tableName, tables, onReload }) {
   const [searchQuery, setSearchQuery] = useState('');
   const formRef = useRef({});
 
-  const schema = getTableSchema(tables, tableName);
   const cols = useMemo(() => schema ? Object.keys(schema) : (rows.length > 0 ? Object.keys(rows[0]) : []), [schema, rows]);
 
   const loadRows = useCallback(async (p, q) => {
@@ -347,12 +364,14 @@ function DataTable({ tableName, tables, onReload }) {
     const sq = q !== undefined ? q : searchQuery;
     const params = new URLSearchParams({ page: pg, limit: 50 });
     if (sq) params.set('search', sq);
-    const data = await api('/tables/' + tableName + '/rows?' + params);
-    if (data) {
-      setRows(data.rows || []);
-      setTotalPages(data.pages);
-      setTotal(data.total);
-    }
+    try {
+      const data = await api('/tables/' + tableName + '/rows?' + params);
+      if (data) {
+        setRows(data.rows || []);
+        setTotalPages(data.pages);
+        setTotal(data.total);
+      }
+    } catch {}
   }, [tableName, page, searchQuery]);
 
   useEffect(() => {
@@ -365,6 +384,15 @@ function DataTable({ tableName, tables, onReload }) {
 
   useEffect(() => { loadRows(page, searchQuery); }, [tableName, page, searchQuery]);
 
+  // Debounced reload when SSE signals changes for this table
+  const sseReloadTimer = useRef(null);
+  useEffect(() => {
+    if (!sseSignal) return;
+    clearTimeout(sseReloadTimer.current);
+    sseReloadTimer.current = setTimeout(() => loadRows(), 500);
+    return () => clearTimeout(sseReloadTimer.current);
+  }, [sseSignal]);
+
   const onSearchInput = useCallback((e) => {
     const v = e.target.value;
     setSearch(v);
@@ -375,8 +403,9 @@ function DataTable({ tableName, tables, onReload }) {
     }, 300);
   }, []);
 
-  const commitEdit = useCallback(async (pk, col, newVal) => {
+  const commitEdit = useCallback(async (pk, col, newVal, oldVal) => {
     setEditing(null);
+    if (newVal === oldVal) return;
     const f = schema ? schema[col] : null;
     let parsed = newVal;
     if (f) {
@@ -388,16 +417,26 @@ function DataTable({ tableName, tables, onReload }) {
         try { parsed = JSON.parse(newVal); } catch { parsed = newVal; }
       }
     }
-    await api('/tables/' + tableName + '/rows/' + pk, {
-      method: 'PUT',
-      body: JSON.stringify({ [col]: parsed })
-    });
+    try {
+      await api('/tables/' + tableName + '/rows/' + pk, {
+        method: 'PUT',
+        body: JSON.stringify({ [col]: parsed })
+      });
+      showToast('Row updated');
+    } catch(err) {
+      showToast(err.message || 'Update failed', 'error');
+    }
     loadRows();
   }, [schema, tableName, loadRows]);
 
   const deleteRow = useCallback(async (pk) => {
     if (!confirm('Delete row ' + pk + '?')) return;
-    await api('/tables/' + tableName + '/rows/' + pk, { method: 'DELETE' });
+    try {
+      await api('/tables/' + tableName + '/rows/' + pk, { method: 'DELETE' });
+      showToast('Row deleted');
+    } catch(err) {
+      showToast(err.message || 'Delete failed', 'error');
+    }
     loadRows();
     onReload();
   }, [tableName, loadRows, onReload]);
@@ -421,9 +460,11 @@ function DataTable({ tableName, tables, onReload }) {
       await api('/tables/' + tableName + '/rows', { method: 'POST', body: JSON.stringify(data) });
       setShowCreate(false);
       formRef.current = {};
+      showToast('Row created');
       loadRows();
       onReload();
     } catch(err) {
+      showToast(err.message || 'Create failed', 'error');
       setCreateErr(err.message || 'Create failed');
     }
   }, [schema, tableName, loadRows, onReload]);
@@ -484,23 +525,18 @@ function DataTable({ tableName, tables, onReload }) {
                     const redacted = val === '[REDACTED]';
                     const isEditing = editing && editing.pk === String(pk) && editing.col === c;
 
-                    if (isEditing) {
-                      return html\`<td key=\${c} class="td-editing">
-                        <\${CellEditor}
-                          value=\${isObj ? JSON.stringify(val) : String(val ?? '')}
-                          field=\${f}
-                          onCommit=\${(v) => commitEdit(pk, c, v)}
-                          onCancel=\${() => setEditing(null)}
-                        />
-                      </td>\`;
-                    }
-
                     if (ro || redacted) {
                       return html\`<td key=\${c} class="td-readonly">\${display != null ? truncate(display) : html\`<span class="null">null</span>\`}</td>\`;
                     }
 
-                    return html\`<td key=\${c} class="td-editable" onClick=\${() => setEditing({ pk: String(pk), col: c })}>
-                      \${display != null ? truncate(display) : html\`<span class="null">null</span>\`}
+                    return html\`<td key=\${c} class=\${"td-editable" + (isEditing ? " td-editing" : "")} onClick=\${() => { if (!isEditing) setEditing({ pk: String(pk), col: c }); }}>
+                      <span class=\${isEditing ? "cell-text hidden" : "cell-text"}>\${display != null ? truncate(display) : html\`<span class="null">null</span>\`}</span>
+                      \${isEditing && html\`<\${CellEditor}
+                        value=\${isObj ? JSON.stringify(val) : String(val ?? '')}
+                        field=\${f}
+                        onCommit=\${(v) => commitEdit(pk, c, v, isObj ? JSON.stringify(val) : String(val ?? ''))}
+                        onCancel=\${() => setEditing(null)}
+                      />\`}
                     </td>\`;
                   })}
                   <td class="td-actions">
@@ -621,8 +657,43 @@ function App() {
     if (data) setTables(data.tables);
   }, []);
 
-  // SSE
+  // SSE change signal — bumped for the currently viewed table so DataTable can debounce-reload
+  const [sseSignal, setSseSignal] = useState(0);
+
+  // SSE — batch rapid events into a single state update per animation frame
   useEffect(() => {
+    const pendingDeltas = {};   // tableName -> net count delta
+    const dirtyRefCache = {};   // tables whose refCache needs clearing
+    let rafId = 0;
+
+    function flushDeltas() {
+      rafId = 0;
+      const deltas = Object.assign({}, pendingDeltas);
+      const dirty = Object.keys(dirtyRefCache);
+      // Clear accumulators
+      for (const k in pendingDeltas) delete pendingDeltas[k];
+      for (const k in dirtyRefCache) delete dirtyRefCache[k];
+      // Invalidate ref cache for changed tables
+      for (const t of dirty) delete refCache[t];
+      // Bump SSE signal so DataTable can debounce-reload
+      if (dirty.length > 0) setSseSignal(c => c + 1);
+      // Single state update for all accumulated changes
+      setTables(prev => {
+        let changed = false;
+        const next = prev.map(t => {
+          const d = deltas[t.name];
+          if (d === undefined || d === 0) return t;
+          changed = true;
+          return { ...t, rowCount: Math.max(0, t.rowCount + d) };
+        });
+        return changed ? next : prev;
+      });
+    }
+
+    function scheduleFlush() {
+      if (!rafId) rafId = requestAnimationFrame(flushDeltas);
+    }
+
     function connect() {
       if (evtRef.current) evtRef.current.close();
       const es = new EventSource('/_/api/events?_token=' + TOKEN);
@@ -640,21 +711,21 @@ function App() {
       es.addEventListener('change', (e) => {
         try {
           const evt = JSON.parse(e.data);
-          delete refCache[evt.table];
-          setTables(prev => prev.map(t => {
-            if (t.name !== evt.table) return t;
-            let count = t.rowCount;
-            if (evt.op === 'insert') count++;
-            else if (evt.op === 'delete') count = Math.max(0, count - 1);
-            return { ...t, rowCount: count };
-          }));
+          dirtyRefCache[evt.table] = 1;
+          if (evt.op === 'insert') pendingDeltas[evt.table] = (pendingDeltas[evt.table] || 0) + 1;
+          else if (evt.op === 'delete') pendingDeltas[evt.table] = (pendingDeltas[evt.table] || 0) - 1;
+          // updates don't change count — still schedule to clear refCache
+          scheduleFlush();
         } catch {}
       });
 
       es.onerror = () => { es.close(); setTimeout(connect, 3000); };
     }
     connect();
-    return () => { if (evtRef.current) evtRef.current.close(); };
+    return () => {
+      if (evtRef.current) evtRef.current.close();
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, []);
 
   useEffect(() => { loadTables(); }, []);
@@ -697,6 +768,12 @@ function App() {
     window.location.reload();
   }, []);
 
+  const currentSchema = useMemo(() => {
+    if (!currentTable) return null;
+    const t = tables.find(t => t.name === currentTable);
+    return t ? t.schema : null;
+  }, [tables, currentTable]);
+
   return html\`
     <\${Sidebar}
       tables=\${tables}
@@ -708,10 +785,11 @@ function App() {
     />
     <div class="main">
       \${currentTable
-        ? html\`<\${DataTable} key=\${currentTable} tableName=\${currentTable} tables=\${tables} onReload=\${loadTables} />\`
+        ? html\`<\${DataTable} key=\${currentTable} tableName=\${currentTable} schema=\${currentSchema} onReload=\${loadTables} sseSignal=\${sseSignal} />\`
         : html\`<\${EmptyState} />\`
       }
     </div>
+    <\${Toasts} />
   \`;
 }
 
@@ -873,13 +951,15 @@ tbody tr:hover{background:var(--bg-hover)}
 .td-editable{cursor:pointer}
 .td-editable:hover{background:var(--bg-active) !important}
 .td-readonly{color:var(--text-faint)}
-.td-editing{padding:0 !important}
+.td-editing{position:relative}
+.cell-text{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cell-text.hidden{visibility:hidden;height:0;overflow:hidden}
 .td-actions{text-align:center}
 .null{color:var(--text-ghost);font-style:italic}
 .empty-row{color:var(--text-dimmed);text-align:center;padding:32px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:13px}
 
 /* Cell editor */
-.cell-editor{width:100%;padding:5px 12px;background:var(--bg);border:1px solid var(--accent);color:var(--text);font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px;outline:none}
+.cell-editor{position:absolute;top:0;left:0;right:0;bottom:0;width:100%;padding:5px 12px;background:var(--bg);border:none;outline:1px solid var(--accent);outline-offset:-1px;color:var(--text);font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
 select.cell-editor{appearance:auto}
 
 /* Pagination */
@@ -896,6 +976,12 @@ select.cell-editor{appearance:auto}
 .form-field input:focus,.form-field select:focus{border-color:var(--accent)}
 .create-actions{display:flex;align-items:center;gap:8px}
 .create-error{color:var(--error);font-size:12px}
+
+/* Toast */
+.toast-container{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;z-index:1000;pointer-events:none}
+.toast{padding:8px 14px;border-radius:4px;font-size:12px;color:#fff;pointer-events:auto}
+.toast-success{background:#16825d}
+.toast-error{background:#c72e2e}
 
 /* Scrollbar */
 ::-webkit-scrollbar{width:8px;height:8px}
