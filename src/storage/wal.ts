@@ -127,6 +127,16 @@ export class WAL {
     await this.file.sync();
   }
 
+  // Write commit marker without fsync (for batched transactions)
+  async commitNoSync(txId: number): Promise<void> {
+    await this.append(txId, WALOp.Commit, new Uint8Array(0));
+  }
+
+  // Fsync the WAL file (called once after batch of commitNoSync calls)
+  async sync(): Promise<void> {
+    await this.file.sync();
+  }
+
   // Replay all entries (for crash recovery)
   async replay(): Promise<WALEntry[]> {
     const entries: WALEntry[] = [];

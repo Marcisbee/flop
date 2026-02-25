@@ -93,6 +93,9 @@ export class TableInstance {
   private pubsub?: PubSub;
   // Async write lock to prevent concurrent page mutations
   private _writeLock: Promise<void> = Promise.resolve();
+  // Transaction batching: skip per-op WAL commit+fsync when true
+  _inTransaction = false;
+  _txWalIds: number[] = [];
 
   private _withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
     const prev = this._writeLock;
@@ -357,7 +360,11 @@ export class TableInstance {
       }
     }
 
-    await this.wal.commit(txId);
+    if (this._inTransaction) {
+      this._txWalIds.push(txId);
+    } else {
+      await this.wal.commit(txId);
+    }
 
     // Publish change event
     this.pubsub?.publish({
@@ -474,7 +481,11 @@ export class TableInstance {
       this.tableFile.markPageDirty(pointer.pageNumber);
     }
 
-    await this.wal.commit(txId);
+    if (this._inTransaction) {
+      this._txWalIds.push(txId);
+    } else {
+      await this.wal.commit(txId);
+    }
 
     this.pubsub?.publish({
       table: this.name,
@@ -522,7 +533,11 @@ export class TableInstance {
       }
     }
 
-    await this.wal.commit(txId);
+    if (this._inTransaction) {
+      this._txWalIds.push(txId);
+    } else {
+      await this.wal.commit(txId);
+    }
 
     this.pubsub?.publish({
       table: this.name,
@@ -532,6 +547,18 @@ export class TableInstance {
     });
 
     return true;
+  }
+
+  async _commitPendingWal(): Promise<void> {
+    // Write all commit markers without fsync
+    for (const txId of this._txWalIds) {
+      await this.wal.commitNoSync(txId);
+    }
+    // Single fsync for all commits
+    if (this._txWalIds.length > 0) {
+      await this.wal.sync();
+    }
+    this._txWalIds = [];
   }
 
   count(): number {
@@ -679,6 +706,7 @@ export class Database {
       const reduceCtx: ReduceContext = {
         db: db._tableProxies!,
         request: ctx.request,
+        transaction: <T>(fn: (tables: Record<string, TableProxy>) => Promise<T>) => db.transaction(fn),
       };
       return handler(reduceCtx, parsedParams);
     });
@@ -701,6 +729,34 @@ export class Database {
     // Track dependent tables for realtime
     v._dependentTables = Object.keys(this.tableDefs);
     return v;
+  }
+
+  // Run multiple operations in a single transaction (one fsync instead of N)
+  async transaction<T>(fn: (db: Record<string, TableProxy>) => Promise<T>): Promise<T> {
+    // Set all tables to transaction mode
+    for (const table of this.tables.values()) {
+      table._inTransaction = true;
+    }
+    try {
+      const result = await fn(this._tableProxies!);
+      // Commit all pending WAL entries (one fsync per table that was written)
+      for (const table of this.tables.values()) {
+        if (table._txWalIds.length > 0) {
+          await table._commitPendingWal();
+        }
+      }
+      return result;
+    } catch (err) {
+      // On error, clear pending IDs without committing
+      for (const table of this.tables.values()) {
+        table._txWalIds = [];
+      }
+      throw err;
+    } finally {
+      for (const table of this.tables.values()) {
+        table._inTransaction = false;
+      }
+    }
   }
 
   async checkpoint(): Promise<void> {
@@ -730,6 +786,7 @@ export class Database {
 export interface ReduceContext {
   db: Record<string, TableProxy>;
   request: RequestContext;
+  transaction<T>(fn: (db: Record<string, TableProxy>) => Promise<T>): Promise<T>;
 }
 
 export interface ViewContext {
