@@ -366,7 +366,8 @@ function renderContent(data) {
   html += '<div class="table-wrap"><table><thead><tr>';
   cols.forEach(c => {
     const f = schema ? schema[c] : null;
-    const typeLabel = f ? ' <span class="col-type">' + f.type + '</span>' : '';
+    const refLabel = f && f.refTable ? ' &rarr; ' + escapeHtml(f.refTable) + '.' + escapeHtml(f.refField || 'id') : '';
+    const typeLabel = f ? ' <span class="col-type">' + f.type + refLabel + '</span>' : '';
     html += '<th>' + escapeHtml(c) + typeLabel + '</th>';
   });
   html += '<th class="actions-col">Actions</th></tr></thead><tbody>';
@@ -381,6 +382,8 @@ function renderContent(data) {
     cols.forEach(c => {
       let val = row[c];
       const ro = isReadOnly(c) || isAutoField(c);
+      const f = schema ? schema[c] : null;
+      const isRef = f && (f.type === 'ref' || f.type === 'refMulti') && f.refTable;
       const isObj = typeof val === 'object' && val !== null;
       const display = isObj ? JSON.stringify(val) : val;
       const redacted = typeof val === 'string' && val === '[REDACTED]';
@@ -391,7 +394,8 @@ function renderContent(data) {
       if (ro || redacted) {
         html += '<td class="cell-ro">' + (truncated || '<em>null</em>') + '</td>';
       } else {
-        html += '<td class="cell-edit" data-pk="' + escapeHtml(pk) + '" data-col="' + escapeHtml(c) + '" data-raw="' + escapeHtml(isObj ? JSON.stringify(val) : String(val ?? '')) + '" onclick="startEdit(this)">';
+        const refAttr = isRef ? ' data-ref="' + escapeHtml(f.refTable) + '"' : '';
+        html += '<td class="cell-edit' + (isRef ? ' ref-cell' : '') + '" data-pk="' + escapeHtml(pk) + '" data-col="' + escapeHtml(c) + '" data-raw="' + escapeHtml(isObj ? JSON.stringify(val) : String(val ?? '')) + '"' + refAttr + ' onclick="startEdit(this)">';
         html += (truncated || '<em>null</em>');
         html += '</td>';
       }
@@ -412,8 +416,9 @@ function renderContent(data) {
   }
 
   content.innerHTML = html;
-  // Populate ref selects asynchronously
+  // Populate ref selects and resolve ref cell labels asynchronously
   populateRefSelects();
+  resolveRefCells();
 }
 
 async function populateRefSelects() {
@@ -437,6 +442,31 @@ async function populateRefSelects() {
       o.textContent = opt.id + (opt.label !== opt.id ? ' — ' + opt.label : '');
       if (currentVal === opt.id) o.selected = true;
       sel.appendChild(o);
+    });
+  }
+}
+
+async function resolveRefCells() {
+  const cells = document.querySelectorAll('td.ref-cell');
+  // Group by ref table to batch fetches
+  const byTable = {};
+  cells.forEach(function(td) {
+    const ref = td.getAttribute('data-ref');
+    if (!ref) return;
+    if (!byTable[ref]) byTable[ref] = [];
+    byTable[ref].push(td);
+  });
+  for (const refTable of Object.keys(byTable)) {
+    const options = await fetchRefOptions(refTable);
+    const lookup = {};
+    options.forEach(function(opt) { lookup[opt.id] = opt.label; });
+    byTable[refTable].forEach(function(td) {
+      const raw = td.getAttribute('data-raw');
+      if (!raw) return;
+      const label = lookup[raw];
+      if (label && label !== raw) {
+        td.innerHTML = '<span class="ref-id">' + escapeHtml(raw) + '</span> <span class="ref-label">' + escapeHtml(label) + '</span>';
+      }
     });
   }
 }
@@ -798,4 +828,6 @@ select.cell-input{-webkit-appearance:auto;appearance:auto}
 .btn-save:hover{background:#253525}
 .pagination{display:flex;align-items:center;gap:12px;margin-top:16px;justify-content:center}
 .pagination span{color:#666;font-size:13px}
+.ref-id{color:#666;font-size:11px}
+.ref-label{color:#b0b0e0}
 `;
