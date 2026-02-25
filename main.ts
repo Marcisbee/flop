@@ -7,6 +7,7 @@ import { createHandler, type ServerConfig } from "./src/server/handler.ts";
 import { AuthService } from "./src/server/auth.ts";
 import { createAdminHandler } from "./src/admin/mod.ts";
 import { generateFromPattern } from "./src/schema.ts";
+import { flattenRoutes, type RouteNode, type FlatPageRoute } from "./src/pages/route.ts";
 
 const DEFAULT_PORT = 1985;
 const DEFAULT_SECRET = "flop-dev-secret-change-in-production";
@@ -38,6 +39,17 @@ export async function startServer(
   // Discover routes from exports
   const routes = discoverRoutes(userModule as Record<string, unknown>);
 
+  // Discover page routes
+  let pageRoutes: FlatPageRoute[] = [];
+  let routeTree: RouteNode | null = null;
+  for (const value of Object.values(userModule)) {
+    if (value && typeof value === "object" && (value as any)._type === "route") {
+      routeTree = value as RouteNode;
+      pageRoutes = flattenRoutes(routeTree);
+      break;
+    }
+  }
+
   // Set up auth service if there's an auth table
   let authService: AuthService | null = null;
   const authTable = db.getAuthTable();
@@ -58,10 +70,29 @@ export async function startServer(
   // Set up admin handler
   const adminHandler = createAdminHandler(db, authService, jwtSecret, setupToken);
 
-  const port = config?.port ?? (Number(Deno.env.get("FLOP_PORT")) || DEFAULT_PORT);
-  const serverConfig: ServerConfig = { port, jwtSecret };
+  // Resolve app directory for static file serving
+  const resolvedPath = new URL(userModulePath, `file://${Deno.cwd()}/`).pathname;
+  const staticDir = resolvedPath.substring(0, resolvedPath.lastIndexOf("/"));
 
-  const handler = createHandler(db, routes, authService, serverConfig, adminHandler);
+  const port = config?.port ?? (Number(Deno.env.get("FLOP_PORT")) || DEFAULT_PORT);
+  const serverConfig: ServerConfig = { port, jwtSecret, staticDir };
+
+  // Bundle client app if pages are defined
+  let clientBundle: { js: Uint8Array; css: Uint8Array } | null = null;
+  if (routeTree && pageRoutes.length > 0) {
+    console.log("  Bundling client app...");
+    const { bundlePages } = await import("./src/pages/bundler.ts");
+    const result = await bundlePages(routeTree, pageRoutes, staticDir);
+    if (result.errors.length > 0) {
+      console.error("  Bundle errors:", result.errors);
+    } else {
+      clientBundle = { js: result.js, css: result.css };
+      console.log(`  Bundle: ${(clientBundle.js.byteLength / 1024).toFixed(1)}KB JS` +
+        (clientBundle.css.byteLength > 0 ? ` + ${(clientBundle.css.byteLength / 1024).toFixed(1)}KB CSS` : ""));
+    }
+  }
+
+  const handler = createHandler(db, routes, authService, serverConfig, adminHandler, pageRoutes, clientBundle);
 
   const setupLine = setupToken
     ? `│                                     │\n│   Setup:   /_/setup?token=${setupToken.slice(0, 6)}... │`
@@ -73,6 +104,7 @@ export async function startServer(
 │   Admin:   http://localhost:${(String(port) + "/_").padEnd(7)} │
 │   Tables:  ${String(db.tables.size).padEnd(25)}│
 │   Routes:  ${String(routes.length).padEnd(25)}│
+│   Pages:   ${String(pageRoutes.length).padEnd(25)}│
 ${setupLine}└─────────────────────────────────────┘
 `);
 
@@ -88,6 +120,10 @@ ${setupLine}└─────────────────────�
         ? `[roles: ${(route.access as any).roles.join(",")}]`
         : "[auth]";
     console.log(`  ${route.method.padEnd(5)} ${route.path} ${access}`);
+  }
+
+  for (const page of pageRoutes) {
+    console.log(`  GET  ${page.pattern} [page]`);
   }
   console.log("");
 

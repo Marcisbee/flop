@@ -58,12 +58,12 @@ export class Flop<T extends { reducers: any; views: any } = { reducers: any; vie
 
     // Proxy-based namespaces
     this.view = new Proxy({} as any, {
-      get: (_: any, name: string) => (params: any) => this.request("GET", `/view/${name}`, params),
+      get: (_: any, name: string) => (params: any) => this.request("GET", `/api/view/${name}`, params),
     });
 
     this.reduce = new Proxy({} as any, {
       get: (_: any, name: string) => (params: any) =>
-        this.request("POST", `/reduce/${name}`, params),
+        this.request("POST", `/api/reduce/${name}`, params),
     });
 
     this.subscribe = new Proxy({} as any, {
@@ -144,7 +144,7 @@ export class Flop<T extends { reducers: any; views: any } = { reducers: any; vie
     }
 
     const qs = searchParams.toString();
-    const url = `${this.host}/view/${viewName}${qs ? `?${qs}` : ""}`;
+    const url = `${this.host}/api/view/${viewName}${qs ? `?${qs}` : ""}`;
 
     return new Subscription<R>(url);
   }

@@ -1,1 +1,7 @@
 /data
+/benchmarks/finance/data
+/benchmarks/sqlite-finance/data
+/examples/whiteboard/data
+/examples/editor/data
+/examples/chat/data
+/examples/blog/data

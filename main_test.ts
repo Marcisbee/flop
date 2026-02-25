@@ -488,10 +488,10 @@ Deno.test("router - discovers reducers and views", () => {
   assertEquals(routes.length, 2);
   assertEquals(routes[0].name, "send_message");
   assertEquals(routes[0].method, "POST");
-  assertEquals(routes[0].path, "/reduce/send_message");
+  assertEquals(routes[0].path, "/api/reduce/send_message");
   assertEquals(routes[1].name, "view_messages");
   assertEquals(routes[1].method, "GET");
-  assertEquals(routes[1].path, "/view/view_messages");
+  assertEquals(routes[1].path, "/api/view/view_messages");
 });
 
 Deno.test("endpoint - roles() sets access policy", () => {

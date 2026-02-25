@@ -19,7 +19,7 @@ export function discoverRoutes(moduleExports: Record<string, unknown>): Route[] 
       routes.push({
         name,
         method: "POST",
-        path: `/reduce/${name}`,
+        path: `/api/reduce/${name}`,
         endpoint: value,
         access: value._access,
       });
@@ -27,7 +27,7 @@ export function discoverRoutes(moduleExports: Record<string, unknown>): Route[] 
       routes.push({
         name,
         method: "GET",
-        path: `/view/${name}`,
+        path: `/api/view/${name}`,
         endpoint: value,
         access: value._access,
       });

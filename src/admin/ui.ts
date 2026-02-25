@@ -179,6 +179,35 @@ async function api(path, opts = {}) {
   return r;
 }
 
+async function apiUpload(path, file) {
+  const form = new FormData();
+  form.append('file', file);
+  const doFetch = () => fetch('/_/api' + path, {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + TOKEN },
+    body: form
+  });
+  let r = await doFetch();
+  if (r.status === 401) {
+    try { await refreshToken(); r = await doFetch(); } catch { return; }
+  }
+  if (r.status === 401 || r.status === 403) { logout(); throw new Error('Unauthorized'); }
+  return r.json();
+}
+
+async function apiDelete(path) {
+  const doFetch = () => fetch('/_/api' + path, {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + TOKEN }
+  });
+  let r = await doFetch();
+  if (r.status === 401) {
+    try { await refreshToken(); r = await doFetch(); } catch { return; }
+  }
+  if (r.status === 401 || r.status === 403) { logout(); throw new Error('Unauthorized'); }
+  return r.json();
+}
+
 function logout() {
   localStorage.removeItem('flop_admin_token');
   localStorage.removeItem('flop_admin_refresh');
@@ -297,7 +326,7 @@ function EmptyState() {
   \`;
 }
 
-function CellEditor({ value, field, onCommit, onCancel }) {
+function CellEditor({ value, field, onCommit, onCancel, tableName, pk, col, onReload }) {
   const ref = useRef(null);
   const done = useRef(false);
   const [val, setVal] = useState(value ?? '');
@@ -312,6 +341,43 @@ function CellEditor({ value, field, onCommit, onCancel }) {
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
     if (e.key === 'Escape') onCancel();
   }, [commit, onCancel]);
+
+  if (field && (field.type === 'fileSingle' || field.type === 'fileMulti')) {
+    const fileRef = useRef(null);
+    const [uploading, setUploading] = useState(false);
+    const accept = field.mimeTypes ? field.mimeTypes.join(',') : '';
+    const doUpload = async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      setUploading(true);
+      try {
+        const res = await apiUpload('/tables/' + tableName + '/rows/' + pk + '/files/' + col, f);
+        if (res.error) { showToast(res.error, 'error'); }
+        else { showToast('File uploaded'); }
+      } catch(err) { showToast(err.message || 'Upload failed', 'error'); }
+      setUploading(false);
+      if (onReload) onReload();
+      onCancel();
+    };
+    const doRemove = async () => {
+      try {
+        await apiDelete('/tables/' + tableName + '/rows/' + pk + '/files/' + col);
+        showToast('File removed');
+      } catch(err) { showToast(err.message || 'Remove failed', 'error'); }
+      if (onReload) onReload();
+      onCancel();
+    };
+    const parsed = typeof value === 'string' ? (() => { try { return JSON.parse(value); } catch { return null; } })() : value;
+    const hasFile = field.type === 'fileSingle' ? (parsed && parsed.name) : (Array.isArray(parsed) && parsed.length > 0);
+    return html\`<div class="file-cell-editor" onClick=\${e => e.stopPropagation()}>
+      \${hasFile && html\`<button class="btn btn-sm file-remove" onClick=\${doRemove}>\${icons.trash} Remove</button>\`}
+      <label class="btn btn-sm btn-primary file-upload-btn">
+        \${uploading ? 'Uploading...' : html\`\${icons.upload} Upload\`}
+        <input ref=\${fileRef} type="file" accept=\${accept} onChange=\${doUpload} hidden />
+      </label>
+      <button class="btn btn-sm" onClick=\${onCancel}>Cancel</button>
+    </div>\`;
+  }
 
   if (field && field.type === 'boolean') {
     return html\`<select ref=\${ref} class="cell-editor" value=\${val} onChange=\${e => onCommit(e.target.value)} onBlur=\${commit} onKeyDown=\${onKey}>
@@ -445,19 +511,33 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     if (!schema) return;
     setCreateErr('');
     const data = {};
+    const pendingFiles = {};
     for (const col of Object.keys(schema)) {
       if (isAutoField(schema, col)) continue;
       const val = formRef.current[col];
-      if (val === undefined || val === '') continue;
       const f = schema[col];
+      // Collect file fields separately
+      if ((f.type === 'fileSingle' || f.type === 'fileMulti') && val instanceof File) {
+        pendingFiles[col] = val;
+        continue;
+      }
+      if (val === undefined || val === '') continue;
       if (f.type === 'number' || f.type === 'integer' || f.type === 'timestamp') data[col] = Number(val);
       else if (f.type === 'boolean') data[col] = val === 'true';
-      else if (['json','vector','roles','set','refMulti','fileMulti'].includes(f.type)) {
+      else if (['json','vector','roles','set','refMulti'].includes(f.type)) {
         try { data[col] = JSON.parse(val); } catch { data[col] = val; }
       } else data[col] = val;
     }
     try {
-      await api('/tables/' + tableName + '/rows', { method: 'POST', body: JSON.stringify(data) });
+      const res = await api('/tables/' + tableName + '/rows', { method: 'POST', body: JSON.stringify(data) });
+      // Upload pending files using the new row's primary key
+      if (res && res.row) {
+        const pk = res.row[Object.keys(schema)[0]];
+        for (const [col, file] of Object.entries(pendingFiles)) {
+          const upRes = await apiUpload('/tables/' + tableName + '/rows/' + pk + '/files/' + col, file);
+          if (upRes && upRes.error) showToast(col + ': ' + upRes.error, 'error');
+        }
+      }
       setShowCreate(false);
       formRef.current = {};
       showToast('Row created');
@@ -520,22 +600,39 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
                     const val = row[c];
                     const ro = isReadOnly(schema, c) || isAutoField(schema, c);
                     const f = schema ? schema[c] : null;
+                    const isFile = f && (f.type === 'fileSingle' || f.type === 'fileMulti');
                     const isObj = typeof val === 'object' && val !== null;
-                    const display = isObj ? JSON.stringify(val) : val;
                     const redacted = val === '[REDACTED]';
                     const isEditing = editing && editing.pk === String(pk) && editing.col === c;
 
+                    // File display
+                    let display;
+                    if (isFile && f.type === 'fileSingle' && val && val.name) {
+                      const isImage = val.mime && val.mime.startsWith('image/');
+                      display = html\`<span class="file-display">\${isImage ? html\`<img class="file-thumb" src=\${val.url} alt=\${val.name} />\` : ''}<a href=\${val.url} target="_blank" class="file-link">\${val.name}</a></span>\`;
+                    } else if (isFile && f.type === 'fileMulti' && Array.isArray(val) && val.length > 0) {
+                      display = val.length + ' file' + (val.length !== 1 ? 's' : '');
+                    } else if (isFile) {
+                      display = null;
+                    } else {
+                      display = isObj ? JSON.stringify(val) : val;
+                    }
+
                     if (ro || redacted) {
-                      return html\`<td key=\${c} class="td-readonly">\${display != null ? truncate(display) : html\`<span class="null">null</span>\`}</td>\`;
+                      return html\`<td key=\${c} class="td-readonly">\${display != null ? truncate(String(display)) : html\`<span class="null">null</span>\`}</td>\`;
                     }
 
                     return html\`<td key=\${c} class=\${"td-editable" + (isEditing ? " td-editing" : "")} onClick=\${() => { if (!isEditing) setEditing({ pk: String(pk), col: c }); }}>
-                      <span class=\${isEditing ? "cell-text hidden" : "cell-text"}>\${display != null ? truncate(display) : html\`<span class="null">null</span>\`}</span>
+                      <span class=\${isEditing ? "cell-text hidden" : "cell-text"}>\${display != null ? (typeof display === 'object' ? display : truncate(String(display))) : html\`<span class="null">null</span>\`}</span>
                       \${isEditing && html\`<\${CellEditor}
                         value=\${isObj ? JSON.stringify(val) : String(val ?? '')}
                         field=\${f}
                         onCommit=\${(v) => commitEdit(pk, c, v, isObj ? JSON.stringify(val) : String(val ?? ''))}
                         onCancel=\${() => setEditing(null)}
+                        tableName=\${tableName}
+                        pk=\${pk}
+                        col=\${c}
+                        onReload=\${loadRows}
                       />\`}
                     </td>\`;
                   })}
@@ -596,6 +693,26 @@ function FormField({ col, field, formRef }) {
   }, [field]);
 
   const typeLabel = field.type + (field.refTable ? ' -> ' + field.refTable : '') + (field.required ? ' *' : '');
+
+  if (field.type === 'fileSingle' || field.type === 'fileMulti') {
+    const accept = field.mimeTypes ? field.mimeTypes.join(',') : '';
+    const [fileName, setFileName] = useState('');
+    const onFile = (e) => {
+      const f = e.target.files[0];
+      if (f) { formRef.current[col] = f; setFileName(f.name); }
+      else { delete formRef.current[col]; setFileName(''); }
+    };
+    return html\`<div class="form-field">
+      <label>\${col} <span class="type-badge">\${typeLabel}</span></label>
+      <div class="file-input-wrap">
+        <label class="btn btn-sm btn-primary file-upload-btn">
+          \${icons.upload} Choose file
+          <input type="file" accept=\${accept} onChange=\${onFile} hidden />
+        </label>
+        \${fileName && html\`<span class="file-input-name">\${fileName}</span>\`}
+      </div>
+    </div>\`;
+  }
 
   if (field.type === 'bcrypt') {
     return html\`<div class="form-field">
@@ -976,6 +1093,18 @@ select.cell-editor{appearance:auto}
 .form-field input:focus,.form-field select:focus{border-color:var(--accent)}
 .create-actions{display:flex;align-items:center;gap:8px}
 .create-error{color:var(--error);font-size:12px}
+
+/* File fields */
+.file-display{display:inline-flex;align-items:center;gap:6px}
+.file-thumb{width:20px;height:20px;object-fit:cover;border-radius:2px;vertical-align:middle}
+.file-link{color:var(--accent);text-decoration:none;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
+.file-link:hover{text-decoration:underline}
+.file-cell-editor{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;gap:4px;padding:2px 8px;background:var(--bg);outline:1px solid var(--accent);outline-offset:-1px;z-index:2}
+.file-upload-btn{cursor:pointer}
+.file-remove{color:var(--danger)}
+.btn-sm{padding:2px 6px;font-size:11px}
+.file-input-wrap{display:flex;align-items:center;gap:8px}
+.file-input-name{color:var(--text);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
 
 /* Toast */
 .toast-container{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;z-index:1000;pointer-events:none}

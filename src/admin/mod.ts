@@ -5,6 +5,8 @@ import type { AuthService } from "../server/auth.ts";
 import { extractBearerToken, verifyJWT, jwtToAuthContext } from "../server/auth.ts";
 import { renderLoginPage, renderAdminPage, renderSetupPage } from "./ui.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
+import { storeFile, mimeFromExtension, validateMimeType, validateMagicBytes } from "../storage/files.ts";
+import type { FileRef } from "../types.ts";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -155,6 +157,16 @@ export function createAdminHandler(
       return handleCreateRow(db, rowsMatch[1], body);
     }
 
+    // File upload: POST /_/api/tables/{table}/rows/{id}/files/{field}
+    const fileMatch = pathname.match(/^\/_\/api\/tables\/([^/]+)\/rows\/([^/]+)\/files\/([^/]+)$/);
+    if (fileMatch && req.method === "POST") {
+      return handleFileUpload(db, fileMatch[1], fileMatch[2], fileMatch[3], req);
+    }
+    // File delete: DELETE /_/api/tables/{table}/rows/{id}/files/{field}
+    if (fileMatch && req.method === "DELETE") {
+      return handleFileDelete(db, fileMatch[1], fileMatch[2], fileMatch[3]);
+    }
+
     const rowMatch = pathname.match(/^\/_\/api\/tables\/([^/]+)\/rows\/([^/]+)$/);
     if (rowMatch) {
       if (req.method === "GET") {
@@ -193,6 +205,7 @@ function handleListTables(db: Database): Response {
           if (f.refTableName) entry.refTable = f.refTableName;
           if (f.refField) entry.refField = f.refField;
           if (f.enumValues) entry.enumValues = f.enumValues;
+          if (f.mimeTypes && f.mimeTypes.length > 0) entry.mimeTypes = f.mimeTypes;
           return [f.name, entry];
         }),
       ),
@@ -397,4 +410,92 @@ async function handleBackupUpload(db: Database, req: Request): Promise<Response>
     const message = err instanceof Error ? err.message : "Restore failed";
     return jsonResponse({ error: message }, 400);
   }
+}
+
+async function handleFileUpload(
+  db: Database,
+  tableName: string,
+  rowId: string,
+  fieldName: string,
+  req: Request,
+): Promise<Response> {
+  const table = db.getTable(tableName);
+  if (!table) return jsonResponse({ error: "Table not found" }, 404);
+
+  const field = table.def.compiledSchema.fieldMap.get(fieldName);
+  if (!field || (field.kind !== "fileSingle" && field.kind !== "fileMulti")) {
+    return jsonResponse({ error: "Field is not a file field" }, 400);
+  }
+
+  const row = await table.get(rowId);
+  if (!row) return jsonResponse({ error: "Row not found" }, 404);
+
+  // Parse multipart form data
+  const contentType = req.headers.get("content-type") ?? "";
+  if (!contentType.includes("multipart/form-data")) {
+    return jsonResponse({ error: "Expected multipart/form-data" }, 400);
+  }
+
+  try {
+    const formData = await req.formData();
+    const file = formData.get("file") as File | null;
+    if (!file) return jsonResponse({ error: "No file provided" }, 400);
+
+    const mime = file.type || mimeFromExtension(file.name);
+
+    // Validate MIME type
+    if (field.mimeTypes && field.mimeTypes.length > 0) {
+      if (!validateMimeType(mime, field.mimeTypes)) {
+        return jsonResponse({ error: `File type ${mime} not allowed. Accepted: ${field.mimeTypes.join(", ")}` }, 400);
+      }
+    }
+
+    const data = new Uint8Array(await file.arrayBuffer());
+
+    // Validate magic bytes
+    if (!validateMagicBytes(data, mime)) {
+      return jsonResponse({ error: "File content does not match declared type" }, 400);
+    }
+
+    const fileRef = await storeFile(db.getDataDir(), tableName, rowId, fieldName, file.name, data, mime);
+
+    // Update row
+    if (field.kind === "fileSingle") {
+      await table.update(rowId, { [fieldName]: fileRef });
+    } else {
+      const existing = ((row as Record<string, unknown>)[fieldName] as FileRef[]) ?? [];
+      await table.update(rowId, { [fieldName]: [...existing, fileRef] });
+    }
+
+    return jsonResponse({ ok: true, file: fileRef });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Upload failed";
+    return jsonResponse({ error: message }, 400);
+  }
+}
+
+async function handleFileDelete(
+  db: Database,
+  tableName: string,
+  rowId: string,
+  fieldName: string,
+): Promise<Response> {
+  const table = db.getTable(tableName);
+  if (!table) return jsonResponse({ error: "Table not found" }, 404);
+
+  const field = table.def.compiledSchema.fieldMap.get(fieldName);
+  if (!field || (field.kind !== "fileSingle" && field.kind !== "fileMulti")) {
+    return jsonResponse({ error: "Field is not a file field" }, 400);
+  }
+
+  const row = await table.get(rowId);
+  if (!row) return jsonResponse({ error: "Row not found" }, 404);
+
+  if (field.kind === "fileSingle") {
+    await table.update(rowId, { [fieldName]: null });
+  } else {
+    await table.update(rowId, { [fieldName]: [] });
+  }
+
+  return jsonResponse({ ok: true });
 }

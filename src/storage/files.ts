@@ -41,7 +41,13 @@ export function validateMimeType(
   allowedMimeTypes: string[],
 ): boolean {
   if (allowedMimeTypes.length === 0) return true;
-  return allowedMimeTypes.includes(declaredMime);
+  return allowedMimeTypes.some((allowed) => {
+    if (allowed === declaredMime) return true;
+    if (allowed.endsWith("/*")) {
+      return declaredMime.startsWith(allowed.slice(0, -1));
+    }
+    return false;
+  });
 }
 
 export function validateMagicBytes(data: Uint8Array, declaredMime: string): boolean {
@@ -59,6 +65,18 @@ export function sanitizeFilename(name: string): string {
     .trim() || "unnamed";
 }
 
+function hashFilename(data: Uint8Array, originalName: string): string {
+  // Simple FNV-1a hash of file contents for unique naming
+  let h = 0x811c9dc5;
+  for (let i = 0; i < data.byteLength; i++) {
+    h ^= data[i];
+    h = Math.imul(h, 0x01000193);
+  }
+  const hash = (h >>> 0).toString(36);
+  const ext = originalName.includes(".") ? originalName.substring(originalName.lastIndexOf(".")).toLowerCase() : "";
+  return hash + ext;
+}
+
 export async function storeFile(
   dataDir: string,
   tableName: string,
@@ -68,20 +86,20 @@ export async function storeFile(
   data: Uint8Array,
   mime: string,
 ): Promise<FileRef> {
-  const safeName = sanitizeFilename(filename);
+  const hashedName = hashFilename(data, filename);
   const dirPath = `${dataDir}/_files/${tableName}/${rowId}/${fieldName}`;
   await Deno.mkdir(dirPath, { recursive: true });
 
-  const filePath = `${dirPath}/${safeName}`;
+  const filePath = `${dirPath}/${hashedName}`;
   await Deno.writeFile(filePath, data);
 
-  const relativePath = `_files/${tableName}/${rowId}/${fieldName}/${safeName}`;
+  const relativePath = `_files/${tableName}/${rowId}/${fieldName}/${hashedName}`;
   return {
     path: relativePath,
-    name: safeName,
+    name: filename,
     size: data.byteLength,
     mime,
-    url: `/${relativePath}`,
+    url: `/api/files/${tableName}/${rowId}/${fieldName}/${hashedName}`,
   };
 }
 

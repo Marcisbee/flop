@@ -7,10 +7,13 @@ import { extractBearerToken, verifyJWT, jwtToAuthContext, type AuthService } fro
 import type { Database } from "../database.ts";
 import { serveFile } from "../storage/files.ts";
 import type { AuthContext, RequestContext } from "../types.ts";
+import type { FlatPageRoute } from "../pages/route.ts";
+import { matchPageRoute, renderHeadConfig, mergeHeadConfigs, type HeadConfig } from "../pages/route.ts";
 
 export interface ServerConfig {
   port?: number;
   jwtSecret: string;
+  staticDir?: string;
 }
 
 export function createHandler(
@@ -19,6 +22,8 @@ export function createHandler(
   authService: AuthService | null,
   config: ServerConfig,
   adminHandler?: (req: Request) => Promise<Response | null>,
+  pageRoutes?: FlatPageRoute[],
+  clientBundle?: { js: Uint8Array; css: Uint8Array } | null,
 ): (req: Request) => Promise<Response> {
   const { jwtSecret } = config;
 
@@ -39,7 +44,7 @@ export function createHandler(
 
     try {
       // Admin panel routes
-      if (pathname.startsWith("/_") && !pathname.startsWith("/_auth") && !pathname.startsWith("/_files") && !pathname.startsWith("/_schema")) {
+      if (pathname.startsWith("/_")) {
         if (adminHandler) {
           const resp = await adminHandler(req);
           if (resp) return addCors(resp, corsHeaders);
@@ -47,76 +52,37 @@ export function createHandler(
         return addCors(jsonResponse({ error: "Not found" }, 404), corsHeaders);
       }
 
-      // File serving
-      if (pathname.startsWith("/_files/")) {
-        const resp = await serveFile(db.getDataDir(), pathname);
+      // All API routes under /api/
+      if (pathname.startsWith("/api/")) {
+        return addCors(await handleApi(req, url, pathname, routes, db, authService, jwtSecret, config), corsHeaders);
+      }
+
+      // Serve bundled client.js / client.css from memory
+      if (pathname === "/assets/client.js" && clientBundle?.js.byteLength && req.method === "GET") {
+        return addCors(new Response(clientBundle.js.buffer as ArrayBuffer, {
+          headers: { "Content-Type": "application/javascript", "Cache-Control": "public, max-age=31536000, immutable" },
+        }), corsHeaders);
+      }
+      if (pathname === "/assets/client.css" && clientBundle?.css.byteLength && req.method === "GET") {
+        return addCors(new Response(clientBundle.css.buffer as ArrayBuffer, {
+          headers: { "Content-Type": "text/css", "Cache-Control": "public, max-age=31536000, immutable" },
+        }), corsHeaders);
+      }
+
+      // Serve static assets from /assets/ prefix
+      if (pathname.startsWith("/assets/") && config.staticDir && req.method === "GET") {
+        const resp = await serveStaticFile(config.staticDir, pathname);
         if (resp) return addCors(resp, corsHeaders);
-        return addCors(jsonResponse({ error: "File not found" }, 404), corsHeaders);
-      }
-
-      // Schema endpoint
-      if (pathname === "/_schema" && req.method === "GET") {
-        return addCors(jsonResponse(generateSchema(routes)), corsHeaders);
-      }
-
-      // Auth endpoints
-      if (pathname.startsWith("/_auth/") && authService) {
-        const resp = await handleAuth(pathname, req, authService);
-        return addCors(resp, corsHeaders);
-      }
-
-      // Multiplexed SSE — single connection for multiple views
-      if (pathname === "/sse" && req.headers.get("accept") === "text/event-stream") {
-        return addCors(
-          handleMultiplexedSSE(req, url, routes, db, jwtSecret),
-          corsHeaders,
-        );
-      }
-
-      // Route matching
-      const route = matchRoute(pathname, routes);
-      if (!route) {
         return addCors(jsonResponse({ error: "Not found" }, 404), corsHeaders);
       }
 
-      // Method check
-      if (route.endpoint instanceof Reducer && req.method !== "POST") {
-        return addCors(jsonResponse({ error: "Method not allowed. Use POST." }, 405), corsHeaders);
-      }
-
-      // Permission enforcement
-      const authResult = enforceAccess(req, route, jwtSecret);
-      if (authResult.denied) {
-        return addCors(authResult.response!, corsHeaders);
-      }
-
-      const requestCtx: RequestContext = {
-        auth: authResult.auth,
-        headers: req.headers,
-        url,
-      };
-
-      // Check for SSE
-      if (req.headers.get("accept") === "text/event-stream" && route.endpoint instanceof View) {
-        return addCors(handleSSE(req, route, requestCtx, db), corsHeaders);
-      }
-
-      // Check for WebSocket
-      if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-        return handleWebSocket(req, route, requestCtx, db, routes, jwtSecret);
-      }
-
-      // Normal HTTP
-      if (route.endpoint instanceof Reducer) {
-        const body = await req.json();
-        const result = await route.endpoint._handler({ request: requestCtx }, body);
-        return addCors(jsonResponse({ ok: true, data: result }), corsHeaders);
-      }
-
-      if (route.endpoint instanceof View) {
-        const params = Object.fromEntries(url.searchParams);
-        const result = await route.endpoint._handler({ request: requestCtx }, params);
-        return addCors(jsonResponse({ ok: true, data: result }), corsHeaders);
+      // Page route matching (SSR shell)
+      if (pageRoutes && pageRoutes.length > 0 && req.method === "GET") {
+        const match = matchPageRoute(pathname, pageRoutes);
+        if (match) {
+          const resp = await handlePageRoute(match.route, match.params, routes, db);
+          return addCors(resp, corsHeaders);
+        }
       }
 
       return addCors(jsonResponse({ error: "Not found" }, 404), corsHeaders);
@@ -127,6 +93,137 @@ export function createHandler(
   };
 }
 
+async function handleApi(
+  req: Request,
+  url: URL,
+  pathname: string,
+  routes: Route[],
+  db: Database,
+  authService: AuthService | null,
+  jwtSecret: string,
+  config: ServerConfig,
+): Promise<Response> {
+  // File serving
+  if (pathname.startsWith("/api/files/")) {
+    const resp = await serveFile(db.getDataDir(), pathname.replace("/api/files/", "/_files/"));
+    if (resp) return resp;
+    return jsonResponse({ error: "File not found" }, 404);
+  }
+
+  // Schema endpoint
+  if (pathname === "/api/schema" && req.method === "GET") {
+    return jsonResponse(generateSchema(routes));
+  }
+
+  // Auth endpoints
+  if (pathname.startsWith("/api/auth/") && authService) {
+    return handleAuth(pathname, req, authService);
+  }
+
+  // Multiplexed SSE — single connection for multiple views
+  if (pathname === "/api/sse" && req.headers.get("accept") === "text/event-stream") {
+    return handleMultiplexedSSE(req, url, routes, db, jwtSecret);
+  }
+
+  // Route matching (views + reducers)
+  const route = matchRoute(pathname, routes);
+  if (!route) {
+    return jsonResponse({ error: "Not found" }, 404);
+  }
+
+  // Method check
+  if (route.endpoint instanceof Reducer && req.method !== "POST") {
+    return jsonResponse({ error: "Method not allowed. Use POST." }, 405);
+  }
+
+  // Permission enforcement
+  const authResult = enforceAccess(req, route, jwtSecret);
+  if (authResult.denied) {
+    return authResult.response!;
+  }
+
+  const requestCtx: RequestContext = {
+    auth: authResult.auth,
+    headers: req.headers,
+    url,
+  };
+
+  // Check for SSE
+  if (req.headers.get("accept") === "text/event-stream" && route.endpoint instanceof View) {
+    return handleSSE(req, route, requestCtx, db);
+  }
+
+  // Check for WebSocket
+  if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+    return handleWebSocket(req, route, requestCtx, db, routes, jwtSecret);
+  }
+
+  // Normal HTTP
+  if (route.endpoint instanceof Reducer) {
+    const body = await req.json();
+    const result = await route.endpoint._handler({ request: requestCtx }, body);
+    return jsonResponse({ ok: true, data: result });
+  }
+
+  if (route.endpoint instanceof View) {
+    const params = Object.fromEntries(url.searchParams);
+    const result = await route.endpoint._handler({ request: requestCtx }, params);
+    return jsonResponse({ ok: true, data: result });
+  }
+
+  return jsonResponse({ error: "Not found" }, 404);
+}
+
+async function handlePageRoute(
+  pageRoute: FlatPageRoute,
+  params: Record<string, string>,
+  routes: Route[],
+  db: Database,
+): Promise<Response> {
+  // Build internal API for head() functions — calls view handlers directly, no HTTP
+  const api = new Proxy({} as Record<string, (params: any) => Promise<any>>, {
+    get: (_: any, name: string) => async (viewParams: any) => {
+      const route = routes.find((r) => r.name === name && r.endpoint instanceof View);
+      if (!route) throw new Error(`View not found: ${name}`);
+      const requestCtx: RequestContext = { auth: null, headers: new Headers(), url: new URL("http://localhost") };
+      return route.endpoint._handler({ request: requestCtx }, viewParams ?? {});
+    },
+  });
+
+  const ctx = { params, api };
+
+  // Run head() from each layer (layout chain), merge results
+  const headConfigs: HeadConfig[] = [];
+  for (const headFn of pageRoute.headChain) {
+    try {
+      const config = await headFn(ctx);
+      headConfigs.push(config);
+    } catch {
+      // Skip failed head functions
+    }
+  }
+
+  const merged = mergeHeadConfigs(headConfigs);
+  const headHtml = renderHeadConfig(merged);
+
+  const routeData = JSON.stringify({ pattern: pageRoute.pattern, params });
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+${headHtml}
+</head>
+<body>
+<div id="root"></div>
+<script>window.__FLOP_ROUTE__=${routeData}</script>
+<script type="module" src="/assets/client.js"></script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
 async function handleAuth(
   pathname: string,
   req: Request,
@@ -135,7 +232,7 @@ async function handleAuth(
   const body = req.method === "POST" ? await req.json() : {};
 
   switch (pathname) {
-    case "/_auth/register": {
+    case "/api/auth/register": {
       const { email, password, name } = body;
       if (!email || !password) {
         return jsonResponse({ error: "Email and password required" }, 400);
@@ -144,7 +241,7 @@ async function handleAuth(
       return jsonResponse(result);
     }
 
-    case "/_auth/password": {
+    case "/api/auth/password": {
       const { email, password } = body;
       if (!email || !password) {
         return jsonResponse({ error: "Email and password required" }, 400);
@@ -153,7 +250,7 @@ async function handleAuth(
       return jsonResponse(result);
     }
 
-    case "/_auth/refresh": {
+    case "/api/auth/refresh": {
       const { refreshToken } = body;
       if (!refreshToken) {
         return jsonResponse({ error: "Refresh token required" }, 400);
@@ -162,9 +259,9 @@ async function handleAuth(
       return jsonResponse(result);
     }
 
-    case "/_auth/verify":
-    case "/_auth/reset-password":
-    case "/_auth/change-email":
+    case "/api/auth/verify":
+    case "/api/auth/reset-password":
+    case "/api/auth/change-email":
       // Placeholder — needs email sending infrastructure
       return jsonResponse({ ok: true, message: "Not yet implemented" });
 
@@ -439,7 +536,6 @@ function handleWebSocket(
   _jwtSecret: string,
 ): Response {
   const { socket, response } = Deno.upgradeWebSocket(req);
-  const encoder = new TextEncoder();
 
   socket.addEventListener("open", () => {
     // Subscribe to all table changes
@@ -512,4 +608,44 @@ function addCors(response: Response, corsHeaders: Record<string, string>): Respo
     response.headers.set(key, value);
   }
   return response;
+}
+
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css",
+  ".js": "application/javascript",
+  ".mjs": "application/javascript",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".map": "application/json",
+};
+
+async function serveStaticFile(dir: string, pathname: string): Promise<Response | null> {
+  // Prevent path traversal
+  const normalized = new URL(pathname, "http://x").pathname;
+  if (normalized.includes("..")) return null;
+
+  // Strip /assets/ prefix — serve from dir root
+  const relative = normalized.startsWith("/assets/") ? normalized.slice(7) : normalized;
+  const filePath = `${dir}${relative}`;
+
+  try {
+    const stat = await Deno.stat(filePath);
+    if (!stat.isFile) return null;
+    const body = await Deno.readFile(filePath);
+    const ext = filePath.substring(filePath.lastIndexOf("."));
+    const contentType = MIME_TYPES[ext] || "application/octet-stream";
+    return new Response(body, {
+      headers: { "Content-Type": contentType },
+    });
+  } catch {
+    return null;
+  }
 }

@@ -24,7 +24,7 @@ export class AuthClient {
   }
 
   async authWithPassword(email: string, password: string): Promise<AuthResult> {
-    const res = await fetch(`${this.host}/_auth/password`, {
+    const res = await fetch(`${this.host}/api/auth/password`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -44,7 +44,7 @@ export class AuthClient {
   }
 
   async register(email: string, password: string, name?: string): Promise<AuthResult> {
-    const res = await fetch(`${this.host}/_auth/register`, {
+    const res = await fetch(`${this.host}/api/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, name }),
@@ -76,7 +76,7 @@ export class AuthClient {
 
     return new Promise((resolve, reject) => {
       const popup = win.open(
-        `${this.host}/_auth/oauth2/${opts.provider}/authorize`,
+        `${this.host}/api/auth/oauth2/${opts.provider}/authorize`,
         "flop_oauth2",
         `width=${width},height=${height},left=${left},top=${top}`,
       );
@@ -111,7 +111,7 @@ export class AuthClient {
   }
 
   async requestVerification(email: string): Promise<void> {
-    const res = await fetch(`${this.host}/_auth/verify`, {
+    const res = await fetch(`${this.host}/api/auth/verify`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -127,7 +127,7 @@ export class AuthClient {
   }
 
   async requestPasswordReset(email: string): Promise<void> {
-    const res = await fetch(`${this.host}/_auth/reset-password`, {
+    const res = await fetch(`${this.host}/api/auth/reset-password`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email }),
@@ -140,7 +140,7 @@ export class AuthClient {
   }
 
   async requestEmailChange(newEmail: string): Promise<void> {
-    const res = await fetch(`${this.host}/_auth/change-email`, {
+    const res = await fetch(`${this.host}/api/auth/change-email`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -159,7 +159,7 @@ export class AuthClient {
     const refreshToken = this.refreshTokenStore.get();
     if (!refreshToken) throw new Error("No refresh token");
 
-    const res = await fetch(`${this.host}/_auth/refresh`, {
+    const res = await fetch(`${this.host}/api/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken }),

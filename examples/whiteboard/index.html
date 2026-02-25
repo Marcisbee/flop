@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Flop Whiteboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0d1117;--bg2:#161b22;--text:#e6edf3;--muted:#7d8590;--accent:#58a6ff;--border:#30363d}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{padding:8px 16px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+header h1{font-size:15px;font-weight:600}
+.toolbar{display:flex;align-items:center;gap:10px}
+.toolbar label{font-size:12px;color:var(--muted)}
+.toolbar input[type=color]{width:28px;height:28px;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;padding:0}
+.toolbar input[type=range]{width:80px;accent-color:var(--accent)}
+.toolbar button{background:var(--bg);border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px}
+.toolbar button:hover{color:var(--text);border-color:var(--muted)}
+.toolbar button.danger{color:#f85149;border-color:#f85149}
+.toolbar button.danger:hover{background:#f8514922}
+.user-info{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+canvas{flex:1;cursor:crosshair;display:block}
+#auth-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:10}
+.auth-box{width:280px}
+.auth-box h2{font-size:18px;margin-bottom:16px;text-align:center}
+.auth-box input{width:100%;padding:8px 10px;margin-bottom:10px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:14px;outline:none}
+.auth-box input:focus{border-color:var(--accent)}
+.auth-box button{width:100%;padding:10px;background:var(--accent);border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:14px;font-weight:500;margin-bottom:8px}
+.auth-box .toggle{text-align:center;font-size:12px;color:var(--muted);cursor:pointer}
+.auth-box .toggle:hover{color:var(--text)}
+.auth-box .error{color:#f85149;font-size:12px;margin-bottom:8px;text-align:center}
+</style>
+</head>
+<body>
+
+<div id="auth-screen">
+  <div class="auth-box">
+    <h2>Flop Whiteboard</h2>
+    <div id="auth-error" class="error" style="display:none"></div>
+    <input id="auth-name" placeholder="Name" style="display:none">
+    <input id="auth-email" placeholder="Email" type="email">
+    <input id="auth-pass" placeholder="Password" type="password">
+    <button id="auth-btn">Sign In</button>
+    <div class="toggle" id="auth-toggle">Don't have an account? Register</div>
+  </div>
+</div>
+
+<header>
+  <h1>Flop Whiteboard</h1>
+  <div class="toolbar">
+    <label>Color</label>
+    <input type="color" id="color-pick" value="#58a6ff">
+    <label>Size</label>
+    <input type="range" id="size-pick" min="1" max="20" value="3">
+    <button id="clear-btn" class="danger">Clear</button>
+  </div>
+  <div class="user-info">
+    <span id="user-name"></span>
+    <button id="logout-btn" style="background:none;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">Logout</button>
+  </div>
+</header>
+
+<canvas id="canvas"></canvas>
+
+<script type="module">
+const API = '';
+let TOKEN = localStorage.getItem('wb_token');
+let USER = JSON.parse(localStorage.getItem('wb_user') || 'null');
+const BOARD_ID = 'default';
+
+// ── Auth ──
+
+let isRegister = false;
+document.getElementById('auth-toggle').onclick = () => {
+  isRegister = !isRegister;
+  document.getElementById('auth-name').style.display = isRegister ? '' : 'none';
+  document.getElementById('auth-btn').textContent = isRegister ? 'Register' : 'Sign In';
+  document.getElementById('auth-toggle').textContent = isRegister
+    ? 'Already have an account? Sign In'
+    : "Don't have an account? Register";
+};
+
+document.getElementById('auth-btn').onclick = async () => {
+  const email = document.getElementById('auth-email').value;
+  const password = document.getElementById('auth-pass').value;
+  const name = document.getElementById('auth-name').value;
+  const errEl = document.getElementById('auth-error');
+  errEl.style.display = 'none';
+  try {
+    const endpoint = isRegister ? '/api/auth/register' : '/api/auth/password';
+    const body = isRegister ? { email, password, name } : { email, password };
+    const r = await fetch(API + endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Auth failed');
+    TOKEN = data.token;
+    USER = data.user;
+    localStorage.setItem('wb_token', TOKEN);
+    localStorage.setItem('wb_user', JSON.stringify(USER));
+    document.getElementById('auth-screen').style.display = 'none';
+    init();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = '';
+  }
+};
+
+document.getElementById('logout-btn').onclick = () => {
+  TOKEN = null; USER = null;
+  localStorage.removeItem('wb_token');
+  localStorage.removeItem('wb_user');
+  document.getElementById('auth-screen').style.display = 'flex';
+};
+
+// ── Canvas ──
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let strokes = [];
+let drawing = false;
+let currentPoints = [];
+
+function resize() {
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+  redraw();
+}
+window.addEventListener('resize', resize);
+
+function redraw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const s of strokes) {
+    drawStroke(s.points, s.color, s.width);
+  }
+  if (currentPoints.length > 1) {
+    drawStroke(currentPoints, document.getElementById('color-pick').value, +document.getElementById('size-pick').value);
+  }
+}
+
+function drawStroke(points, color, width) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i][0], points[i][1]);
+  }
+  ctx.stroke();
+}
+
+function getPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+  const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+  return [Math.round(x), Math.round(y)];
+}
+
+canvas.addEventListener('mousedown', (e) => { drawing = true; currentPoints = [getPos(e)]; });
+canvas.addEventListener('touchstart', (e) => { e.preventDefault(); drawing = true; currentPoints = [getPos(e)]; }, { passive: false });
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!drawing) return;
+  currentPoints.push(getPos(e));
+  redraw();
+});
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (!drawing) return;
+  currentPoints.push(getPos(e));
+  redraw();
+}, { passive: false });
+
+async function endStroke() {
+  if (!drawing) return;
+  drawing = false;
+  if (currentPoints.length < 2) { currentPoints = []; return; }
+  const points = currentPoints;
+  currentPoints = [];
+  const color = document.getElementById('color-pick').value;
+  const width = +document.getElementById('size-pick').value;
+
+  await fetch(API + '/api/reduce/add_stroke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
+    body: JSON.stringify({ boardId: BOARD_ID, points, color, width }),
+  });
+}
+
+canvas.addEventListener('mouseup', endStroke);
+canvas.addEventListener('mouseleave', endStroke);
+canvas.addEventListener('touchend', endStroke);
+
+document.getElementById('clear-btn').onclick = async () => {
+  if (!confirm('Clear the entire board?')) return;
+  await fetch(API + '/api/reduce/clear_board', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
+    body: JSON.stringify({ boardId: BOARD_ID }),
+  });
+};
+
+// ── Realtime ──
+
+function startSSE() {
+  const es = new EventSource(API + '/api/view/get_strokes?boardId=' + BOARD_ID);
+  es.addEventListener('snapshot', (e) => {
+    try { strokes = JSON.parse(e.data); redraw(); } catch {}
+  });
+  es.addEventListener('change', () => {
+    fetch(API + '/api/view/get_strokes?boardId=' + BOARD_ID, {
+      headers: TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {},
+    }).then(r => r.json()).then(d => { strokes = d.data || []; redraw(); }).catch(() => {});
+  });
+  es.onerror = () => { es.close(); setTimeout(startSSE, 3000); };
+}
+
+// ── Init ──
+
+function init() {
+  document.getElementById('user-name').textContent = USER?.name || USER?.email || '';
+  resize();
+  startSSE();
+}
+
+if (TOKEN && USER) {
+  document.getElementById('auth-screen').style.display = 'none';
+  init();
+}
+</script>
+</body>
+</html>
