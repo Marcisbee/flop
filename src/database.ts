@@ -301,15 +301,29 @@ export class TableInstance {
     // Use group commit: buffer WAL in memory, write lock for page safety, then enqueue
     if (this._db) {
       const txBuf: TxWalBuffer = new Map();
-      const result = await this._withWriteLock(() => this._insert(data, txBuf));
+      const events: ChangeEvent[] = [];
+      const result = await this._withWriteLock(() => this._insert(data, txBuf, events));
       if (txBuf.size > 0) await this._db._enqueueCommit(txBuf);
+      this._deferPublish(events);
       return result;
     }
-    return this._withWriteLock(() => this._insert(data));
+    const events: ChangeEvent[] = [];
+    const result = await this._withWriteLock(() => this._insert(data, undefined, events));
+    this._deferPublish(events);
+    return result;
+  }
+
+  // Publish events asynchronously via microtask (don't block the caller)
+  private _deferPublish(events: ChangeEvent[]): void {
+    if (events.length > 0) {
+      const pubsub = this.pubsub;
+      if (pubsub) queueMicrotask(() => { for (const e of events) pubsub.publish(e); });
+    }
   }
 
   // txBuf: when provided, buffer WAL record there instead of writing to disk
-  async _insert(data: Record<string, unknown>, txBuf?: TxWalBuffer): Promise<Record<string, unknown>> {
+  // pendingEvents: when provided, push change events here instead of publishing immediately
+  async _insert(data: Record<string, unknown>, txBuf?: TxWalBuffer, pendingEvents?: ChangeEvent[]): Promise<Record<string, unknown>> {
     const row = { ...data };
 
     // Apply autogenerate and defaults
@@ -402,13 +416,13 @@ export class TableInstance {
       await this.wal.commit(txId);
     }
 
-    // Publish change event
-    this.pubsub?.publish({
-      table: this.name,
-      op: "insert",
-      rowId: pk,
-      data: row,
-    });
+    // Defer change event to caller (outside write lock)
+    const event: ChangeEvent = { table: this.name, op: "insert", rowId: pk, data: row };
+    if (pendingEvents) {
+      pendingEvents.push(event);
+    } else {
+      this.pubsub?.publish(event);
+    }
 
     return row;
   }
@@ -440,14 +454,19 @@ export class TableInstance {
   async update(key: string, updates: Record<string, unknown>): Promise<Record<string, unknown> | null> {
     if (this._db) {
       const txBuf: TxWalBuffer = new Map();
-      const result = await this._withWriteLock(() => this._update(key, updates, txBuf));
+      const events: ChangeEvent[] = [];
+      const result = await this._withWriteLock(() => this._update(key, updates, txBuf, events));
       if (txBuf.size > 0) await this._db._enqueueCommit(txBuf);
+      this._deferPublish(events);
       return result;
     }
-    return this._withWriteLock(() => this._update(key, updates));
+    const events: ChangeEvent[] = [];
+    const result = await this._withWriteLock(() => this._update(key, updates, undefined, events));
+    this._deferPublish(events);
+    return result;
   }
 
-  async _update(key: string, updates: Record<string, unknown>, txBuf?: TxWalBuffer): Promise<Record<string, unknown> | null> {
+  async _update(key: string, updates: Record<string, unknown>, txBuf?: TxWalBuffer, pendingEvents?: ChangeEvent[]): Promise<Record<string, unknown> | null> {
     const existing = await this.get(key);
     if (!existing) return null;
 
@@ -534,12 +553,13 @@ export class TableInstance {
       await this.wal.commit(txId);
     }
 
-    this.pubsub?.publish({
-      table: this.name,
-      op: "update",
-      rowId: key,
-      data: newRow,
-    });
+    // Defer change event to caller (outside write lock)
+    const event: ChangeEvent = { table: this.name, op: "update", rowId: key, data: newRow };
+    if (pendingEvents) {
+      pendingEvents.push(event);
+    } else {
+      this.pubsub?.publish(event);
+    }
 
     return newRow;
   }
@@ -547,14 +567,19 @@ export class TableInstance {
   async delete(key: string): Promise<boolean> {
     if (this._db) {
       const txBuf: TxWalBuffer = new Map();
-      const result = await this._withWriteLock(() => this._delete(key, txBuf));
+      const events: ChangeEvent[] = [];
+      const result = await this._withWriteLock(() => this._delete(key, txBuf, events));
       if (txBuf.size > 0) await this._db._enqueueCommit(txBuf);
+      this._deferPublish(events);
       return result;
     }
-    return this._withWriteLock(() => this._delete(key));
+    const events: ChangeEvent[] = [];
+    const result = await this._withWriteLock(() => this._delete(key, undefined, events));
+    this._deferPublish(events);
+    return result;
   }
 
-  async _delete(key: string, txBuf?: TxWalBuffer): Promise<boolean> {
+  async _delete(key: string, txBuf?: TxWalBuffer, pendingEvents?: ChangeEvent[]): Promise<boolean> {
     const existing = await this.get(key);
     if (!existing) return false;
 
@@ -598,12 +623,13 @@ export class TableInstance {
       await this.wal.commit(txId);
     }
 
-    this.pubsub?.publish({
-      table: this.name,
-      op: "delete",
-      rowId: key,
-      data: existing,
-    });
+    // Defer change event to caller (outside write lock)
+    const event: ChangeEvent = { table: this.name, op: "delete", rowId: key, data: existing };
+    if (pendingEvents) {
+      pendingEvents.push(event);
+    } else {
+      this.pubsub?.publish(event);
+    }
 
     return true;
   }
@@ -821,12 +847,21 @@ export class Database {
   async transaction<T>(fn: (db: Record<string, TableProxy>) => Promise<T>): Promise<T> {
     // Phase 1: Execute fn() with local WAL buffers (no I/O, no locks)
     const txBuf: TxWalBuffer = new Map();
-    const txProxies = createTransactionProxies(this, txBuf);
+    const pendingEvents: ChangeEvent[] = [];
+    const txProxies = createTransactionProxies(this, txBuf, pendingEvents);
     const result = await fn(txProxies);
 
     // Phase 2: If there are WAL records, enqueue for group commit
     if (txBuf.size > 0) {
       await this._enqueueCommit(txBuf);
+    }
+
+    // Phase 3: Publish change events asynchronously (don't block the HTTP response)
+    if (pendingEvents.length > 0) {
+      const pubsub = this.getPubSub();
+      queueMicrotask(() => {
+        for (const e of pendingEvents) pubsub.publish(e);
+      });
     }
 
     return result;
@@ -1003,15 +1038,15 @@ function createTableProxies(db: Database): Record<string, TableProxy> {
 }
 
 // Transaction proxies — use write locks for page safety, buffer WAL into local txBuf
-function createTransactionProxies(db: Database, txBuf: TxWalBuffer): Record<string, TableProxy> {
+function createTransactionProxies(db: Database, txBuf: TxWalBuffer, pendingEvents: ChangeEvent[]): Record<string, TableProxy> {
   const proxies: Record<string, TableProxy> = {};
 
   for (const [name, table] of db.tables) {
     const proxy: any = {
-      insert: (data: Record<string, unknown>) => table._withWriteLock(() => table._insert(data, txBuf)),
+      insert: (data: Record<string, unknown>) => table._withWriteLock(() => table._insert(data, txBuf, pendingEvents)),
       get: (key: string) => table.get(key),
-      update: (key: string, data: Record<string, unknown>) => table._withWriteLock(() => table._update(key, data, txBuf)),
-      delete: (key: string) => table._withWriteLock(() => table._delete(key, txBuf)),
+      update: (key: string, data: Record<string, unknown>) => table._withWriteLock(() => table._update(key, data, txBuf, pendingEvents)),
+      delete: (key: string) => table._withWriteLock(() => table._delete(key, txBuf, pendingEvents)),
       scan: (limit?: number, offset?: number) => table.scan(limit, offset),
       count: () => table.count(),
     };
