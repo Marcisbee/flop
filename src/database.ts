@@ -590,6 +590,7 @@ export class Database {
   private meta!: StoredMeta;
   private pubsub = new PubSub();
   private _opened = false;
+  private _tableProxies: Record<string, TableProxy> | null = null;
 
   constructor(
     private tableDefs: Record<string, TableBuilder<any>>,
@@ -622,6 +623,9 @@ export class Database {
 
     // Save meta (may have new schema versions)
     await writeMetaFile(metaPath, this.meta);
+
+    // Build table proxies once (reused across all requests)
+    this._tableProxies = createTableProxies(this);
   }
 
   getTable(name: string): TableInstance | undefined {
@@ -647,9 +651,8 @@ export class Database {
   ): Reducer<InferParams<P>, R> {
     const db = this;
     return new Reducer(params, (ctx: any, parsedParams: any) => {
-      // Build the context with table proxies
       const reduceCtx: ReduceContext = {
-        db: createTableProxies(db),
+        db: db._tableProxies!,
         request: ctx.request,
       };
       return handler(reduceCtx, parsedParams);
@@ -664,7 +667,7 @@ export class Database {
     const db = this;
     const v = new View(params, (ctx: any, parsedParams: any) => {
       const viewCtx: ViewContext = {
-        db: createTableProxies(db),
+        db: db._tableProxies!,
         request: ctx.request,
       };
       return handler(viewCtx, parsedParams);
@@ -719,50 +722,50 @@ export interface TableProxy {
   [field: string]: any;
 }
 
+function createIndexAccessor(table: TableInstance, fieldName: string) {
+  return {
+    find: (value: unknown) => {
+      const pointer = table.findByIndex([fieldName], value);
+      if (!pointer) return Promise.resolve(null);
+      return table.get(String(value));
+    },
+    findAll: async (value: unknown) => {
+      const pointers = table.findAllByIndex([fieldName], value);
+      const results: Record<string, unknown>[] = [];
+      for (const p of pointers) {
+        const page = await table["tableFile"].getPage(p.pageNumber);
+        const rawData = page.readRow(p.slotIndex);
+        if (rawData) {
+          const { row } = table.serializer.deserialize(rawData, 0);
+          results.push(row);
+        }
+      }
+      return results;
+    },
+  };
+}
+
 function createTableProxies(db: Database): Record<string, TableProxy> {
   const proxies: Record<string, TableProxy> = {};
 
   for (const [name, table] of db.tables) {
-    proxies[name] = new Proxy({} as TableProxy, {
-      get(_target, prop: string) {
-        switch (prop) {
-          case "insert":
-            return (data: Record<string, unknown>) => table.insert(data);
-          case "get":
-            return (key: string) => table.get(key);
-          case "update":
-            return (key: string, data: Record<string, unknown>) => table.update(key, data);
-          case "delete":
-            return (key: string) => table.delete(key);
-          case "scan":
-            return (limit?: number, offset?: number) => table.scan(limit, offset);
-          default: {
-            // Index field access: ctx.db.messages.id.find("...")
-            const indexFields = [prop];
-            return {
-              find: (value: unknown) => {
-                const pointer = table.findByIndex(indexFields, value);
-                if (!pointer) return Promise.resolve(null);
-                return table.get(String(value));
-              },
-              findAll: async (value: unknown) => {
-                const pointers = table.findAllByIndex(indexFields, value);
-                const results: Record<string, unknown>[] = [];
-                for (const p of pointers) {
-                  const page = await table["tableFile"].getPage(p.pageNumber);
-                  const rawData = page.readRow(p.slotIndex);
-                  if (rawData) {
-                    const { row } = table.serializer.deserialize(rawData, 0);
-                    results.push(row);
-                  }
-                }
-                return results;
-              },
-            };
-          }
-        }
-      },
-    });
+    // Pre-bind core methods once
+    const proxy: any = {
+      insert: (data: Record<string, unknown>) => table.insert(data),
+      get: (key: string) => table.get(key),
+      update: (key: string, data: Record<string, unknown>) => table.update(key, data),
+      delete: (key: string) => table.delete(key),
+      scan: (limit?: number, offset?: number) => table.scan(limit, offset),
+    };
+
+    // Pre-build index accessors for all schema fields
+    for (const field of table.def.compiledSchema.fields) {
+      if (!(field.name in proxy)) {
+        proxy[field.name] = createIndexAccessor(table, field.name);
+      }
+    }
+
+    proxies[name] = proxy as TableProxy;
   }
 
   return proxies;

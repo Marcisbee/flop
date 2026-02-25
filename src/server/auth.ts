@@ -33,14 +33,25 @@ function base64urlDecode(str: string): Uint8Array {
   return bytes;
 }
 
-async function hmacSign(data: string, secret: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
+// Cache imported CryptoKey per secret to avoid re-importing on every request
+const keyCache = new Map<string, CryptoKey>();
+
+async function getHmacKey(secret: string): Promise<CryptoKey> {
+  let key = keyCache.get(secret);
+  if (key) return key;
+  key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
+  keyCache.set(secret, key);
+  return key;
+}
+
+async function hmacSign(data: string, secret: string): Promise<string> {
+  const key = await getHmacKey(secret);
   const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(data));
   return base64url(new Uint8Array(signature));
 }
