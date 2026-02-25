@@ -34,6 +34,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Login failed');
     localStorage.setItem('flop_admin_token', data.token);
+    if (data.refreshToken) localStorage.setItem('flop_admin_refresh', data.refreshToken);
     window.location.href = '/_';
   } catch(err) {
     errEl.textContent = err.message;
@@ -122,17 +123,50 @@ export function renderAdminPage(): string {
   </main>
 </div>
 <script>
-const TOKEN = localStorage.getItem('flop_admin_token');
+let TOKEN = localStorage.getItem('flop_admin_token');
 if (!TOKEN) window.location.href = '/_/login';
 
-const api = (path, opts = {}) => fetch('/_/api' + path, {
-  ...opts,
-  headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json', ...opts.headers }
-}).then(async r => {
+let _refreshing = null;
+async function refreshToken() {
+  if (_refreshing) return _refreshing;
+  const rt = localStorage.getItem('flop_admin_refresh');
+  if (!rt) { logout(); throw new Error('No refresh token'); }
+  _refreshing = fetch('/_/api/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refreshToken: rt })
+  }).then(async r => {
+    _refreshing = null;
+    if (!r.ok) { logout(); throw new Error('Refresh failed'); }
+    const data = await r.json();
+    TOKEN = data.token;
+    localStorage.setItem('flop_admin_token', data.token);
+    return data.token;
+  }).catch(err => {
+    _refreshing = null;
+    throw err;
+  });
+  return _refreshing;
+}
+
+async function api(path, opts = {}) {
+  const doFetch = () => fetch('/_/api' + path, {
+    ...opts,
+    headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json', ...opts.headers }
+  });
+  let r = await doFetch();
+  if (r.status === 401) {
+    try {
+      await refreshToken();
+      r = await doFetch();
+    } catch {
+      return;
+    }
+  }
   if (r.status === 401 || r.status === 403) { logout(); throw new Error('Unauthorized'); }
   if (r.headers.get('content-type')?.includes('json')) return r.json();
   return r;
-});
+}
 
 let currentTable = null;
 let currentPage = 1;
@@ -732,6 +766,7 @@ async function uploadBackup(input) {
 
 function logout() {
   localStorage.removeItem('flop_admin_token');
+  localStorage.removeItem('flop_admin_refresh');
   if (evtSource) evtSource.close();
   window.location.href = '/_/login';
 }

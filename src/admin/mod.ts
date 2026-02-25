@@ -94,9 +94,27 @@ export function createAdminHandler(
           return jsonResponse({ error: "Insufficient privileges. Requires superadmin role." }, 403);
         }
 
-        return jsonResponse({ token: result.token });
+        return jsonResponse({ token: result.token, refreshToken: result.refreshToken });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Login failed";
+        return jsonResponse({ error: message }, 401);
+      }
+    }
+
+    // Refresh token (public — uses refresh token instead of access token)
+    if (pathname === "/_/api/refresh" && req.method === "POST") {
+      if (!authService) {
+        return jsonResponse({ error: "Auth not configured" }, 400);
+      }
+      try {
+        const { refreshToken } = await req.json();
+        if (!refreshToken) {
+          return jsonResponse({ error: "Refresh token required" }, 400);
+        }
+        const result = await authService.refresh(refreshToken);
+        return jsonResponse({ token: result.token });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Token refresh failed";
         return jsonResponse({ error: message }, 401);
       }
     }

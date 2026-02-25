@@ -24,7 +24,7 @@ export const db = flop({ users, messages });
 
 export const send_message = db.reduce(
   { text: t.string() },
-  async (ctx, { text }) => {
+  (ctx, { text }) => {
     if (!ctx.request.auth) {
       throw new Error("Not logged in")
     }
@@ -35,7 +35,7 @@ export const send_message = db.reduce(
 
 export const get_messages = db.view(
   {},
-  async (ctx) => {
+  (ctx) => {
     return ctx.db.messages.scan(100);
   },
 ).public();
