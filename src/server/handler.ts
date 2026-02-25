@@ -246,33 +246,46 @@ function handleSSE(
 
   const stream = new ReadableStream({
     start(controller) {
-      // Send initial data
-      const sendData = async () => {
+      let closed = false;
+
+      const enqueue = (eventType: string, payload: unknown) => {
+        if (closed) return;
         try {
-          const result = await view._handler({ request: requestCtx }, params);
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify(result)}\n\n`),
+            encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`),
           );
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Error";
-          controller.enqueue(
-            encoder.encode(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`),
-          );
+        } catch {
+          // Controller closed
         }
       };
 
-      sendData();
+      // Send initial full snapshot from the view handler
+      (async () => {
+        try {
+          const result = await view._handler({ request: requestCtx }, params);
+          enqueue("snapshot", result);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Error";
+          enqueue("error", { error: msg });
+        }
+      })();
 
-      // Subscribe to table changes
+      // Push change events directly — zero cost per subscriber
       const unsubscribe = db.getPubSub().subscribe(
         view._dependentTables,
-        () => {
-          sendData();
+        (event) => {
+          enqueue("change", {
+            table: event.table,
+            op: event.op,
+            rowId: event.rowId,
+            data: event.data,
+          });
         },
       );
 
       // Clean up on disconnect
       req.signal.addEventListener("abort", () => {
+        closed = true;
         unsubscribe();
         try {
           controller.close();

@@ -218,28 +218,66 @@ function readFromHash() {
 
 // ---- SSE for live updates ----
 let evtSource = null;
+let _rowsDebounce = null;
+let _navDirty = false;
 function connectSSE() {
   if (evtSource) evtSource.close();
   evtSource = new EventSource('/_/api/events?_token=' + TOKEN);
-  evtSource.onmessage = (e) => {
+
+  // Initial snapshot: table counts
+  evtSource.addEventListener('snapshot', (e) => {
     try {
-      const evt = JSON.parse(e.data);
-      // Refresh sidebar counts
-      loadTables(true);
-      invalidateRefCache(evt.table);
-      // If the changed table is the one we're viewing, flash and refresh
-      if (currentTable && evt.table === currentTable) {
-        loadRows(true).then(() => {
-          // Flash the affected row
-          const rowEl = document.querySelector('tr[data-id="' + CSS.escape(evt.rowId) + '"]');
-          if (rowEl) {
-            rowEl.classList.add('flash-' + evt.op);
-            setTimeout(() => rowEl.classList.remove('flash-' + evt.op), 800);
-          }
-        });
+      const { tableCounts } = JSON.parse(e.data);
+      if (tableCounts && tablesCache) {
+        for (const t of tablesCache) {
+          if (tableCounts[t.name] !== undefined) t.rowCount = tableCounts[t.name];
+        }
+        renderNav();
       }
     } catch {}
-  };
+  });
+
+  // Incremental change events
+  evtSource.addEventListener('change', (e) => {
+    try {
+      const evt = JSON.parse(e.data);
+
+      // Update nav counts incrementally (O(1), no server recalc)
+      if (tablesCache) {
+        const tbl = tablesCache.find(t => t.name === evt.table);
+        if (tbl) {
+          if (evt.op === 'insert') tbl.rowCount++;
+          else if (evt.op === 'delete') tbl.rowCount = Math.max(0, tbl.rowCount - 1);
+          // Batch nav DOM update with rAF
+          if (!_navDirty) {
+            _navDirty = true;
+            requestAnimationFrame(() => {
+              renderNav();
+              _navDirty = false;
+            });
+          }
+        }
+      }
+
+      invalidateRefCache(evt.table);
+
+      // Debounce row refresh when viewing the changed table
+      if (currentTable && evt.table === currentTable) {
+        if (_rowsDebounce) clearTimeout(_rowsDebounce);
+        _rowsDebounce = setTimeout(() => {
+          _rowsDebounce = null;
+          loadRows(true).then(() => {
+            const rowEl = document.querySelector('tr[data-id="' + CSS.escape(evt.rowId) + '"]');
+            if (rowEl) {
+              rowEl.classList.add('flash-' + evt.op);
+              setTimeout(() => rowEl.classList.remove('flash-' + evt.op), 800);
+            }
+          });
+        }, 500);
+      }
+    } catch {}
+  });
+
   evtSource.onerror = () => {
     // Reconnect after 3s
     evtSource.close();
@@ -260,6 +298,24 @@ async function loadTables(silent) {
 
 function renderNav() {
   const nav = document.getElementById('nav-tables');
+  // Fast path: if buttons already exist, just update counts and active state in-place
+  const existing = nav.querySelectorAll('.nav-btn');
+  if (existing.length === tablesCache.length) {
+    let match = true;
+    for (let i = 0; i < tablesCache.length; i++) {
+      if (existing[i].dataset.table !== tablesCache[i].name) { match = false; break; }
+    }
+    if (match) {
+      for (let i = 0; i < tablesCache.length; i++) {
+        const btn = existing[i];
+        const countEl = btn.querySelector('.count');
+        if (countEl) countEl.textContent = tablesCache[i].rowCount;
+        btn.classList.toggle('active', tablesCache[i].name === currentTable);
+      }
+      return;
+    }
+  }
+  // Full rebuild only when table list changes
   nav.innerHTML = tablesCache.map(t => {
     const active = t.name === currentTable ? ' active' : '';
     return '<button class="nav-btn' + active + '" data-table="' + escapeHtml(t.name) + '" onclick="selectTable(this.dataset.table)">' +

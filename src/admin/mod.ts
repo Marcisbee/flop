@@ -299,24 +299,39 @@ function handleSSEEvents(db: Database, req: Request): Response {
 
   const stream = new ReadableStream({
     start(controller) {
-      // Send initial heartbeat
-      controller.enqueue(encoder.encode(": heartbeat\n\n"));
+      let closed = false;
 
-      const unsubscribe = pubsub.subscribeAll((event) => {
+      const enqueue = (eventType: string, payload: unknown) => {
+        if (closed) return;
         try {
-          const data = JSON.stringify({
-            table: event.table,
-            op: event.op,
-            rowId: event.rowId,
-          });
-          controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+          controller.enqueue(
+            encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`),
+          );
         } catch {
           // Controller closed
         }
+      };
+
+      // Send initial table counts snapshot
+      const tableCounts: Record<string, number> = {};
+      for (const [name, table] of db.tables) {
+        tableCounts[name] = table.primaryIndex.size;
+      }
+      enqueue("snapshot", { tableCounts });
+
+      // Push every change event directly — zero cost per subscriber
+      const unsubscribe = pubsub.subscribeAll((event) => {
+        enqueue("change", {
+          table: event.table,
+          op: event.op,
+          rowId: event.rowId,
+          data: event.data,
+        });
       });
 
       // Heartbeat every 15s to keep connection alive
       const heartbeat = setInterval(() => {
+        if (closed) return;
         try {
           controller.enqueue(encoder.encode(": heartbeat\n\n"));
         } catch {
@@ -325,6 +340,7 @@ function handleSSEEvents(db: Database, req: Request): Response {
       }, 15000);
 
       req.signal.addEventListener("abort", () => {
+        closed = true;
         unsubscribe();
         clearInterval(heartbeat);
         try {

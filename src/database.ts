@@ -91,6 +91,15 @@ export class TableInstance {
   private meta!: StoredTableMeta;
   private dataDir = "";
   private pubsub?: PubSub;
+  // Async write lock to prevent concurrent page mutations
+  private _writeLock: Promise<void> = Promise.resolve();
+
+  private _withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this._writeLock;
+    let resolve: () => void;
+    this._writeLock = new Promise<void>((r) => { resolve = r; });
+    return prev.then(fn).finally(() => resolve!());
+  }
 
   constructor(name: string, def: TableDef) {
     this.name = name;
@@ -263,6 +272,10 @@ export class TableInstance {
   }
 
   async insert(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this._withWriteLock(() => this._insert(data));
+  }
+
+  private async _insert(data: Record<string, unknown>): Promise<Record<string, unknown>> {
     const row = { ...data };
 
     // Apply autogenerate and defaults
@@ -382,6 +395,10 @@ export class TableInstance {
   }
 
   async update(key: string, updates: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    return this._withWriteLock(() => this._update(key, updates));
+  }
+
+  private async _update(key: string, updates: Record<string, unknown>): Promise<Record<string, unknown> | null> {
     const existing = await this.get(key);
     if (!existing) return null;
 
@@ -470,6 +487,10 @@ export class TableInstance {
   }
 
   async delete(key: string): Promise<boolean> {
+    return this._withWriteLock(() => this._delete(key));
+  }
+
+  private async _delete(key: string): Promise<boolean> {
     const existing = await this.get(key);
     if (!existing) return false;
 
@@ -511,6 +532,10 @@ export class TableInstance {
     });
 
     return true;
+  }
+
+  count(): number {
+    return this.primaryIndex.size;
   }
 
   async scan(limit = 100, offset = 0): Promise<Record<string, unknown>[]> {
@@ -718,6 +743,7 @@ export interface TableProxy {
   update(key: string, data: Record<string, unknown>): Promise<Record<string, unknown> | null>;
   delete(key: string): Promise<boolean>;
   scan(limit?: number, offset?: number): Promise<Record<string, unknown>[]>;
+  count(): number;
   // Index access via proxy: table.fieldName.find(value)
   [field: string]: any;
 }
@@ -756,6 +782,7 @@ function createTableProxies(db: Database): Record<string, TableProxy> {
       update: (key: string, data: Record<string, unknown>) => table.update(key, data),
       delete: (key: string) => table.delete(key),
       scan: (limit?: number, offset?: number) => table.scan(limit, offset),
+      count: () => table.count(),
     };
 
     // Pre-build index accessors for all schema fields
