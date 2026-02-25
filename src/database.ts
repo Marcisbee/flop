@@ -830,7 +830,7 @@ export class Database {
       if (!this._commitDraining) {
         this._commitDraining = true;
         // Yield one microtick to let other concurrent transactions join the queue
-        Promise.resolve().then(() => this._drainCommitQueue());
+        queueMicrotask(() => this._drainCommitQueue());
       }
     });
   }
