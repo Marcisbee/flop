@@ -121,7 +121,7 @@ async function handleApi(
   }
 
   // Multiplexed SSE — single connection for multiple views
-  if (pathname === "/api/sse" && req.headers.get("accept") === "text/event-stream") {
+  if (pathname === "/api/sse" && req.headers.get("accept")?.includes("text/event-stream")) {
     return handleMultiplexedSSE(req, url, routes, db, jwtSecret);
   }
 
@@ -149,7 +149,7 @@ async function handleApi(
   };
 
   // Check for SSE
-  if (req.headers.get("accept") === "text/event-stream" && route.endpoint instanceof View) {
+  if (req.headers.get("accept")?.includes("text/event-stream") && route.endpoint instanceof View) {
     return handleSSE(req, route, requestCtx, db);
   }
 
