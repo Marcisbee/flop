@@ -42,6 +42,10 @@ type Handler struct {
 	clientCSS []byte
 }
 
+const sseEventBufferSize = 4096
+const sseChangeBatchSize = 128
+const sseChangeFlushInterval = 25 * time.Millisecond
+
 // NewHandler creates the main HTTP handler.
 func NewHandler(
 	db *engine.Database,
@@ -306,6 +310,15 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *runti
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	writeEvent := func(eventType, payload string) {
+		sseEvent(w, eventType, payload)
+		flusher.Flush()
+	}
+	writeHeartbeat := func() {
+		fmt.Fprint(w, ": heartbeat\n\n")
+		flusher.Flush()
+	}
+
 	// Send initial snapshot
 	params := make(map[string]string)
 	for k, v := range r.URL.Query() {
@@ -322,37 +335,71 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *runti
 
 	result, err := h.caller.CallHandler("view", route.Name, string(paramsJSON), authJSON)
 	if err != nil {
-		sseEvent(w, "error", fmt.Sprintf(`{"error":%q}`, err.Error()))
+		writeEvent("error", fmt.Sprintf(`{"error":%q}`, err.Error()))
 	} else {
-		sseEvent(w, "snapshot", result)
+		writeEvent("snapshot", result)
 	}
-	flusher.Flush()
 
-	// Subscribe to changes
-	tables := make([]string, 0)
-	for name := range h.db.Tables {
-		tables = append(tables, name)
+	// Subscribe only to tables this view depends on.
+	tables := append([]string(nil), route.DependentTables...)
+	if len(tables) == 0 {
+		for name := range h.db.Tables {
+			tables = append(tables, name)
+		}
 	}
 
 	done := r.Context().Done()
+	changeCh := make(chan engine.ChangeEvent, sseEventBufferSize)
 	unsubscribe := h.db.GetPubSub().Subscribe(tables, func(event engine.ChangeEvent) {
-		data, _ := json.Marshal(event)
-		sseEvent(w, "change", string(data))
-		flusher.Flush()
+		select {
+		case changeCh <- event:
+		default:
+			// Drop if subscriber cannot keep up; avoid slowing write path.
+		}
 	})
 	defer unsubscribe()
 
 	// Keep alive
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+	flushTicker := time.NewTicker(sseChangeFlushInterval)
+	defer flushTicker.Stop()
+	pendingChangeFlush := false
 
 	for {
 		select {
 		case <-done:
 			return
-		case <-ticker.C:
-			fmt.Fprint(w, ": heartbeat\n\n")
-			flusher.Flush()
+		case event := <-changeCh:
+			batchCount := 0
+		drainChanges:
+			for {
+				data, _ := json.Marshal(event)
+				sseEvent(w, "change", string(data))
+				batchCount++
+				pendingChangeFlush = true
+				if batchCount >= sseChangeBatchSize {
+					flusher.Flush()
+					pendingChangeFlush = false
+					break
+				}
+				select {
+				case event = <-changeCh:
+				default:
+					break drainChanges
+				}
+			}
+		case <-flushTicker.C:
+			if pendingChangeFlush {
+				flusher.Flush()
+				pendingChangeFlush = false
+			}
+		case <-heartbeatTicker.C:
+			if pendingChangeFlush {
+				flusher.Flush()
+				pendingChangeFlush = false
+			}
+			writeHeartbeat()
 		}
 	}
 }
@@ -373,6 +420,15 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+
+	writeEvent := func(eventType, payload string) {
+		sseEvent(w, eventType, payload)
+		flusher.Flush()
+	}
+	writeHeartbeat := func() {
+		fmt.Fprint(w, ": heartbeat\n\n")
+		flusher.Flush()
+	}
 
 	// Get auth context
 	token := ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
@@ -404,8 +460,7 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimSpace(rawName)
 		route := h.findRoute(fmt.Sprintf("/api/view/%s", name))
 		if route == nil {
-			sseEvent(w, fmt.Sprintf("error:%s", name), fmt.Sprintf(`{"error":"View not found: %s"}`, name))
-			flusher.Flush()
+			writeEvent(fmt.Sprintf("error:%s", name), fmt.Sprintf(`{"error":"View not found: %s"}`, name))
 			continue
 		}
 
@@ -435,38 +490,86 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case out := <-results:
 			if out.err != nil {
-				sseEvent(w, fmt.Sprintf("error:%s", out.name), fmt.Sprintf(`{"error":%q}`, out.err.Error()))
+				writeEvent(fmt.Sprintf("error:%s", out.name), fmt.Sprintf(`{"error":%q}`, out.err.Error()))
 			} else {
-				sseEvent(w, fmt.Sprintf("snapshot:%s", out.name), out.result)
+				writeEvent(fmt.Sprintf("snapshot:%s", out.name), out.result)
 			}
-			flusher.Flush()
 		}
 	}
 
-	// Subscribe to all table changes
-	tables := make([]string, 0)
-	for name := range h.db.Tables {
+	// Subscribe only to the union of tables required by selected views.
+	tableSet := make(map[string]struct{})
+	for _, rawName := range viewNames {
+		name := strings.TrimSpace(rawName)
+		route := h.findRoute(fmt.Sprintf("/api/view/%s", name))
+		if route == nil || len(route.DependentTables) == 0 {
+			continue
+		}
+		for _, t := range route.DependentTables {
+			tableSet[t] = struct{}{}
+		}
+	}
+	tables := make([]string, 0, len(tableSet))
+	for name := range tableSet {
 		tables = append(tables, name)
+	}
+	if len(tables) == 0 {
+		for name := range h.db.Tables {
+			tables = append(tables, name)
+		}
 	}
 
 	done := r.Context().Done()
+	changeCh := make(chan engine.ChangeEvent, sseEventBufferSize)
 	unsubscribe := h.db.GetPubSub().Subscribe(tables, func(event engine.ChangeEvent) {
-		data, _ := json.Marshal(event)
-		sseEvent(w, "change", string(data))
-		flusher.Flush()
+		select {
+		case changeCh <- event:
+		default:
+			// Drop if subscriber cannot keep up; avoid slowing write path.
+		}
 	})
 	defer unsubscribe()
 
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+	flushTicker := time.NewTicker(sseChangeFlushInterval)
+	defer flushTicker.Stop()
+	pendingChangeFlush := false
 
 	for {
 		select {
 		case <-done:
 			return
-		case <-ticker.C:
-			fmt.Fprint(w, ": heartbeat\n\n")
-			flusher.Flush()
+		case event := <-changeCh:
+			batchCount := 0
+		drainChanges:
+			for {
+				data, _ := json.Marshal(event)
+				sseEvent(w, "change", string(data))
+				batchCount++
+				pendingChangeFlush = true
+				if batchCount >= sseChangeBatchSize {
+					flusher.Flush()
+					pendingChangeFlush = false
+					break
+				}
+				select {
+				case event = <-changeCh:
+				default:
+					break drainChanges
+				}
+			}
+		case <-flushTicker.C:
+			if pendingChangeFlush {
+				flusher.Flush()
+				pendingChangeFlush = false
+			}
+		case <-heartbeatTicker.C:
+			if pendingChangeFlush {
+				flusher.Flush()
+				pendingChangeFlush = false
+			}
+			writeHeartbeat()
 		}
 	}
 }
@@ -912,21 +1015,55 @@ func (h *Handler) handleAdminSSE(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	done := r.Context().Done()
+	changeCh := make(chan engine.ChangeEvent, sseEventBufferSize)
 	unsubscribe := h.db.GetPubSub().SubscribeAll(func(event engine.ChangeEvent) {
-		data, _ := json.Marshal(event)
-		sseEvent(w, "change", string(data))
-		flusher.Flush()
+		select {
+		case changeCh <- event:
+		default:
+			// Drop if subscriber cannot keep up; avoid slowing write path.
+		}
 	})
 	defer unsubscribe()
 
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+	flushTicker := time.NewTicker(sseChangeFlushInterval)
+	defer flushTicker.Stop()
+	pendingChangeFlush := false
 
 	for {
 		select {
 		case <-done:
 			return
-		case <-ticker.C:
+		case event := <-changeCh:
+			batchCount := 0
+		drainChanges:
+			for {
+				data, _ := json.Marshal(event)
+				sseEvent(w, "change", string(data))
+				batchCount++
+				pendingChangeFlush = true
+				if batchCount >= sseChangeBatchSize {
+					flusher.Flush()
+					pendingChangeFlush = false
+					break
+				}
+				select {
+				case event = <-changeCh:
+				default:
+					break drainChanges
+				}
+			}
+		case <-flushTicker.C:
+			if pendingChangeFlush {
+				flusher.Flush()
+				pendingChangeFlush = false
+			}
+		case <-heartbeatTicker.C:
+			if pendingChangeFlush {
+				flusher.Flush()
+				pendingChangeFlush = false
+			}
 			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}

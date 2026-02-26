@@ -156,6 +156,24 @@ func (b *Bridge) registerHostFunctions() {
 		return b.okJSON(results)
 	}, false)
 
+	// __flop_scan_typed(tableName, limit, offset) -> [rowsArray, error]
+	b.vm.RegisterFunc("__flop_scan_typed", func(tableName string, limit, offset int) ([]quickjs.Value, error) {
+		table := b.db.GetTable(tableName)
+		if table == nil {
+			return []quickjs.Value{}, nil
+		}
+
+		results, err := table.Scan(limit, offset)
+		if err != nil {
+			return nil, err
+		}
+		if results == nil {
+			return []quickjs.Value{}, nil
+		}
+
+		return b.rowsToJSValues(tableName, results)
+	}, false)
+
 	// __flop_count(tableName) -> int
 	b.vm.RegisterFunc("__flop_count", func(tableName string) int {
 		table := b.db.GetTable(tableName)
@@ -243,8 +261,9 @@ globalThis.__flop_build_db_proxy = function() {
         scan: function(limit, offset) {
           limit = limit || 100;
           offset = offset || 0;
-          var result = __flop_scan(tableName, limit, offset);
-          return JSON.parse(result);
+          var result = __flop_scan_typed(tableName, limit, offset);
+          if (result[1] !== null) throw new Error(String(result[1]));
+          return result[0] || [];
         },
         count: function() {
           return __flop_count(tableName);
@@ -484,6 +503,21 @@ func (b *Bridge) rowToJSValue(tableName string, row map[string]interface{}) (qui
 	}
 
 	return obj, nil
+}
+
+func (b *Bridge) rowsToJSValues(tableName string, rows []map[string]interface{}) ([]quickjs.Value, error) {
+	out := make([]quickjs.Value, 0, len(rows))
+	for _, row := range rows {
+		v, err := b.rowToJSValue(tableName, row)
+		if err != nil {
+			for i := range out {
+				out[i].Free()
+			}
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 func (b *Bridge) anyToJSValue(v interface{}) (quickjs.Value, error) {

@@ -151,6 +151,30 @@ class View extends Endpoint {
 // Global handler storage for bridge to call handlers by name
 const __handlers = {};
 
+function inferDependentTables(handler, tableDefs) {
+  const names = Object.keys(tableDefs || {});
+  if (names.length === 0) return [];
+
+  let src = '';
+  try {
+    src = Function.prototype.toString.call(handler);
+  } catch {
+    return names;
+  }
+
+  const deps = [];
+  for (const name of names) {
+    if (
+      src.includes('.db.' + name) ||
+      src.includes(".db['" + name + "']") ||
+      src.includes('.db["' + name + '"]')
+    ) {
+      deps.push(name);
+    }
+  }
+  return deps.length > 0 ? deps : names;
+}
+
 // Database — captures table definitions and creates views/reducers
 class Database {
   constructor(tableDefs, config) {
@@ -176,7 +200,7 @@ class Database {
 
   view(params, handler) {
     const v = new View(params, handler);
-    v._dependentTables = Object.keys(this._tableDefs);
+    v._dependentTables = inferDependentTables(handler, this._tableDefs);
     // Auto-name will be set by export name detection; store handler by temp ID
     const tempId = '__view_' + (this._viewCounter++);
     v._tempId = tempId;

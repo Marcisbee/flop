@@ -618,7 +618,13 @@ func (ti *TableInstance) GetDef() *schema.TableDef {
 // into it for batch commit later (transaction mode). Otherwise commits immediately.
 func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*walBufEntry) (map[string]interface{}, error) {
 	ti.mu.Lock()
-	defer ti.mu.Unlock()
+	var change *ChangeEvent
+	defer func() {
+		ti.mu.Unlock()
+		if change != nil {
+			ti.pubsub.Publish(*change)
+		}
+	}()
 
 	row := copyRow(data)
 
@@ -738,8 +744,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		}
 	}
 
-	// Publish event
-	ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "insert", RowID: pk, Data: row})
+	change = &ChangeEvent{Table: ti.Name, Op: "insert", RowID: pk, Data: row}
 
 	return row, nil
 }
@@ -899,7 +904,13 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 // Used as a fallback when an in-place concurrent update cannot be applied.
 func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry) (map[string]interface{}, error) {
 	ti.mu.Lock()
-	defer ti.mu.Unlock()
+	var change *ChangeEvent
+	defer func() {
+		ti.mu.Unlock()
+		if change != nil {
+			ti.pubsub.Publish(*change)
+		}
+	}()
 
 	existing, err := ti.Get(key)
 	if err != nil {
@@ -989,7 +1000,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		}
 	}
 
-	ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow})
+	change = &ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow}
 	return newRow, nil
 }
 
@@ -998,7 +1009,13 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 // into it for batch commit later (transaction mode). Otherwise commits immediately.
 func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool, error) {
 	ti.mu.Lock()
-	defer ti.mu.Unlock()
+	var change *ChangeEvent
+	defer func() {
+		ti.mu.Unlock()
+		if change != nil {
+			ti.pubsub.Publish(*change)
+		}
+	}()
 
 	existing, err := ti.Get(key)
 	if err != nil {
@@ -1064,7 +1081,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 		}
 	}
 
-	ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "delete", RowID: key, Data: existing})
+	change = &ChangeEvent{Table: ti.Name, Op: "delete", RowID: key, Data: existing}
 
 	return true, nil
 }

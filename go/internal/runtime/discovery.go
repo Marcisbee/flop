@@ -9,7 +9,7 @@ import (
 
 // AppMeta holds all the metadata extracted from the user's app.ts.
 type AppMeta struct {
-	Tables   map[string]TableMeta   `json:"tables"`
+	Tables   map[string]TableMeta    `json:"tables"`
 	Views    map[string]EndpointMeta `json:"views"`
 	Reducers map[string]EndpointMeta `json:"reducers"`
 	Routes   []FlatRoute             `json:"routeTree"`
@@ -18,11 +18,11 @@ type AppMeta struct {
 
 // TableMeta describes a table extracted from the JS module.
 type TableMeta struct {
-	Name       string           `json:"name"`
-	Fields     []FieldMeta      `json:"fields"`
-	Auth       bool             `json:"auth"`
-	Migrations []MigrationMeta  `json:"migrations"`
-	Indexes    []IndexMeta      `json:"indexes"`
+	Name       string          `json:"name"`
+	Fields     []FieldMeta     `json:"fields"`
+	Auth       bool            `json:"auth"`
+	Migrations []MigrationMeta `json:"migrations"`
+	Indexes    []IndexMeta     `json:"indexes"`
 }
 
 // FieldMeta describes a single field from the JS schema.
@@ -54,11 +54,11 @@ type IndexMeta struct {
 
 // EndpointMeta describes a view or reducer.
 type EndpointMeta struct {
-	Name            string                `json:"name"`
-	Params          map[string]FieldMeta  `json:"params"`
-	Access          AccessMeta            `json:"access"`
-	DependentTables []string              `json:"dependentTables,omitempty"`
-	HandlerRef      string                `json:"handlerRef"`
+	Name            string               `json:"name"`
+	Params          map[string]FieldMeta `json:"params"`
+	Access          AccessMeta           `json:"access"`
+	DependentTables []string             `json:"dependentTables,omitempty"`
+	HandlerRef      string               `json:"handlerRef"`
 }
 
 // AccessMeta describes access control.
@@ -167,12 +167,13 @@ func BuildTableDefs(meta *AppMeta) map[string]*schema.TableDef {
 
 // BuildRouteInfo converts view/reducer metadata into route definitions for the HTTP server.
 type RouteInfo struct {
-	Name       string
-	Type       string // "view" or "reducer"
-	Method     string // "GET" or "POST"
-	Path       string
-	Access     schema.AccessPolicy
-	ParamDefs  map[string]FieldMeta
+	Name            string
+	Type            string // "view" or "reducer"
+	Method          string // "GET" or "POST"
+	Path            string
+	Access          schema.AccessPolicy
+	ParamDefs       map[string]FieldMeta
+	DependentTables []string
 }
 
 func BuildRoutes(meta *AppMeta) []RouteInfo {
@@ -188,7 +189,8 @@ func BuildRoutes(meta *AppMeta) []RouteInfo {
 				Type:  v.Access.Type,
 				Roles: v.Access.Roles,
 			},
-			ParamDefs: v.Params,
+			ParamDefs:       v.Params,
+			DependentTables: append([]string(nil), v.DependentTables...),
 		})
 	}
 
