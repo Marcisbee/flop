@@ -1,0 +1,67 @@
+{
+  "$comment": "Flop binary format specification — shared constants between TS and Go implementations. Both implementations MUST use these exact values for cross-compatibility.",
+
+  "magic": {
+    "tableFile": [70, 76, 80, 84],
+    "metaFile":  [70, 76, 79, 80],
+    "indexFile": [70, 76, 80, 73],
+    "walFile":   [70, 76, 80, 87],
+    "$comment": "ASCII: FLPT, FLOP, FLPI, FLPW"
+  },
+
+  "page": {
+    "pageSize": 4096,
+    "fileHeaderSize": 64,
+    "pageHeaderSize": 12,
+    "slotSize": 4
+  },
+
+  "typeTags": {
+    "null":       0,
+    "string":     1,
+    "number":     2,
+    "boolean":    3,
+    "array":      4,
+    "integer":    5,
+    "vector":     6,
+    "json":       13,
+    "fileSingle": 14,
+    "fileMulti":  15
+  },
+
+  "fieldKinds": [
+    "string",
+    "number",
+    "boolean",
+    "json",
+    "bcrypt",
+    "ref",
+    "refMulti",
+    "fileSingle",
+    "fileMulti",
+    "roles",
+    "enum",
+    "integer",
+    "vector",
+    "set",
+    "timestamp"
+  ],
+
+  "walOps": {
+    "insert": 1,
+    "update": 2,
+    "delete": 3,
+    "commit": 4
+  },
+
+  "walHeaderSize": 16,
+  "metaVersion": 1,
+  "indexVersion": 1,
+
+  "pageFlags": {
+    "none":     0,
+    "dirty":    1,
+    "overflow": 2,
+    "deleted":  4
+  }
+}

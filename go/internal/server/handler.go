@@ -1,4 +1,3 @@
-//go:generate deno run -A gen_admin_ui.ts
 package server
 
 import (

@@ -280,13 +280,13 @@ async function prepareData(
   scenario: string,
 ): Promise<string | null> {
   if (engine === "flop-ts") {
-    const dir = `${ROOT}/benchmarks/finance/data`;
+    const dir = `${ROOT}/benchmarks/finance-ts/data`;
     await safeRemove(dir);
     await Deno.mkdir(dir, { recursive: true });
     return null;
   }
   if (engine === "sqlite-ts") {
-    const dir = `${ROOT}/benchmarks/sqlite-finance/data`;
+    const dir = `${ROOT}/benchmarks/finance-sqlite/data`;
     await Deno.mkdir(dir, { recursive: true });
     await safeRemove(`${dir}/finance.db`);
     await safeRemove(`${dir}/finance.db-shm`);
@@ -322,8 +322,8 @@ function commandFor(
         "--allow-write",
         "--allow-net",
         "--allow-env",
-        "main.ts",
-        "benchmarks/finance/app.ts",
+        "ts/cli.ts",
+        "benchmarks/finance-ts/app.ts",
       ],
       cwd: ROOT,
       env: { FLOP_PORT: String(port) },
@@ -336,7 +336,7 @@ function commandFor(
       args: [
         "run",
         "--allow-all",
-        "benchmarks/sqlite-finance/app.ts",
+        "benchmarks/finance-sqlite/app.ts",
         `--port=${port}`,
       ],
       cwd: ROOT,
@@ -606,7 +606,7 @@ async function buildGoBinaries(
     const binPath = `${binDir}/go-finance`;
     const build = await new Deno.Command("go", {
       cwd: goCwd,
-      args: ["build", "-o", binPath, "./cmd/go-finance"],
+      args: ["build", "-o", binPath, "../benchmarks/finance-go"],
       env: { GOCACHE: "/tmp/go-build-cache" },
       stdout: "inherit",
       stderr: "inherit",
@@ -619,7 +619,7 @@ async function buildGoBinaries(
     const binPath = `${binDir}/sqlite-finance`;
     const build = await new Deno.Command("go", {
       cwd: goCwd,
-      args: ["build", "-o", binPath, "./cmd/sqlite-finance"],
+      args: ["build", "-o", binPath, "../benchmarks/finance-sqlite-go"],
       env: { GOCACHE: "/tmp/go-build-cache" },
       stdout: "inherit",
       stderr: "inherit",

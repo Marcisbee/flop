@@ -1,7 +1,7 @@
 {
   "entry": [
-    "mod.ts",
-    "client.ts"
+    "ts/mod.ts",
+    "ts/client.ts"
   ],
   "lsp": {
     "deno": {
@@ -35,14 +35,14 @@
   },
   "setup": {
     "commands": [
-      "deno cache mod.ts client.ts main.ts"
+      "deno cache ts/mod.ts ts/client.ts ts/cli.ts"
     ]
   },
   "dev": {
     "processes": [
       {
         "id": "server",
-        "command": "deno run --watch --allow-read --allow-write --allow-net --allow-env main.ts app.ts",
+        "command": "deno run --watch --allow-read --allow-write --allow-net --allow-env ts/cli.ts examples/messages/app.ts",
         "port": 1985,
         "tunnel": true
       }
