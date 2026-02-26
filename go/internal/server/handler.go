@@ -853,8 +853,15 @@ func (h *Handler) handleListTables(w http.ResponseWriter) {
 		RowCount int             `json:"rowCount"`
 	}
 
-	tables := make([]tableMeta, 0)
-	for name, table := range h.db.Tables {
+	names := make([]string, 0, len(h.db.Tables))
+	for name := range h.db.Tables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	tables := make([]tableMeta, 0, len(names))
+	for _, name := range names {
+		table := h.db.Tables[name]
 		def := table.GetDef()
 		orderedSchema, err := marshalOrderedSchema(def.CompiledSchema)
 		if err != nil {

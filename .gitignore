@@ -20,3 +20,5 @@ go/internal/server/admin.html
 examples/blog-go-react/blog-server
 benchmarks/finance-go/finance-go
 benchmarks/finance-sqlite-go/finance-sqlite-go
+/benchmarks/benchmarks/finance-go/data
+/examples/blog-go-react/data

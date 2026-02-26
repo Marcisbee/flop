@@ -217,6 +217,7 @@ function handleListTables(db: Database): Response {
       rowCount: table.primaryIndex.size,
     });
   }
+  tables.sort((a, b) => a.name.localeCompare(b.name));
   return jsonResponse({ tables });
 }
 

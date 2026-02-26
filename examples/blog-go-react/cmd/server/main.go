@@ -23,20 +23,37 @@ func main() {
 
 	webDir := filepath.Join(projectRoot, "web")
 	application := blog.Build()
-	spec := application.Spec()
+
+	db, err := application.Open()
+	if err != nil {
+		log.Fatalf("failed to open database: %v", err)
+	}
+
+	blog.Seed(db)
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/spec", func(w http.ResponseWriter, r *http.Request) {
+		spec := application.Spec()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(spec)
 	})
 
 	mux.HandleFunc("/api/posts", func(w http.ResponseWriter, r *http.Request) {
+		posts := db.Table("posts")
+		if posts == nil {
+			adminJSONError(w, "posts table not found", http.StatusInternalServerError)
+			return
+		}
+		rows, err := posts.Scan(100, 0)
+		if err != nil {
+			adminJSONError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok":   true,
-			"data": blog.MockPosts(),
+			"data": rows,
 		})
 	})
 
@@ -45,12 +62,14 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok":   true,
-			"data": blog.ResolveHead(path),
+			"data": blog.ResolveHead(db, path),
 		})
 	})
 
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(filepath.Join(webDir, "assets")))))
-	flop.MountDefaultAdmin(mux, blogAdminProvider{})
+
+	adminProvider := &flop.EngineAdminProvider{DB: db}
+	adminCfg := flop.MountDefaultAdmin(mux, adminProvider)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := normalizePath(r.URL.Path)
@@ -62,7 +81,7 @@ func main() {
 		}
 
 		if isAppPath(path) {
-			html, err := renderAppHTML(path)
+			html, err := renderAppHTML(db, path)
 			if err != nil {
 				http.Error(w, "failed to render app shell", http.StatusInternalServerError)
 				return
@@ -95,37 +114,28 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 	port := flop.PortFromAddr(addr, 1985)
-	if err := flop.RunDefaultServer(flop.DefaultServerInfo{
-		AppName:   "blog-go-react",
-		Port:      port,
-		DataDir:   filepath.Join(projectRoot, "data"),
-		Engine:    "flop go package",
-		AdminPath: "/_",
-		SetupHint: "not available (no auth table)",
+	serverInfo := flop.DefaultServerInfo{
+		AppName:    "blog-go-react",
+		Port:       port,
+		DataDir:    filepath.Join(projectRoot, "data"),
+		Engine:     "flop go package",
+		AdminPath:  "/_",
+		SetupToken: adminCfg.SetupToken,
 		Use: []string{
 			"make dev",
 		},
-	}, flop.DefaultServeOptions{Server: srv}); err != nil {
+	}
+	if err := flop.RunDefaultServer(serverInfo, flop.DefaultServeOptions{
+		Server:     srv,
+		Checkpoint: db.Checkpoint,
+		Close:      db.Close,
+	}); err != nil {
 		log.Fatal(err)
 	}
 }
 
-type blogAdminProvider struct{}
-
-func (blogAdminProvider) AdminTables() ([]flop.AdminTable, error) {
-	return blog.AdminTables(), nil
-}
-
-func (blogAdminProvider) AdminRows(table string, limit, offset int) (flop.AdminRowsPage, bool, error) {
-	page, ok := blog.AdminRows(table, limit, offset)
-	if !ok {
-		return flop.AdminRowsPage{}, false, nil
-	}
-	return page, true, nil
-}
-
-func renderAppHTML(path string) ([]byte, error) {
-	head := blog.ResolveHead(path)
+func renderAppHTML(db *flop.Database, path string) ([]byte, error) {
+	head := blog.ResolveHead(db, path)
 	headJSON, err := json.Marshal(head)
 	if err != nil {
 		return nil, err
@@ -241,4 +251,10 @@ func findModuleRoot() (string, error) {
 		}
 		dir = next
 	}
+}
+
+func adminJSONError(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": message})
 }
