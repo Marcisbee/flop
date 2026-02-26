@@ -552,41 +552,9 @@ async function runShell(cmd: string, args: string[]): Promise<string> {
   return new TextDecoder().decode(result.stdout).trim();
 }
 
-async function ensureSQLiteGoDeps(engines: EngineID[]) {
-  if (!engines.includes("sqlite-go")) return;
-  const goCwd = `${ROOT}/go`;
-  const check = await new Deno.Command("go", {
-    cwd: goCwd,
-    args: ["list", "-m", "modernc.org/sqlite"],
-    stdout: "null",
-    stderr: "null",
-  }).output();
-  if (check.success) return;
-
-  console.log("Bootstrapping sqlite-go dependency: modernc.org/sqlite");
-  const get = await new Deno.Command("go", {
-    cwd: goCwd,
-    args: ["get", "modernc.org/sqlite@v1.39.1"],
-    env: { GOCACHE: "/tmp/go-build-cache" },
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  if (!get.success) {
-    throw new Error(
-      "Failed to download modernc.org/sqlite. Run: cd go && go get modernc.org/sqlite@v1.39.1 && go mod tidy",
-    );
-  }
-
-  const tidy = await new Deno.Command("go", {
-    cwd: goCwd,
-    args: ["mod", "tidy"],
-    env: { GOCACHE: "/tmp/go-build-cache" },
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  if (!tidy.success) {
-    throw new Error("go mod tidy failed after sqlite dependency bootstrap");
-  }
+async function ensureSQLiteGoDeps(_engines: EngineID[]) {
+  // sqlite-go now has its own go.mod with the sqlite dependency included.
+  // No bootstrapping needed.
 }
 
 async function buildGoBinaries(
@@ -598,15 +566,23 @@ async function buildGoBinaries(
   const needSQLiteGo = engines.includes("sqlite-go");
   if (!needFlopGo && !needSQLiteGo) return out;
 
-  const goCwd = `${ROOT}/go`;
   const binDir = `${RESULTS_DIR}/tmp/${runId}/bin`;
   await Deno.mkdir(binDir, { recursive: true });
+
+  // Ensure shared admin HTML is copied into Go source tree for go:embed.
+  const gen = await new Deno.Command("go", {
+    cwd: `${ROOT}/go`,
+    args: ["generate", "./..."],
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+  if (!gen.success) throw new Error("go generate failed");
 
   if (needFlopGo) {
     const binPath = `${binDir}/go-finance`;
     const build = await new Deno.Command("go", {
-      cwd: goCwd,
-      args: ["build", "-o", binPath, "../benchmarks/finance-go"],
+      cwd: `${ROOT}/benchmarks/finance-go`,
+      args: ["build", "-o", binPath, "."],
       env: { GOCACHE: "/tmp/go-build-cache" },
       stdout: "inherit",
       stderr: "inherit",
@@ -618,8 +594,8 @@ async function buildGoBinaries(
   if (needSQLiteGo) {
     const binPath = `${binDir}/sqlite-finance`;
     const build = await new Deno.Command("go", {
-      cwd: goCwd,
-      args: ["build", "-o", binPath, "../benchmarks/finance-sqlite-go"],
+      cwd: `${ROOT}/benchmarks/finance-sqlite-go`,
+      args: ["build", "-o", binPath, "."],
       env: { GOCACHE: "/tmp/go-build-cache" },
       stdout: "inherit",
       stderr: "inherit",

@@ -6,10 +6,10 @@ import _ "embed"
 // Source of truth: shared/admin/*.html (copied here by go generate)
 
 //go:embed login.html
-var adminLoginHTML string
+var AdminLoginHTML string
 
 //go:embed setup.html
-var adminSetupHTML string
+var AdminSetupHTML string
 
 //go:embed admin.html
-var adminPageHTML string
+var AdminPageHTML string

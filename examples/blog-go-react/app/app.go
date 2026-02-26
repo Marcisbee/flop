@@ -323,25 +323,12 @@ func findPostBySlug(slug string) *PostWithAuthor {
 	return nil
 }
 
-type AdminTableSummary struct {
-	Name     string `json:"name"`
-	RowCount int    `json:"rowCount"`
-}
-
-type AdminRowsPage struct {
-	Table  string           `json:"table"`
-	Rows   []map[string]any `json:"rows"`
-	Total  int              `json:"total"`
-	Offset int              `json:"offset"`
-	Limit  int              `json:"limit"`
-}
-
-func AdminTables() []AdminTableSummary {
+func AdminTables() []flop.AdminTable {
 	users := mockUsers()
 	posts := MockPosts()
 	comments := append(MockComments("post-1"), MockComments("post-2")...)
 
-	tables := []AdminTableSummary{
+	tables := []flop.AdminTable{
 		{Name: "users", RowCount: len(users)},
 		{Name: "posts", RowCount: len(posts)},
 		{Name: "comments", RowCount: len(comments)},
@@ -350,7 +337,7 @@ func AdminTables() []AdminTableSummary {
 	return tables
 }
 
-func AdminRows(table string, limit, offset int) (AdminRowsPage, bool) {
+func AdminRows(table string, limit, offset int) (flop.AdminRowsPage, bool) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -398,7 +385,7 @@ func AdminRows(table string, limit, offset int) (AdminRowsPage, bool) {
 			})
 		}
 	default:
-		return AdminRowsPage{}, false
+		return flop.AdminRowsPage{}, false
 	}
 
 	total := len(rows)
@@ -410,7 +397,7 @@ func AdminRows(table string, limit, offset int) (AdminRowsPage, bool) {
 		end = total
 	}
 
-	return AdminRowsPage{
+	return flop.AdminRowsPage{
 		Table:  table,
 		Rows:   rows[offset:end],
 		Total:  total,

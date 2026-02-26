@@ -113,12 +113,7 @@ func main() {
 type blogAdminProvider struct{}
 
 func (blogAdminProvider) AdminTables() ([]flop.AdminTable, error) {
-	summaries := blog.AdminTables()
-	out := make([]flop.AdminTable, len(summaries))
-	for i, t := range summaries {
-		out[i] = flop.AdminTable{Name: t.Name, RowCount: t.RowCount}
-	}
-	return out, nil
+	return blog.AdminTables(), nil
 }
 
 func (blogAdminProvider) AdminRows(table string, limit, offset int) (flop.AdminRowsPage, bool, error) {
@@ -126,13 +121,7 @@ func (blogAdminProvider) AdminRows(table string, limit, offset int) (flop.AdminR
 	if !ok {
 		return flop.AdminRowsPage{}, false, nil
 	}
-	return flop.AdminRowsPage{
-		Table:  page.Table,
-		Rows:   page.Rows,
-		Total:  page.Total,
-		Offset: page.Offset,
-		Limit:  page.Limit,
-	}, true, nil
+	return page, true, nil
 }
 
 func renderAppHTML(path string) ([]byte, error) {

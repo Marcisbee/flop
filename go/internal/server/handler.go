@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
-	"github.com/marcisbee/flop/internal/runtime"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/storage"
 )
@@ -35,8 +34,8 @@ type HandlerCaller interface {
 type Handler struct {
 	db          *engine.Database
 	caller      HandlerCaller
-	routes      []runtime.RouteInfo
-	pageRoutes  []runtime.FlatRoute
+	routes      []RouteInfo
+	pageRoutes  []FlatRoute
 	authService *AuthService
 	config      ServerConfig
 	setupToken  string
@@ -53,8 +52,8 @@ const sseChangeFlushInterval = 25 * time.Millisecond
 func NewHandler(
 	db *engine.Database,
 	caller HandlerCaller,
-	routes []runtime.RouteInfo,
-	pageRoutes []runtime.FlatRoute,
+	routes []RouteInfo,
+	pageRoutes []FlatRoute,
 	authService *AuthService,
 	config ServerConfig,
 	setupToken string,
@@ -302,7 +301,7 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 	}
 }
 
-func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *runtime.RouteInfo, auth *schema.AuthContext) {
+func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *RouteInfo, auth *schema.AuthContext) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		jsonError(w, "SSE not supported", 400)
@@ -638,7 +637,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(adminSetupHTML))
+		w.Write([]byte(AdminSetupHTML))
 		return
 	}
 
@@ -680,7 +679,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 	// Login page
 	if path == "/_/login" || path == "/_/login/" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(adminLoginHTML))
+		w.Write([]byte(AdminLoginHTML))
 		return
 	}
 
@@ -740,7 +739,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 	if path == "/_" || path == "/_/" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Write([]byte(adminPageHTML))
+		w.Write([]byte(AdminPageHTML))
 		return
 	}
 
@@ -1263,7 +1262,7 @@ func (h *Handler) handleAdminSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) findRoute(path string) *runtime.RouteInfo {
+func (h *Handler) findRoute(path string) *RouteInfo {
 	for i := range h.routes {
 		if h.routes[i].Path == path {
 			return &h.routes[i]
@@ -1272,7 +1271,7 @@ func (h *Handler) findRoute(path string) *runtime.RouteInfo {
 	return nil
 }
 
-func (h *Handler) enforceAccess(w http.ResponseWriter, r *http.Request, route *runtime.RouteInfo) (*schema.AuthContext, bool) {
+func (h *Handler) enforceAccess(w http.ResponseWriter, r *http.Request, route *RouteInfo) (*schema.AuthContext, bool) {
 	policy := route.Access
 
 	token := ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))

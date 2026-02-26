@@ -1,4 +1,4 @@
-module github.com/marcisbee/flop/examples/blog-go-react
+module github.com/marcisbee/flop/benchmarks/finance-go
 
 go 1.24.3
 

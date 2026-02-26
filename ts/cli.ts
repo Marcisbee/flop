@@ -158,9 +158,10 @@ if (import.meta.main) {
     Deno.exit(1);
   }
 
-  const absPath = modulePath.startsWith("./") || modulePath.startsWith("/")
+  // Resolve relative to cwd so that dynamic import works regardless of where cli.ts lives.
+  const absPath = modulePath.startsWith("/")
     ? modulePath
-    : `./${modulePath}`;
+    : `${Deno.cwd()}/${modulePath}`;
 
   startServer(absPath);
 }
