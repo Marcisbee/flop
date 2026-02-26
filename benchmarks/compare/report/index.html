@@ -303,6 +303,7 @@ function collectScenario(name) {
 
   const series = {};
   const memorySeries = {};
+  const peakSeries = {};
   const efficiencySeries = {};
   for (const engine of ENGINES) {
     series[engine] = scenarios.map((s) => {
@@ -316,6 +317,11 @@ function collectScenario(name) {
       const v = result?.memory?.rssAvgMB;
       return typeof v === "number" ? v : null;
     });
+    peakSeries[engine] = scenarios.map((s) => {
+      const result = (s?.results || []).find((r) => r.engine === engine);
+      const v = result?.memory?.rssPeakMB;
+      return typeof v === "number" ? v : null;
+    });
     efficiencySeries[engine] = scenarios.map((s) => {
       const result = (s?.results || []).find((r) => r.engine === engine);
       const v = result?.memory?.opsPerSecPerAvgMB;
@@ -323,7 +329,15 @@ function collectScenario(name) {
     });
   }
 
-  return { runs, scenarios, metric, series, memorySeries, efficiencySeries };
+  return {
+    runs,
+    scenarios,
+    metric,
+    series,
+    memorySeries,
+    peakSeries,
+    efficiencySeries,
+  };
 }
 
 function drawChart(svg, runs, series, cfg) {
@@ -401,11 +415,13 @@ function renderCards() {
       .map((engine) => {
         const vals = data.series[engine].filter((v) => v != null);
         const memVals = data.memorySeries[engine].filter((v) => v != null);
+        const peakVals = data.peakSeries[engine].filter((v) => v != null);
         const effVals = data.efficiencySeries[engine].filter((v) => v != null);
         return {
           engine,
           avg: average(vals),
           avgMem: average(memVals),
+          avgPeak: average(peakVals),
           avgEff: average(effVals),
           has: vals.length > 0,
         };
@@ -415,7 +431,7 @@ function renderCards() {
       .map((x) => `
         <div class="legend-row">
           <span class="left"><i class="dot" style="background:${COLORS[x.engine]}"></i><span>${x.engine}</span></span>
-          <span class="value">Avg ${fmt(x.avg)} ${data.metric.label}${x.avgMem ? ` · ${fmt(x.avgMem)} MB` : ""}${x.avgEff ? ` · ${fmt(x.avgEff)} ops/s/MB` : ""}</span>
+          <span class="value">Avg ${fmt(x.avg)} ${data.metric.label}${x.avgMem != null ? ` · ${fmt(x.avgMem)} MB` : ""}${x.avgPeak != null ? ` · Peak ${fmt(x.avgPeak)} MB` : ""}${x.avgEff != null ? ` · ${fmt(x.avgEff)} ops/s/MB` : ""}</span>
         </div>
       `)
       .join("");
@@ -474,11 +490,13 @@ function openDetail(name) {
   const rows = ENGINES.map((engine) => {
     const vals = data.series[engine].filter((v) => v != null);
     const memVals = data.memorySeries[engine].filter((v) => v != null);
+    const peakVals = data.peakSeries[engine].filter((v) => v != null);
     const effVals = data.efficiencySeries[engine].filter((v) => v != null);
     if (!vals.length) {
       return `
         <tr>
           <td><span class="left"><i class="dot" style="background:${COLORS[engine]}"></i><span>${engine}</span></span></td>
+          <td class="num">-</td>
           <td class="num">-</td>
           <td class="num">-</td>
           <td class="num">-</td>
@@ -494,6 +512,7 @@ function openDetail(name) {
     const avg = average(vals);
     const latest = vals[vals.length - 1];
     const avgMem = average(memVals);
+    const avgPeak = average(peakVals);
     const avgEff = average(effVals);
 
     return `
@@ -504,6 +523,7 @@ function openDetail(name) {
         <td class="num">${fmt(avg)}</td>
         <td class="num">${fmt(latest)}</td>
         <td class="num">${fmt(avgMem)}</td>
+        <td class="num">${fmt(avgPeak)}</td>
         <td class="num">${fmt(avgEff)}</td>
       </tr>
     `;
@@ -518,6 +538,7 @@ function openDetail(name) {
         <th class="num">Avg (${data.metric.label})</th>
         <th class="num">Latest (${data.metric.label})</th>
         <th class="num">Avg RSS (MB)</th>
+        <th class="num">Avg Peak RSS (MB)</th>
         <th class="num">Avg Eff (ops/s/MB)</th>
       </tr>
     </thead>

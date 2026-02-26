@@ -433,18 +433,22 @@ async function stopAllProcesses() {
 
 async function readRSSBytes(pid: number): Promise<number | null> {
   if (Deno.build.os === "windows") return null;
-  const result = await new Deno.Command("ps", {
-    args: ["-o", "rss=", "-p", String(pid)],
-    stdout: "piped",
-    stderr: "null",
-  }).output();
-  if (!result.success) return null;
+  try {
+    const result = await new Deno.Command("ps", {
+      args: ["-o", "rss=", "-p", String(pid)],
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+    if (!result.success) return null;
 
-  const raw = new TextDecoder().decode(result.stdout).trim();
-  if (!raw) return null;
-  const kb = Number.parseInt(raw.split(/\s+/)[0], 10);
-  if (!Number.isFinite(kb) || kb <= 0) return null;
-  return kb * 1024;
+    const raw = new TextDecoder().decode(result.stdout).trim();
+    if (!raw) return null;
+    const kb = Number.parseInt(raw.split(/\s+/)[0], 10);
+    if (!Number.isFinite(kb) || kb <= 0) return null;
+    return kb * 1024;
+  } catch {
+    return null;
+  }
 }
 
 function round2(v: number): number {
@@ -460,8 +464,12 @@ function startMemorySampler(pid: number) {
   const samples: number[] = [];
   const loop = (async () => {
     while (running) {
-      const rss = await readRSSBytes(pid);
-      if (rss != null) samples.push(rss);
+      try {
+        const rss = await readRSSBytes(pid);
+        if (rss != null) samples.push(rss);
+      } catch {
+        // keep loop alive even if memory sampling fails
+      }
       await new Promise((r) => setTimeout(r, MEMORY_SAMPLE_INTERVAL_MS));
     }
   })();
@@ -767,7 +775,13 @@ async function main() {
           const metrics = await runWorkload(scenario, host);
           const elapsedMs = performance.now() - started;
           memory = await mem.stop(metrics.workload.opsPerSec);
-          scenarioResults.push({ engine, ok: true, elapsedMs, metrics, memory });
+          scenarioResults.push({
+            engine,
+            ok: true,
+            elapsedMs,
+            metrics,
+            memory,
+          });
           const memLabel = memory.sampleCount > 0
             ? ` mem(avg/peak)=${Math.round(memory.rssAvgMB ?? 0)}/${
               Math.round(memory.rssPeakMB ?? 0)

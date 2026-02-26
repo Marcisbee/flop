@@ -62,6 +62,7 @@ Report supports:
 - each mini graph includes per-engine averages
 - click `Expand` on any scenario to open full-size graph + min/max/avg/latest table
 - focused workload metrics only (`ops/s`, `read ops/s`, `write ops/s`, `edit transfer ops/s`)
+- memory efficiency tracking per engine (`avg RSS MB`, `peak RSS MB`, `ops/s per MB`)
 
 ## Notes
 
