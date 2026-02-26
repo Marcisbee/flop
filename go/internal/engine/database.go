@@ -844,6 +844,11 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 		}
 	}
 
+	// Validate unique constraints before mutating anything
+	if err := ti.validateIndexChanges(existing, newRow); err != nil {
+		return nil, err
+	}
+
 	// Serialize
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
 
@@ -876,6 +881,9 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 	}
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	pageLock.Unlock()
+
+	// Apply index changes after successful page write
+	ti.applyIndexChanges(existing, newRow, pointer)
 
 	// WAL commit: buffer into transaction or commit immediately
 	if txBuf != nil {
@@ -943,9 +951,17 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		}
 	}
 
+	// Validate unique constraints before mutating anything
+	if err := ti.validateIndexChanges(existing, newRow); err != nil {
+		return nil, err
+	}
+
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
 	txID := ti.wal.BeginTransaction()
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
+
+	// Apply index changes (remove old keys, add new keys with current pointer)
+	ti.applyIndexChanges(existing, newRow, pointer)
 
 	page, err := ti.tableFile.GetPage(pointer.PageNumber)
 	if err != nil {
@@ -970,6 +986,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		newPointer := schema.RowPointer{PageNumber: newPageNum, SlotIndex: uint16(newSlot)}
 		ti.primaryIndex.Set(key, newPointer)
 
+		// Fix pointers in secondary indexes for the relocated row
 		for _, indexDef := range ti.def.Indexes {
 			indexKey := strings.Join(indexDef.Fields, ",")
 			idx := ti.secondaryIdxs[indexKey]
@@ -1005,6 +1022,67 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 
 	change = &ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow}
 	return newRow, nil
+}
+
+// validateIndexChanges checks unique constraints for changed indexed fields.
+func (ti *TableInstance) validateIndexChanges(existing, newRow map[string]interface{}) error {
+	for _, indexDef := range ti.def.Indexes {
+		if !indexDef.Unique {
+			continue
+		}
+		indexKey := strings.Join(indexDef.Fields, ",")
+		idx := ti.secondaryIdxs[indexKey]
+
+		oldValues := make([]interface{}, len(indexDef.Fields))
+		newValues := make([]interface{}, len(indexDef.Fields))
+		for i, f := range indexDef.Fields {
+			oldValues[i] = existing[f]
+			newValues[i] = newRow[f]
+		}
+		oldKey := storage.CompositeKey(oldValues)
+		newKey := storage.CompositeKey(newValues)
+
+		if oldKey == newKey {
+			continue
+		}
+
+		if hi, ok := idx.(*storage.HashIndex); ok {
+			if hi.Has(newKey) {
+				return fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
+			}
+		}
+	}
+	return nil
+}
+
+// applyIndexChanges removes old index entries and adds new ones for changed fields.
+func (ti *TableInstance) applyIndexChanges(existing, newRow map[string]interface{}, pointer schema.RowPointer) {
+	for _, indexDef := range ti.def.Indexes {
+		indexKey := strings.Join(indexDef.Fields, ",")
+		idx := ti.secondaryIdxs[indexKey]
+
+		oldValues := make([]interface{}, len(indexDef.Fields))
+		newValues := make([]interface{}, len(indexDef.Fields))
+		for i, f := range indexDef.Fields {
+			oldValues[i] = existing[f]
+			newValues[i] = newRow[f]
+		}
+		oldKey := storage.CompositeKey(oldValues)
+		newKey := storage.CompositeKey(newValues)
+
+		if oldKey == newKey {
+			continue
+		}
+
+		switch idx := idx.(type) {
+		case *storage.HashIndex:
+			idx.Delete(oldKey)
+			idx.Set(newKey, pointer)
+		case *storage.MultiIndex:
+			idx.Delete(oldKey, pointer)
+			idx.Add(newKey, pointer)
+		}
+	}
 }
 
 // Delete removes a row by primary key.
@@ -1354,7 +1432,9 @@ func deduplicateStrings(arr []interface{}) []interface{} {
 	return result
 }
 
-// generateFromPattern generates a random string from a pattern like "[a-z0-9]{12}".
+// generateFromPattern generates a time-sortable ID from a pattern like "[a-z0-9]{12}".
+// The first 8 characters encode the current millisecond timestamp in base36
+// for lexicographic ordering; the remaining characters are random.
 func generateFromPattern(pattern string) (string, error) {
 	// Parse pattern: [charset]{length}
 	if len(pattern) < 5 || pattern[0] != '[' {
@@ -1384,12 +1464,31 @@ func generateFromPattern(pattern string) (string, error) {
 	}
 
 	result := make([]byte, length)
-	if _, err := rand.Read(result); err != nil {
-		return "", err
+
+	// Encode timestamp prefix using the charset for sortable ordering.
+	// Use 8 chars for the timestamp portion (enough for milliseconds in base-36 until year ~3000).
+	ts := time.Now().UnixMilli()
+	base := len(charset)
+	tsLen := 8
+	if tsLen > length {
+		tsLen = length
 	}
-	for i := range result {
-		result[i] = charset[result[i]%byte(len(charset))]
+	for i := tsLen - 1; i >= 0; i-- {
+		result[i] = charset[ts%int64(base)]
+		ts /= int64(base)
 	}
+
+	// Fill the rest with random characters
+	if length > tsLen {
+		randBytes := make([]byte, length-tsLen)
+		if _, err := rand.Read(randBytes); err != nil {
+			return "", err
+		}
+		for i := range randBytes {
+			result[tsLen+i] = charset[randBytes[i]%byte(len(charset))]
+		}
+	}
+
 	return string(result), nil
 }
 

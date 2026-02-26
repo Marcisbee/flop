@@ -34,6 +34,7 @@ type AdminProvider interface {
 }
 
 type AdminWriteProvider interface {
+	AdminCreateRow(table string, data map[string]any) (map[string]any, error)
 	AdminUpdateRow(table, pk string, fields map[string]any) error
 	AdminDeleteRow(table, pk string) error
 }
@@ -350,10 +351,28 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				return
 			}
 
-			// /_/api/tables/{table}/rows — list rows
+			// /_/api/tables/{table}/rows — list or create rows
 			tableName, ok := parseRowsPath(path)
 			if !ok {
 				adminJSONError(w, "not found", http.StatusNotFound)
+				return
+			}
+			if r.Method == http.MethodPost {
+				if !writeEnabled {
+					adminJSONError(w, "write operations not supported", http.StatusMethodNotAllowed)
+					return
+				}
+				var data map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+					adminJSONError(w, "invalid json", http.StatusBadRequest)
+					return
+				}
+				row, err := writeProvider.AdminCreateRow(tableName, data)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{"ok": true, "row": row})
 				return
 			}
 			if r.Method != http.MethodGet {

@@ -375,6 +375,14 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 	}, true, nil
 }
 
+func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) (map[string]any, error) {
+	ti := p.DB.db.GetTable(table)
+	if ti == nil {
+		return nil, fmt.Errorf("table not found: %s", table)
+	}
+	return ti.Insert(data, nil)
+}
+
 func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string]any) error {
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
