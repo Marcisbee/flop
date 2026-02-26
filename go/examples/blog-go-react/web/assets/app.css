@@ -1,0 +1,126 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  background: linear-gradient(140deg, #f4f9ff, #fef8f2);
+  color: #162132;
+}
+
+.top {
+  padding: 24px;
+  border-bottom: 1px solid #d6deea;
+  background: #ffffffd9;
+  backdrop-filter: blur(2px);
+}
+
+.top h1 {
+  margin: 0 0 6px;
+}
+
+.top p {
+  margin: 0;
+  color: #4b5a70;
+}
+
+.nav {
+  margin-top: 10px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.nav a {
+  color: #0b4da2;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.nav a[aria-current="page"] {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.nav a:hover {
+  text-decoration: underline;
+}
+
+main {
+  display: grid;
+  gap: 20px;
+  padding: 20px;
+}
+
+section {
+  background: #fff;
+  border: 1px solid #d6deea;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+li {
+  margin: 6px 0;
+}
+
+.cards {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.card {
+  border: 1px solid #c8d3e4;
+  border-radius: 12px;
+  padding: 10px;
+  background: #f9fbff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card:hover {
+  background: #eef4ff;
+}
+
+.card strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.card span {
+  color: #55657b;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th,
+td {
+  border-bottom: 1px solid #d6deea;
+  text-align: left;
+  padding: 8px;
+  vertical-align: top;
+}
+
+th {
+  color: #4b5a70;
+  font-weight: 600;
+}
+
+.muted {
+  color: #6a7d98;
+}
+
+.error {
+  color: #b12626;
+}

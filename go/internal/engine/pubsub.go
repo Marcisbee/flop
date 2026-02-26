@@ -1,6 +1,9 @@
 package engine
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // ChangeEvent represents a table mutation event.
 type ChangeEvent struct {
@@ -18,13 +21,24 @@ type PubSub struct {
 	mu              sync.RWMutex
 	listeners       map[string]map[*ChangeListener]struct{}
 	globalListeners map[*ChangeListener]struct{}
+	events          chan ChangeEvent
+	stop            chan struct{}
+	closeOnce       sync.Once
+	closed          atomic.Bool
+	droppedEvents   atomic.Uint64
 }
 
+const pubSubEventQueueSize = 16384
+
 func NewPubSub() *PubSub {
-	return &PubSub{
+	ps := &PubSub{
 		listeners:       make(map[string]map[*ChangeListener]struct{}),
 		globalListeners: make(map[*ChangeListener]struct{}),
+		events:          make(chan ChangeEvent, pubSubEventQueueSize),
+		stop:            make(chan struct{}),
 	}
+	go ps.dispatchLoop()
+	return ps
 }
 
 // Subscribe registers a listener for specific tables. Returns an unsubscribe function.
@@ -66,6 +80,29 @@ func (ps *PubSub) SubscribeAll(callback ChangeListener) func() {
 
 // Publish sends an event to all matching listeners.
 func (ps *PubSub) Publish(event ChangeEvent) {
+	if ps.closed.Load() {
+		return
+	}
+	select {
+	case ps.events <- event:
+	default:
+		// Drop instead of blocking write paths.
+		ps.droppedEvents.Add(1)
+	}
+}
+
+func (ps *PubSub) dispatchLoop() {
+	for {
+		select {
+		case event := <-ps.events:
+			ps.dispatch(event)
+		case <-ps.stop:
+			return
+		}
+	}
+}
+
+func (ps *PubSub) dispatch(event ChangeEvent) {
 	ps.mu.RLock()
 	// Snapshot listeners to avoid holding lock during callbacks
 	var tableCallbacks []ChangeListener
@@ -93,6 +130,19 @@ func (ps *PubSub) Publish(event ChangeEvent) {
 			cb(event)
 		}()
 	}
+}
+
+// Close stops the dispatcher. Publish becomes a no-op afterwards.
+func (ps *PubSub) Close() {
+	ps.closeOnce.Do(func() {
+		ps.closed.Store(true)
+		close(ps.stop)
+	})
+}
+
+// DroppedEvents returns how many events were dropped due to backpressure.
+func (ps *PubSub) DroppedEvents() uint64 {
+	return ps.droppedEvents.Load()
 }
 
 // ListenerCount returns the number of listeners for a specific table (or all if empty).

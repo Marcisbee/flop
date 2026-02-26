@@ -1,12 +1,17 @@
-import { assertEquals, assertExists, assertAlmostEquals } from "@std/assert";
+import { assertAlmostEquals, assertEquals, assertExists } from "@std/assert";
 
 // ---- Utility tests ----
 
 import { crc32 } from "./src/util/crc32.ts";
 import { LRUCache } from "./src/util/lru.ts";
 import {
-  readUint16, writeUint16, readUint32, writeUint32,
-  readFloat64, writeFloat64, allocBuffer,
+  allocBuffer,
+  readFloat64,
+  readUint16,
+  readUint32,
+  writeFloat64,
+  writeUint16,
+  writeUint32,
 } from "./src/util/binary.ts";
 import { createTar, parseTar } from "./src/util/tar.ts";
 
@@ -64,7 +69,10 @@ Deno.test("LRU - access refreshes order", () => {
 Deno.test("tar - create and parse roundtrip", () => {
   const entries = [
     { path: "test.txt", data: new TextEncoder().encode("Hello, World!") },
-    { path: "dir/nested.json", data: new TextEncoder().encode('{"key": "value"}') },
+    {
+      path: "dir/nested.json",
+      data: new TextEncoder().encode('{"key": "value"}'),
+    },
   ];
   const tar = createTar(entries);
   const parsed = parseTar(tar);
@@ -76,7 +84,7 @@ Deno.test("tar - create and parse roundtrip", () => {
 
 // ---- Schema tests ----
 
-import { t, generateFromPattern } from "./src/schema.ts";
+import { generateFromPattern, t } from "./src/schema.ts";
 
 Deno.test("schema - t.string() builds correctly", () => {
   const field = (t.string() as any)._build();
@@ -236,7 +244,12 @@ Deno.test("page - iterate slots", () => {
 
 // ---- Index tests ----
 
-import { HashIndex, serializeIndex, deserializeIndex, compositeKey } from "./src/storage/index.ts";
+import {
+  compositeKey,
+  deserializeIndex,
+  HashIndex,
+  serializeIndex,
+} from "./src/storage/index.ts";
 
 Deno.test("HashIndex - set/get/delete", () => {
   const idx = new HashIndex();
@@ -265,6 +278,20 @@ Deno.test("HashIndex - serialize/deserialize roundtrip", () => {
   assertEquals(restored.size, 2);
 });
 
+Deno.test("HashIndex - serialize large index without stack overflow", () => {
+  const idx = new HashIndex();
+  for (let i = 0; i < 80_000; i++) {
+    idx.set(`k${i}`, { pageNumber: (i % 10_000) >>> 0, slotIndex: i % 4096 });
+  }
+
+  const data = serializeIndex(idx);
+  const restored = deserializeIndex(data);
+
+  assertEquals(restored.size, 80_000);
+  assertExists(restored.get("k0"));
+  assertExists(restored.get("k79999"));
+});
+
 Deno.test("compositeKey - joins values", () => {
   assertEquals(compositeKey(["a", "b"]), "a\0b");
   assertEquals(compositeKey([null, "x"]), "\0\0x");
@@ -272,7 +299,13 @@ Deno.test("compositeKey - joins values", () => {
 
 // ---- Meta file tests ----
 
-import { serializeMeta, deserializeMeta, createEmptyMeta, createTableMeta, addSchemaVersion } from "./src/storage/meta.ts";
+import {
+  addSchemaVersion,
+  createEmptyMeta,
+  createTableMeta,
+  deserializeMeta,
+  serializeMeta,
+} from "./src/storage/meta.ts";
 
 Deno.test("meta - serialize/deserialize roundtrip", () => {
   const meta = createEmptyMeta();
@@ -310,7 +343,11 @@ Deno.test("meta - addSchemaVersion bumps version", () => {
 
 // ---- Schema diff tests ----
 
-import { diffSchemas, schemasEqual, compiledToStored } from "./src/schema/diff.ts";
+import {
+  compiledToStored,
+  diffSchemas,
+  schemasEqual,
+} from "./src/schema/diff.ts";
 
 Deno.test("diff - detects added field", () => {
   const stored = { columns: [{ name: "id", type: "string" }] };
@@ -323,7 +360,9 @@ Deno.test("diff - detects added field", () => {
 });
 
 Deno.test("diff - detects removed field", () => {
-  const stored = { columns: [{ name: "id", type: "string" }, { name: "old", type: "string" }] };
+  const stored = {
+    columns: [{ name: "id", type: "string" }, { name: "old", type: "string" }],
+  };
   const current = compileSchema({ id: t.string() });
   const changes = diffSchemas(stored, current);
 
@@ -346,8 +385,18 @@ Deno.test("migration - rename field", () => {
   const chain = buildMigrationChain(1, 2, [
     { version: 2, rename: { foo: "bar" } },
   ], {
-    1: { columns: [{ name: "id", type: "string" }, { name: "foo", type: "string" }] },
-    2: { columns: [{ name: "id", type: "string" }, { name: "bar", type: "string" }] },
+    1: {
+      columns: [{ name: "id", type: "string" }, {
+        name: "foo",
+        type: "string",
+      }],
+    },
+    2: {
+      columns: [{ name: "id", type: "string" }, {
+        name: "bar",
+        type: "string",
+      }],
+    },
   });
 
   const migrated = chain.migrate({ id: "1", foo: "value" });
@@ -358,7 +407,12 @@ Deno.test("migration - rename field", () => {
 Deno.test("migration - add field gets null default", () => {
   const chain = buildMigrationChain(1, 2, [], {
     1: { columns: [{ name: "id", type: "string" }] },
-    2: { columns: [{ name: "id", type: "string" }, { name: "age", type: "number" }] },
+    2: {
+      columns: [{ name: "id", type: "string" }, {
+        name: "age",
+        type: "number",
+      }],
+    },
   });
 
   const migrated = chain.migrate({ id: "1" });
@@ -369,8 +423,18 @@ Deno.test("migration - custom transform", () => {
   const chain = buildMigrationChain(1, 2, [
     { version: 2, transform: (row) => ({ ...row, age: Number(row.age) || 0 }) },
   ], {
-    1: { columns: [{ name: "id", type: "string" }, { name: "age", type: "string" }] },
-    2: { columns: [{ name: "id", type: "string" }, { name: "age", type: "number" }] },
+    1: {
+      columns: [{ name: "id", type: "string" }, {
+        name: "age",
+        type: "string",
+      }],
+    },
+    2: {
+      columns: [{ name: "id", type: "string" }, {
+        name: "age",
+        type: "number",
+      }],
+    },
   });
 
   const migrated = chain.migrate({ id: "1", age: "25" });
@@ -413,7 +477,12 @@ Deno.test("pubsub - unsubscribe", () => {
 
 // ---- Auth tests ----
 
-import { createJWT, verifyJWT, hashPassword, verifyPassword } from "./src/server/auth.ts";
+import {
+  createJWT,
+  hashPassword,
+  verifyJWT,
+  verifyPassword,
+} from "./src/server/auth.ts";
 
 Deno.test("auth - JWT create and verify", async () => {
   const secret = "test-secret";
@@ -479,7 +548,10 @@ import { discoverRoutes } from "./src/server/router.ts";
 
 Deno.test("router - discovers reducers and views", () => {
   const moduleExports = {
-    send_message: new Reducer({ message: (t.string() as any)._build() }, () => {}),
+    send_message: new Reducer(
+      { message: (t.string() as any)._build() },
+      () => {},
+    ),
     view_messages: new View({ author: (t.string() as any)._build() }, () => []),
     db1: {},
   };
@@ -496,7 +568,10 @@ Deno.test("router - discovers reducers and views", () => {
 
 Deno.test("endpoint - roles() sets access policy", () => {
   const reducer = new Reducer({}, () => {}).roles("admin", "moderator");
-  assertEquals(reducer._access, { type: "roles", roles: ["admin", "moderator"] });
+  assertEquals(reducer._access, {
+    type: "roles",
+    roles: ["admin", "moderator"],
+  });
 });
 
 Deno.test("endpoint - public() sets access policy", () => {
@@ -506,7 +581,12 @@ Deno.test("endpoint - public() sets access policy", () => {
 
 // ---- File storage tests ----
 
-import { sanitizeFilename, validateMimeType, validateMagicBytes, mimeFromExtension } from "./src/storage/files.ts";
+import {
+  mimeFromExtension,
+  sanitizeFilename,
+  validateMagicBytes,
+  validateMimeType,
+} from "./src/storage/files.ts";
 
 Deno.test("files - sanitizeFilename removes dangerous chars", () => {
   assertEquals(sanitizeFilename("test.png"), "test.png");
@@ -515,8 +595,14 @@ Deno.test("files - sanitizeFilename removes dangerous chars", () => {
 });
 
 Deno.test("files - validateMimeType checks allowed types", () => {
-  assertEquals(validateMimeType("image/png", ["image/png", "image/jpeg"]), true);
-  assertEquals(validateMimeType("image/gif", ["image/png", "image/jpeg"]), false);
+  assertEquals(
+    validateMimeType("image/png", ["image/png", "image/jpeg"]),
+    true,
+  );
+  assertEquals(
+    validateMimeType("image/gif", ["image/png", "image/jpeg"]),
+    false,
+  );
   assertEquals(validateMimeType("anything", []), true);
 });
 

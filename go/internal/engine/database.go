@@ -343,6 +343,9 @@ func (db *Database) Close() error {
 			firstErr = err
 		}
 	}
+	if db.pubsub != nil {
+		db.pubsub.Close()
+	}
 	return firstErr
 }
 

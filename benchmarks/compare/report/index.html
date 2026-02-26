@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flop Benchmark Report</title>
+<style>
+  :root {
+    --bg: #eceff4;
+    --panel: #f7f8fb;
+    --panel-solid: #ffffff;
+    --line: #d8dde7;
+    --text: #1f2633;
+    --muted: #697386;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(circle at 10% -10%, #dde6fb 0, transparent 48%), var(--bg);
+    color: var(--text);
+    font-family: "Manrope", "Inter", system-ui, -apple-system, sans-serif;
+  }
+  .wrap {
+    max-width: 1260px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 26px;
+    letter-spacing: -0.015em;
+  }
+  .sub {
+    margin: 8px 0 16px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .bar button,
+  .bar input[type="file"] {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-solid);
+    color: var(--text);
+    font-size: 13px;
+    padding: 9px 12px;
+  }
+  .bar button { cursor: pointer; font-weight: 600; }
+  .status { color: var(--muted); font-size: 12px; }
+
+  .grid {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .title {
+    margin: 0;
+    font-size: 22px;
+    letter-spacing: -0.01em;
+  }
+  .meta {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 2px;
+  }
+  .expand {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-solid);
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .mini-chart {
+    width: 100%;
+    height: 142px;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: linear-gradient(180deg, #ffffff, #f9fbff);
+  }
+  .legend {
+    margin-top: 10px;
+    display: grid;
+    gap: 6px;
+  }
+  .legend-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .left {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .left span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .value {
+    color: #343d4e;
+    font-variant-numeric: tabular-nums;
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 99px;
+    flex-shrink: 0;
+  }
+  .empty {
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    padding: 14px;
+    color: var(--muted);
+    background: #f8fbff;
+  }
+
+  .modal {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(20, 26, 40, 0.45);
+  }
+  .modal.show { display: flex; }
+  .modal-card {
+    width: min(1120px, 100%);
+    max-height: 92vh;
+    overflow: auto;
+    background: var(--panel-solid);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .modal-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .modal-title {
+    margin: 0;
+    font-size: 20px;
+  }
+  .close {
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: #fff;
+    padding: 8px 10px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .detail-chart {
+    width: 100%;
+    height: 360px;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: linear-gradient(180deg, #fff, #f9fbff);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  th, td {
+    padding: 10px;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+    text-align: left;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    background: #f8f9fc;
+  }
+  tr:last-child td { border-bottom: none; }
+  th.num, td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Benchmark Report</h1>
+  <p class="sub">All scenarios are shown at once. Click <code>Expand</code> for full chart and details.</p>
+
+  <div class="bar">
+    <button id="reloadBtn">Reload</button>
+    <input id="fileInput" type="file" accept="application/json" />
+    <span id="status" class="status">Loading history...</span>
+  </div>
+
+  <div id="cards" class="grid"></div>
+</div>
+
+<div id="modal" class="modal">
+  <div class="modal-card">
+    <div class="modal-top">
+      <h2 id="modalTitle" class="modal-title">Scenario</h2>
+      <button id="closeBtn" class="close">Close</button>
+    </div>
+    <svg id="detailChart" class="detail-chart" viewBox="0 0 1120 360" preserveAspectRatio="none"></svg>
+    <table id="detailTable"></table>
+  </div>
+</div>
+
+<script>
+const COLORS = {
+  "flop-ts": "#5db39c",
+  "flop-go": "#b56ad0",
+  "sqlite-ts": "#4f7de0",
+  "sqlite-go": "#e08545",
+};
+const ENGINES = ["flop-ts", "flop-go", "sqlite-ts", "sqlite-go"];
+let history = { runs: [] };
+
+function metricForKind(kind) {
+  if (kind === "reads") return { key: "readOpsPerSec", label: "Read ops/s" };
+  if (kind === "writes") return { key: "writeOpsPerSec", label: "Write ops/s" };
+  if (kind === "edits") return { key: "transferOpsPerSec", label: "Edit transfer ops/s" };
+  return { key: "opsPerSec", label: "Ops/s" };
+}
+
+function fmt(v) {
+  if (v == null || Number.isNaN(v)) return "-";
+  return Math.round(v).toLocaleString();
+}
+
+function average(values) {
+  if (!values.length) return null;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function scenarioNames() {
+  const set = new Set();
+  const out = [];
+  const latest = history.runs?.[0];
+  for (const s of latest?.scenarios || []) {
+    if (["reads", "writes", "edits", "mixed"].includes(s?.config?.kind) && !set.has(s.name)) {
+      set.add(s.name);
+      out.push(s.name);
+    }
+  }
+  for (const run of history.runs || []) {
+    for (const s of run.scenarios || []) {
+      if (["reads", "writes", "edits", "mixed"].includes(s?.config?.kind) && !set.has(s.name)) {
+        set.add(s.name);
+        out.push(s.name);
+      }
+    }
+  }
+  return out;
+}
+
+function scenarioFromRun(run, name) {
+  return (run.scenarios || []).find((s) => s.name === name) || null;
+}
+
+function runsForScenario(name) {
+  return [...(history.runs || [])]
+    .filter((run) => (run.scenarios || []).some((s) => s.name === name))
+    .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
+}
+
+function collectScenario(name) {
+  const runs = runsForScenario(name);
+  const scenarios = runs.map((run) => scenarioFromRun(run, name));
+  const sample = scenarios.find(Boolean);
+  const metric = metricForKind(sample?.config?.kind);
+
+  const series = {};
+  const memorySeries = {};
+  const efficiencySeries = {};
+  for (const engine of ENGINES) {
+    series[engine] = scenarios.map((s) => {
+      const result = (s?.results || []).find((r) => r.engine === engine);
+      const w = result?.ok ? result?.metrics?.workload : null;
+      const v = w?.[metric.key];
+      return typeof v === "number" ? v : null;
+    });
+    memorySeries[engine] = scenarios.map((s) => {
+      const result = (s?.results || []).find((r) => r.engine === engine);
+      const v = result?.memory?.rssAvgMB;
+      return typeof v === "number" ? v : null;
+    });
+    efficiencySeries[engine] = scenarios.map((s) => {
+      const result = (s?.results || []).find((r) => r.engine === engine);
+      const v = result?.memory?.opsPerSecPerAvgMB;
+      return typeof v === "number" ? v : null;
+    });
+  }
+
+  return { runs, scenarios, metric, series, memorySeries, efficiencySeries };
+}
+
+function drawChart(svg, runs, series, cfg) {
+  const width = cfg.width;
+  const height = cfg.height;
+  const pad = cfg.pad;
+
+  const values = Object.values(series).flat().filter((v) => v != null);
+  if (!runs.length || !values.length) {
+    svg.innerHTML = `<text x="16" y="24" fill="#6a7488" font-size="12">No data</text>`;
+    return;
+  }
+
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    min = min * 0.9;
+    max = max * 1.1;
+  }
+  const range = Math.max(1e-9, max - min);
+
+  const xCount = runs.length;
+  const x = (i) => pad.l + (i * (width - pad.l - pad.r)) / Math.max(1, xCount - 1);
+  const y = (v) => pad.t + ((max - v) * (height - pad.t - pad.b)) / range;
+
+  let html = "";
+
+  if (cfg.axes) {
+    for (let i = 0; i <= 4; i++) {
+      const yy = pad.t + ((height - pad.t - pad.b) * i) / 4;
+      const vv = max - ((max - min) * i) / 4;
+      html += `<line x1="${pad.l}" y1="${yy}" x2="${width - pad.r}" y2="${yy}" stroke="#d8dee8" stroke-width="1"/>`;
+      html += `<text x="8" y="${yy + 4}" fill="#6a7488" font-size="11">${fmt(vv)}</text>`;
+    }
+    html += `<line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" stroke="#ced6e2"/>`;
+
+    runs.forEach((run, i) => {
+      if (runs.length > 12 && i % 2 === 1) return;
+      const label = new Date(run.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      html += `<text x="${x(i)}" y="${height - 12}" text-anchor="middle" fill="#6a7488" font-size="11">${label}</text>`;
+    });
+  }
+
+  for (const engine of ENGINES) {
+    const pts = series[engine].map((v, i) => ({ v, i })).filter((p) => p.v != null);
+    if (!pts.length) continue;
+
+    const d = pts.map((p, idx) => `${idx === 0 ? "M" : "L"}${x(p.i)},${y(p.v)}`).join(" ");
+    html += `<path d="${d}" fill="none" stroke="${COLORS[engine]}" stroke-width="2"/>`;
+
+    if (cfg.points) {
+      for (const p of pts) {
+        html += `<circle cx="${x(p.i)}" cy="${y(p.v)}" r="3" fill="${COLORS[engine]}"/>`;
+      }
+    }
+  }
+
+  svg.innerHTML = html;
+}
+
+function renderCards() {
+  const container = document.getElementById("cards");
+  const names = scenarioNames();
+
+  if (!names.length) {
+    container.innerHTML = `<div class="empty">No benchmark runs yet. Run <code>deno task bench</code>.</div>`;
+    return;
+  }
+
+  container.innerHTML = names.map((name) => {
+    const data = collectScenario(name);
+    const runCount = data.runs.length;
+
+    const legend = ENGINES
+      .map((engine) => {
+        const vals = data.series[engine].filter((v) => v != null);
+        const memVals = data.memorySeries[engine].filter((v) => v != null);
+        const effVals = data.efficiencySeries[engine].filter((v) => v != null);
+        return {
+          engine,
+          avg: average(vals),
+          avgMem: average(memVals),
+          avgEff: average(effVals),
+          has: vals.length > 0,
+        };
+      })
+      .filter((x) => x.has)
+      .sort((a, b) => (b.avg ?? 0) - (a.avg ?? 0))
+      .map((x) => `
+        <div class="legend-row">
+          <span class="left"><i class="dot" style="background:${COLORS[x.engine]}"></i><span>${x.engine}</span></span>
+          <span class="value">Avg ${fmt(x.avg)} ${data.metric.label}${x.avgMem ? ` · ${fmt(x.avgMem)} MB` : ""}${x.avgEff ? ` · ${fmt(x.avgEff)} ops/s/MB` : ""}</span>
+        </div>
+      `)
+      .join("");
+
+    return `
+      <article class="card" data-name="${name}">
+        <div class="card-head">
+          <div>
+            <h3 class="title">${name}</h3>
+            <div class="meta">${data.metric.label} · ${runCount} run${runCount === 1 ? "" : "s"}</div>
+          </div>
+          <button class="expand" data-expand="${name}">Expand</button>
+        </div>
+        <svg class="mini-chart" data-mini="${name}" viewBox="0 0 420 142" preserveAspectRatio="none"></svg>
+        <div class="legend">${legend || `<div class="meta">No successful runs yet</div>`}</div>
+      </article>
+    `;
+  }).join("");
+
+  for (const name of names) {
+    const svg = container.querySelector(`svg[data-mini="${name}"]`);
+    if (!svg) continue;
+    const data = collectScenario(name);
+    drawChart(svg, data.runs, data.series, {
+      width: 420,
+      height: 142,
+      pad: { l: 10, r: 10, t: 8, b: 8 },
+      axes: false,
+      points: false,
+    });
+  }
+
+  container.querySelectorAll("[data-expand]").forEach((el) => {
+    el.addEventListener("click", (ev) => {
+      const name = ev.currentTarget.getAttribute("data-expand");
+      openDetail(name);
+    });
+  });
+}
+
+function openDetail(name) {
+  if (!name) return;
+
+  const data = collectScenario(name);
+  document.getElementById("modalTitle").textContent = `${name} · ${data.metric.label}`;
+
+  const chart = document.getElementById("detailChart");
+  drawChart(chart, data.runs, data.series, {
+    width: 1120,
+    height: 360,
+    pad: { l: 56, r: 20, t: 16, b: 42 },
+    axes: true,
+    points: true,
+  });
+
+  const rows = ENGINES.map((engine) => {
+    const vals = data.series[engine].filter((v) => v != null);
+    const memVals = data.memorySeries[engine].filter((v) => v != null);
+    const effVals = data.efficiencySeries[engine].filter((v) => v != null);
+    if (!vals.length) {
+      return `
+        <tr>
+          <td><span class="left"><i class="dot" style="background:${COLORS[engine]}"></i><span>${engine}</span></span></td>
+          <td class="num">-</td>
+          <td class="num">-</td>
+          <td class="num">-</td>
+          <td class="num">-</td>
+          <td class="num">-</td>
+          <td class="num">-</td>
+        </tr>
+      `;
+    }
+
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const avg = average(vals);
+    const latest = vals[vals.length - 1];
+    const avgMem = average(memVals);
+    const avgEff = average(effVals);
+
+    return `
+      <tr>
+        <td><span class="left"><i class="dot" style="background:${COLORS[engine]}"></i><span>${engine}</span></span></td>
+        <td class="num">${fmt(min)}</td>
+        <td class="num">${fmt(max)}</td>
+        <td class="num">${fmt(avg)}</td>
+        <td class="num">${fmt(latest)}</td>
+        <td class="num">${fmt(avgMem)}</td>
+        <td class="num">${fmt(avgEff)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  document.getElementById("detailTable").innerHTML = `
+    <thead>
+      <tr>
+        <th>Engine</th>
+        <th class="num">Min (${data.metric.label})</th>
+        <th class="num">Max (${data.metric.label})</th>
+        <th class="num">Avg (${data.metric.label})</th>
+        <th class="num">Latest (${data.metric.label})</th>
+        <th class="num">Avg RSS (MB)</th>
+        <th class="num">Avg Eff (ops/s/MB)</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  `;
+
+  document.getElementById("modal").classList.add("show");
+}
+
+function closeDetail() {
+  document.getElementById("modal").classList.remove("show");
+}
+
+function setStatus(text) {
+  document.getElementById("status").textContent = text;
+}
+
+async function loadHistory() {
+  if (window.__BENCH_HISTORY__?.runs?.length) {
+    history = window.__BENCH_HISTORY__;
+    setStatus(`Loaded ${history.runs.length} runs (embedded)`);
+    renderCards();
+    return;
+  }
+
+  setStatus("Loading history...");
+  try {
+    const res = await fetch("../results/history.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(`${res.status}`);
+    history = await res.json();
+    setStatus(`Loaded ${history.runs?.length || 0} runs`);
+    renderCards();
+  } catch (err) {
+    history = { runs: [] };
+    setStatus(`Fetch failed (${err}). Load history.json manually.`);
+    renderCards();
+  }
+}
+
+function bindUI() {
+  document.getElementById("reloadBtn").addEventListener("click", loadHistory);
+  document.getElementById("closeBtn").addEventListener("click", closeDetail);
+  document.getElementById("modal").addEventListener("click", (ev) => {
+    if (ev.target.id === "modal") closeDetail();
+  });
+  document.getElementById("fileInput").addEventListener("change", async (ev) => {
+    const f = ev.target.files?.[0];
+    if (!f) return;
+    const raw = await f.text();
+    history = JSON.parse(raw);
+    setStatus(`Loaded ${history.runs?.length || 0} runs from ${f.name}`);
+    renderCards();
+  });
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeDetail();
+  });
+}
+
+bindUI();
+loadHistory();
+</script>
+</body>
+</html>

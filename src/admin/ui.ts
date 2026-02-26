@@ -175,7 +175,15 @@ async function api(path, opts = {}) {
     try { await refreshToken(); r = await doFetch(); } catch { return; }
   }
   if (r.status === 401 || r.status === 403) { logout(); throw new Error('Unauthorized'); }
-  if (r.headers.get('content-type')?.includes('json')) return r.json();
+  const isJSON = r.headers.get('content-type')?.includes('json');
+  if (!r.ok) {
+    if (isJSON) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.error || data.message || ('HTTP ' + r.status));
+    }
+    throw new Error('HTTP ' + r.status);
+  }
+  if (isJSON) return r.json();
   return r;
 }
 
@@ -192,7 +200,9 @@ async function apiUpload(path, file) {
     try { await refreshToken(); r = await doFetch(); } catch { return; }
   }
   if (r.status === 401 || r.status === 403) { logout(); throw new Error('Unauthorized'); }
-  return r.json();
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || data.message || ('HTTP ' + r.status));
+  return data;
 }
 
 async function apiDelete(path) {
@@ -205,7 +215,9 @@ async function apiDelete(path) {
     try { await refreshToken(); r = await doFetch(); } catch { return; }
   }
   if (r.status === 401 || r.status === 403) { logout(); throw new Error('Unauthorized'); }
-  return r.json();
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || data.message || ('HTTP ' + r.status));
+  return data;
 }
 
 function logout() {
@@ -504,8 +516,7 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
       showToast(err.message || 'Delete failed', 'error');
     }
     loadRows();
-    onReload();
-  }, [tableName, loadRows, onReload]);
+  }, [tableName, loadRows]);
 
   const submitCreate = useCallback(async () => {
     if (!schema) return;
@@ -542,12 +553,11 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
       formRef.current = {};
       showToast('Row created');
       loadRows();
-      onReload();
     } catch(err) {
       showToast(err.message || 'Create failed', 'error');
       setCreateErr(err.message || 'Create failed');
     }
-  }, [schema, tableName, loadRows, onReload]);
+  }, [schema, tableName, loadRows]);
 
   return html\`
     <div class="panel">

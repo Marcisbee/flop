@@ -4,8 +4,11 @@
 // Entry: keyLen(2) + keyBytes + pageNumber(4) + slotIndex(2)
 
 import {
-  readUint16, writeUint16, readUint32, writeUint32,
-  allocBuffer, concatBuffers,
+  allocBuffer,
+  readUint16,
+  readUint32,
+  writeUint16,
+  writeUint32,
 } from "../util/binary.ts";
 import type { RowPointer } from "../types.ts";
 
@@ -76,7 +79,10 @@ export class MultiIndex {
     if (set) {
       // Remove the specific pointer by matching page+slot
       for (const p of set) {
-        if (p.pageNumber === pointer.pageNumber && p.slotIndex === pointer.slotIndex) {
+        if (
+          p.pageNumber === pointer.pageNumber &&
+          p.slotIndex === pointer.slotIndex
+        ) {
           set.delete(p);
           break;
         }
@@ -92,27 +98,36 @@ export class MultiIndex {
 
 // Serialize a HashIndex to .idx file format
 export function serializeIndex(index: HashIndex): Uint8Array {
-  const parts: Uint8Array[] = [];
-
-  // Header: magic(4) + version(2) + entryCount(4)
-  const header = allocBuffer(10);
-  header.set(IDX_MAGIC, 0);
-  writeUint16(header, 4, IDX_VERSION);
-  writeUint32(header, 6, index.size);
-  parts.push(header);
-
-  // Entries
+  // Pre-encode keys and compute exact output size so we can write in one pass.
+  const entries: Array<{ keyBytes: Uint8Array; pointer: RowPointer }> = [];
+  let totalSize = 10; // magic(4) + version(2) + entryCount(4)
   for (const [key, pointer] of index.entries()) {
     const keyBytes = encoder.encode(key);
-    const entry = allocBuffer(2 + keyBytes.byteLength + 4 + 2);
-    writeUint16(entry, 0, keyBytes.byteLength);
-    entry.set(keyBytes, 2);
-    writeUint32(entry, 2 + keyBytes.byteLength, pointer.pageNumber);
-    writeUint16(entry, 2 + keyBytes.byteLength + 4, pointer.slotIndex);
-    parts.push(entry);
+    if (keyBytes.byteLength > 0xffff) {
+      throw new Error("Index key too long (max 65535 bytes)");
+    }
+    entries.push({ keyBytes, pointer });
+    totalSize += 2 + keyBytes.byteLength + 4 + 2;
   }
 
-  return concatBuffers(...parts);
+  const out = allocBuffer(totalSize);
+  out.set(IDX_MAGIC, 0);
+  writeUint16(out, 4, IDX_VERSION);
+  writeUint32(out, 6, index.size);
+
+  let offset = 10;
+  for (const { keyBytes, pointer } of entries) {
+    writeUint16(out, offset, keyBytes.byteLength);
+    offset += 2;
+    out.set(keyBytes, offset);
+    offset += keyBytes.byteLength;
+    writeUint32(out, offset, pointer.pageNumber);
+    offset += 4;
+    writeUint16(out, offset, pointer.slotIndex);
+    offset += 2;
+  }
+
+  return out;
 }
 
 // Deserialize a .idx file into a HashIndex
@@ -160,12 +175,16 @@ export async function readIndexFile(path: string): Promise<HashIndex> {
   }
 }
 
-export async function writeIndexFile(path: string, index: HashIndex): Promise<void> {
+export async function writeIndexFile(
+  path: string,
+  index: HashIndex,
+): Promise<void> {
   const data = serializeIndex(index);
   await Deno.writeFile(path, data);
 }
 
 // Build a composite key from multiple field values
 export function compositeKey(values: unknown[]): string {
-  return values.map((v) => (v === null || v === undefined ? "\0" : String(v))).join("\0");
+  return values.map((v) => (v === null || v === undefined ? "\0" : String(v)))
+    .join("\0");
 }

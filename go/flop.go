@@ -1,0 +1,864 @@
+package flop
+
+import (
+	"encoding/json"
+	"errors"
+	"html/template"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+	"unicode"
+)
+
+// ErrNotImplemented marks API scaffolding that is defined but not wired yet.
+var ErrNotImplemented = errors.New("flop: not implemented")
+
+type Config struct {
+	DataDir  string `json:"dataDir,omitempty"`
+	SyncMode string `json:"syncMode,omitempty"`
+}
+
+// App is the top-level runtime registry.
+// In this phase, it stores typed metadata used for generation and future runtime wiring.
+type App struct {
+	config   Config
+	tables   map[string]*tableSpec
+	views    []endpointSpec
+	reducers []endpointSpec
+	layouts  []layoutSpec
+	pages    []pageSpec
+}
+
+func New(config Config) *App {
+	return &App{
+		config: config,
+		tables: make(map[string]*tableSpec),
+	}
+}
+
+// FileRef is the built-in file field value type exposed to apps and generators.
+type FileRef struct {
+	Path string `json:"path"`
+	URL  string `json:"url"`
+	Mime string `json:"mime"`
+	Size int64  `json:"size"`
+}
+
+type Table[T any] struct {
+	app  *App
+	name string
+	spec *tableSpec
+}
+
+type TableBuilder[T any] struct {
+	table *Table[T]
+}
+
+type FieldBuilder[T any] struct {
+	table *Table[T]
+	spec  *fieldSpec
+}
+
+func AutoTable[T any](app *App, name string, configure func(*TableBuilder[T])) *Table[T] {
+	if app == nil {
+		panic("flop: app is nil")
+	}
+	if name == "" {
+		panic("flop: table name is empty")
+	}
+	if _, exists := app.tables[name]; exists {
+		panic("flop: duplicate table name: " + name)
+	}
+
+	rowType := baseStructType(reflectTypeOf[T]())
+	spec := &tableSpec{
+		Name:    name,
+		RowType: rowType.String(),
+		RowTS:   tsTypeFromReflect(rowType),
+		Fields:  inferFields(rowType),
+	}
+	app.tables[name] = spec
+
+	t := &Table[T]{app: app, name: name, spec: spec}
+	if configure != nil {
+		configure(&TableBuilder[T]{table: t})
+	}
+	return t
+}
+
+func (t *Table[T]) tableName() string {
+	if t == nil {
+		return ""
+	}
+	return t.name
+}
+
+func (tb *TableBuilder[T]) Field(name string) *FieldBuilder[T] {
+	if tb == nil || tb.table == nil || tb.table.spec == nil {
+		panic("flop: invalid table builder")
+	}
+	fs := tb.table.spec.findOrCreateField(name)
+	return &FieldBuilder[T]{table: tb.table, spec: fs}
+}
+
+func (fb *FieldBuilder[T]) Primary() *FieldBuilder[T] {
+	fb.spec.Primary = true
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Required() *FieldBuilder[T] {
+	fb.spec.Required = true
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Unique() *FieldBuilder[T] {
+	fb.spec.Unique = true
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Default(value any) *FieldBuilder[T] {
+	fb.spec.Default = value
+	return fb
+}
+
+func (fb *FieldBuilder[T]) DefaultNow() *FieldBuilder[T] {
+	fb.spec.Default = "now"
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Autogen(pattern string) *FieldBuilder[T] {
+	fb.spec.Autogen = pattern
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Bcrypt(rounds int) *FieldBuilder[T] {
+	fb.spec.Kind = "bcrypt"
+	fb.spec.BcryptRounds = rounds
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Roles() *FieldBuilder[T] {
+	fb.spec.Kind = "roles"
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Timestamp() *FieldBuilder[T] {
+	fb.spec.Kind = "timestamp"
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Ref(other any, field string) *FieldBuilder[T] {
+	fb.spec.Kind = "refSingle"
+	if nt, ok := other.(interface{ tableName() string }); ok {
+		fb.spec.RefTable = nt.tableName()
+	}
+	fb.spec.RefField = field
+	return fb
+}
+
+func (fb *FieldBuilder[T]) FileSingle(mime ...string) *FieldBuilder[T] {
+	fb.spec.Kind = "fileSingle"
+	fb.spec.MimeTypes = append([]string(nil), mime...)
+	return fb
+}
+
+func (fb *FieldBuilder[T]) FileMulti(mime ...string) *FieldBuilder[T] {
+	fb.spec.Kind = "fileMulti"
+	fb.spec.MimeTypes = append([]string(nil), mime...)
+	return fb
+}
+
+func (fb *FieldBuilder[T]) HasMany(other any, foreignField string) *FieldBuilder[T] {
+	fb.spec.Kind = "relation"
+	fb.spec.Relation = "hasMany"
+	if nt, ok := other.(interface{ tableName() string }); ok {
+		fb.spec.RelationTable = nt.tableName()
+	}
+	fb.spec.RelationField = foreignField
+	return fb
+}
+
+func (fb *FieldBuilder[T]) BelongsTo(other any, foreignField string) *FieldBuilder[T] {
+	fb.spec.Kind = "relation"
+	fb.spec.Relation = "belongsTo"
+	if nt, ok := other.(interface{ tableName() string }); ok {
+		fb.spec.RelationTable = nt.tableName()
+	}
+	fb.spec.RelationField = foreignField
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Virtual() *FieldBuilder[T] {
+	fb.spec.Virtual = true
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Index() *FieldBuilder[T] {
+	fb.spec.Indexed = true
+	return fb
+}
+
+type Update map[string]any
+
+func Set(field string, value any) Update {
+	return Update{field: value}
+}
+
+func (t *Table[T]) Insert(scope any, row T) (T, error) {
+	_ = scope
+	if t == nil {
+		var zero T
+		return zero, ErrNotImplemented
+	}
+	return row, nil
+}
+
+func (t *Table[T]) Get(scope any, id string) (*T, error) {
+	_, _ = scope, id
+	return nil, ErrNotImplemented
+}
+
+func (t *Table[T]) Update(scope any, id string, updates ...Update) error {
+	_, _, _ = scope, id, updates
+	return ErrNotImplemented
+}
+
+func (t *Table[T]) Delete(scope any, id string) (bool, error) {
+	_, _ = scope, id
+	return false, ErrNotImplemented
+}
+
+func (t *Table[T]) Scan(scope any, limit, offset int) ([]T, error) {
+	_, _, _ = scope, limit, offset
+	return nil, ErrNotImplemented
+}
+
+func (t *Table[T]) Count(scope any) int {
+	_ = scope
+	return 0
+}
+
+type AccessPolicy struct {
+	Type  string   `json:"type"`
+	Roles []string `json:"roles,omitempty"`
+}
+
+func Authenticated() AccessPolicy {
+	return AccessPolicy{Type: "authenticated"}
+}
+
+func Public() AccessPolicy {
+	return AccessPolicy{Type: "public"}
+}
+
+func Roles(roles ...string) AccessPolicy {
+	return AccessPolicy{Type: "roles", Roles: append([]string(nil), roles...)}
+}
+
+type AuthContext struct {
+	ID    string
+	Email string
+	Roles []string
+}
+
+type RequestContext struct {
+	Auth *AuthContext
+}
+
+type ViewCtx struct {
+	Request RequestContext
+}
+
+type ReducerCtx struct {
+	Request RequestContext
+}
+
+type Tx struct{}
+
+func (ctx *ViewCtx) RequireAuth() (*AuthContext, error) {
+	if ctx == nil || ctx.Request.Auth == nil {
+		return nil, errors.New("authentication required")
+	}
+	return ctx.Request.Auth, nil
+}
+
+func (ctx *ReducerCtx) RequireAuth() (*AuthContext, error) {
+	if ctx == nil || ctx.Request.Auth == nil {
+		return nil, errors.New("authentication required")
+	}
+	return ctx.Request.Auth, nil
+}
+
+func Transaction[T any](ctx *ReducerCtx, fn func(*Tx) (T, error)) (T, error) {
+	_ = ctx
+	if fn == nil {
+		var zero T
+		return zero, errors.New("transaction function is nil")
+	}
+	return fn(&Tx{})
+}
+
+type ViewDef[In, Out any] struct {
+	Name    string
+	Access  AccessPolicy
+	Handler func(*ViewCtx, In) (Out, error)
+}
+
+type ReducerDef[In, Out any] struct {
+	Name    string
+	Access  AccessPolicy
+	Handler func(*ReducerCtx, In) (Out, error)
+}
+
+func View[In, Out any](app *App, name string, access AccessPolicy, handler func(*ViewCtx, In) (Out, error)) *ViewDef[In, Out] {
+	if app == nil {
+		panic("flop: app is nil")
+	}
+	if access.Type == "" {
+		access = Authenticated()
+	}
+	app.views = append(app.views, endpointSpec{
+		Name:     name,
+		Access:   access,
+		InputTS:  tsTypeFromReflect(reflectTypeOf[In]()),
+		OutputTS: tsTypeFromReflect(reflectTypeOf[Out]()),
+	})
+	return &ViewDef[In, Out]{Name: name, Access: access, Handler: handler}
+}
+
+func Reducer[In, Out any](app *App, name string, access AccessPolicy, handler func(*ReducerCtx, In) (Out, error)) *ReducerDef[In, Out] {
+	if app == nil {
+		panic("flop: app is nil")
+	}
+	if access.Type == "" {
+		access = Authenticated()
+	}
+	app.reducers = append(app.reducers, endpointSpec{
+		Name:     name,
+		Access:   access,
+		InputTS:  tsTypeFromReflect(reflectTypeOf[In]()),
+		OutputTS: tsTypeFromReflect(reflectTypeOf[Out]()),
+	})
+	return &ReducerDef[In, Out]{Name: name, Access: access, Handler: handler}
+}
+
+type MetaTag struct {
+	Name    string
+	Content string
+}
+
+type LinkTag struct {
+	Rel  string
+	Href string
+}
+
+type ScriptTag struct {
+	Type    string
+	Content string
+	Src     string
+}
+
+type OpenGraph struct {
+	Title       string
+	Description string
+	Type        string
+	Image       string
+}
+
+type Head struct {
+	Title    string
+	Charset  string
+	Viewport string
+	Meta     []MetaTag
+	Link     []LinkTag
+	Script   []ScriptTag
+	OG       *OpenGraph
+	RawHTML  template.HTML
+}
+
+type LoaderCtx struct {
+	Request RequestContext
+}
+
+type HeadCtx[P, D any] struct {
+	Params P
+	Data   D
+}
+
+type LayoutConfig struct {
+	Entry       string
+	Head        func(*HeadCtx[struct{}, struct{}]) (Head, error)
+	RawHeadHTML func(*HeadCtx[struct{}, struct{}]) (template.HTML, error)
+}
+
+type PageConfig[P, D any] struct {
+	Entry       string
+	Loader      func(*LoaderCtx, P) (D, error)
+	Head        func(*HeadCtx[P, D]) (Head, error)
+	RawHeadHTML func(*HeadCtx[P, D]) (template.HTML, error)
+}
+
+type LayoutDef struct {
+	Path string
+	Cfg  LayoutConfig
+}
+
+type PageDef[P, D any] struct {
+	Path string
+	Cfg  PageConfig[P, D]
+}
+
+func Layout(app *App, path string, cfg LayoutConfig) *LayoutDef {
+	if app == nil {
+		panic("flop: app is nil")
+	}
+	app.layouts = append(app.layouts, layoutSpec{
+		Path:  path,
+		Entry: cfg.Entry,
+	})
+	return &LayoutDef{Path: path, Cfg: cfg}
+}
+
+func Page[P, D any](app *App, path string, cfg PageConfig[P, D]) *PageDef[P, D] {
+	if app == nil {
+		panic("flop: app is nil")
+	}
+	app.pages = append(app.pages, pageSpec{
+		Path:     path,
+		Entry:    cfg.Entry,
+		ParamsTS: tsTypeFromReflect(reflectTypeOf[P]()),
+		DataTS:   tsTypeFromReflect(reflectTypeOf[D]()),
+	})
+	return &PageDef[P, D]{Path: path, Cfg: cfg}
+}
+
+// AppSpec is a serializable summary of app metadata used by codegen.
+type AppSpec struct {
+	Config   Config          `json:"config"`
+	Tables   []TableSpec     `json:"tables"`
+	Views    []EndpointSpec  `json:"views"`
+	Reducers []EndpointSpec  `json:"reducers"`
+	Layouts  []LayoutSpec    `json:"layouts"`
+	Pages    []PageSpec      `json:"pages"`
+	Types    map[string]Type `json:"types,omitempty"`
+}
+
+type TableSpec struct {
+	Name    string      `json:"name"`
+	RowType string      `json:"rowType"`
+	RowTS   string      `json:"rowTs"`
+	Fields  []FieldSpec `json:"fields"`
+}
+
+type FieldSpec struct {
+	GoName        string   `json:"goName"`
+	JSONName      string   `json:"jsonName"`
+	Kind          string   `json:"kind"`
+	TSType        string   `json:"tsType"`
+	Required      bool     `json:"required,omitempty"`
+	Unique        bool     `json:"unique,omitempty"`
+	Primary       bool     `json:"primary,omitempty"`
+	Indexed       bool     `json:"indexed,omitempty"`
+	Virtual       bool     `json:"virtual,omitempty"`
+	Default       any      `json:"default,omitempty"`
+	Autogen       string   `json:"autogen,omitempty"`
+	BcryptRounds  int      `json:"bcryptRounds,omitempty"`
+	RefTable      string   `json:"refTable,omitempty"`
+	RefField      string   `json:"refField,omitempty"`
+	Relation      string   `json:"relation,omitempty"`
+	RelationTable string   `json:"relationTable,omitempty"`
+	RelationField string   `json:"relationField,omitempty"`
+	MimeTypes     []string `json:"mimeTypes,omitempty"`
+}
+
+type EndpointSpec struct {
+	Name     string       `json:"name"`
+	Access   AccessPolicy `json:"access"`
+	InputTS  string       `json:"inputTs"`
+	OutputTS string       `json:"outputTs"`
+}
+
+type LayoutSpec struct {
+	Path  string `json:"path"`
+	Entry string `json:"entry"`
+}
+
+type PageSpec struct {
+	Path     string `json:"path"`
+	Entry    string `json:"entry"`
+	ParamsTS string `json:"paramsTs"`
+	DataTS   string `json:"dataTs"`
+}
+
+// Type is reserved for future richer schema metadata in generation artifacts.
+type Type struct {
+	Name string `json:"name"`
+	TS   string `json:"ts"`
+}
+
+func (a *App) Spec() AppSpec {
+	if a == nil {
+		return AppSpec{}
+	}
+
+	tableNames := make([]string, 0, len(a.tables))
+	for name := range a.tables {
+		tableNames = append(tableNames, name)
+	}
+	sort.Strings(tableNames)
+
+	tables := make([]TableSpec, 0, len(tableNames))
+	for _, name := range tableNames {
+		ts := a.tables[name]
+		fields := make([]FieldSpec, 0, len(ts.Fields))
+		for _, fs := range ts.Fields {
+			fields = append(fields, fs.toPublic())
+		}
+		sort.Slice(fields, func(i, j int) bool { return fields[i].JSONName < fields[j].JSONName })
+
+		tables = append(tables, TableSpec{
+			Name:    ts.Name,
+			RowType: ts.RowType,
+			RowTS:   ts.RowTS,
+			Fields:  fields,
+		})
+	}
+
+	views := make([]EndpointSpec, len(a.views))
+	for i, v := range a.views {
+		views[i] = EndpointSpec{Name: v.Name, Access: v.Access, InputTS: v.InputTS, OutputTS: v.OutputTS}
+	}
+	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
+
+	reducers := make([]EndpointSpec, len(a.reducers))
+	for i, r := range a.reducers {
+		reducers[i] = EndpointSpec{Name: r.Name, Access: r.Access, InputTS: r.InputTS, OutputTS: r.OutputTS}
+	}
+	sort.Slice(reducers, func(i, j int) bool { return reducers[i].Name < reducers[j].Name })
+
+	layouts := make([]LayoutSpec, len(a.layouts))
+	for i, l := range a.layouts {
+		layouts[i] = LayoutSpec{Path: l.Path, Entry: l.Entry}
+	}
+
+	pages := make([]PageSpec, len(a.pages))
+	for i, p := range a.pages {
+		pages[i] = PageSpec{Path: p.Path, Entry: p.Entry, ParamsTS: p.ParamsTS, DataTS: p.DataTS}
+	}
+
+	return AppSpec{
+		Config:   a.config,
+		Tables:   tables,
+		Views:    views,
+		Reducers: reducers,
+		Layouts:  layouts,
+		Pages:    pages,
+	}
+}
+
+func (a *App) WriteSpec(path string) error {
+	spec := a.Spec()
+	data, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+type tableSpec struct {
+	Name    string
+	RowType string
+	RowTS   string
+	Fields  map[string]*fieldSpec
+}
+
+func (ts *tableSpec) findOrCreateField(name string) *fieldSpec {
+	if fs, ok := ts.Fields[name]; ok {
+		return fs
+	}
+	for _, fs := range ts.Fields {
+		if fs.JSONName == name {
+			return fs
+		}
+	}
+	fs := &fieldSpec{
+		GoName:   name,
+		JSONName: lowerCamel(name),
+		Kind:     "string",
+		TSType:   "string",
+	}
+	ts.Fields[name] = fs
+	return fs
+}
+
+type fieldSpec struct {
+	GoName        string
+	JSONName      string
+	Kind          string
+	TSType        string
+	Required      bool
+	Unique        bool
+	Primary       bool
+	Indexed       bool
+	Virtual       bool
+	Default       any
+	Autogen       string
+	BcryptRounds  int
+	RefTable      string
+	RefField      string
+	Relation      string
+	RelationTable string
+	RelationField string
+	MimeTypes     []string
+}
+
+func (fs *fieldSpec) toPublic() FieldSpec {
+	return FieldSpec{
+		GoName:        fs.GoName,
+		JSONName:      fs.JSONName,
+		Kind:          fs.Kind,
+		TSType:        fs.TSType,
+		Required:      fs.Required,
+		Unique:        fs.Unique,
+		Primary:       fs.Primary,
+		Indexed:       fs.Indexed,
+		Virtual:       fs.Virtual,
+		Default:       fs.Default,
+		Autogen:       fs.Autogen,
+		BcryptRounds:  fs.BcryptRounds,
+		RefTable:      fs.RefTable,
+		RefField:      fs.RefField,
+		Relation:      fs.Relation,
+		RelationTable: fs.RelationTable,
+		RelationField: fs.RelationField,
+		MimeTypes:     append([]string(nil), fs.MimeTypes...),
+	}
+}
+
+type endpointSpec struct {
+	Name     string
+	Access   AccessPolicy
+	InputTS  string
+	OutputTS string
+}
+
+type layoutSpec struct {
+	Path  string
+	Entry string
+}
+
+type pageSpec struct {
+	Path     string
+	Entry    string
+	ParamsTS string
+	DataTS   string
+}
+
+var (
+	timeType     = reflect.TypeOf(time.Time{})
+	fileRefType  = reflect.TypeOf(FileRef{})
+	fileRefPtr   = reflect.TypeOf(&FileRef{})
+	stringSliceT = reflect.TypeOf([]string{})
+)
+
+func inferFields(rowType reflect.Type) map[string]*fieldSpec {
+	fields := make(map[string]*fieldSpec)
+	for i := 0; i < rowType.NumField(); i++ {
+		sf := rowType.Field(i)
+		if sf.PkgPath != "" && !sf.Anonymous {
+			continue
+		}
+
+		jsonName, omitEmpty, skip := parseJSONTag(sf)
+		if skip {
+			continue
+		}
+		if jsonName == "" {
+			jsonName = lowerCamel(sf.Name)
+		}
+
+		ft := sf.Type
+		kind, ts := inferKindAndTS(ft)
+		required := !isNullableType(ft) && !omitEmpty
+		if kind == "roles" {
+			required = false
+		}
+
+		fields[sf.Name] = &fieldSpec{
+			GoName:   sf.Name,
+			JSONName: jsonName,
+			Kind:     kind,
+			TSType:   ts,
+			Required: required,
+		}
+	}
+	return fields
+}
+
+func inferKindAndTS(t reflect.Type) (string, string) {
+	ts := tsTypeFromReflect(t)
+	bt := t
+	for bt.Kind() == reflect.Pointer {
+		bt = bt.Elem()
+	}
+
+	switch {
+	case t == fileRefType || t == fileRefPtr:
+		return "fileSingle", ts
+	case bt.Kind() == reflect.Slice && (bt.Elem() == fileRefType || bt.Elem() == fileRefPtr):
+		return "fileMulti", ts
+	case bt.AssignableTo(timeType):
+		return "timestamp", ts
+	case bt == stringSliceT:
+		return "roles", ts
+	}
+
+	switch bt.Kind() {
+	case reflect.String:
+		return "string", ts
+	case reflect.Bool:
+		return "boolean", ts
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "integer", ts
+	case reflect.Float32, reflect.Float64:
+		return "number", ts
+	case reflect.Array, reflect.Slice:
+		return "array", ts
+	case reflect.Map, reflect.Struct:
+		return "json", ts
+	default:
+		return "json", "any"
+	}
+}
+
+func parseJSONTag(sf reflect.StructField) (name string, omitempty bool, skip bool) {
+	tag := sf.Tag.Get("json")
+	if tag == "-" {
+		return "", false, true
+	}
+	if tag == "" {
+		return "", false, false
+	}
+	parts := strings.Split(tag, ",")
+	if len(parts) > 0 {
+		name = parts[0]
+	}
+	for _, p := range parts[1:] {
+		if p == "omitempty" {
+			omitempty = true
+		}
+	}
+	return name, omitempty, false
+}
+
+func isNullableType(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map:
+		return true
+	default:
+		return false
+	}
+}
+
+func reflectTypeOf[T any]() reflect.Type {
+	var p *T
+	return reflect.TypeOf(p).Elem()
+}
+
+func baseStructType(t reflect.Type) reflect.Type {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		panic("flop: AutoTable[T] requires struct type")
+	}
+	return t
+}
+
+func tsTypeFromReflect(t reflect.Type) string {
+	seen := map[reflect.Type]bool{}
+	return tsTypeFromReflectInner(t, seen)
+}
+
+func tsTypeFromReflectInner(t reflect.Type, seen map[reflect.Type]bool) string {
+	if t == nil {
+		return "any"
+	}
+
+	switch t.Kind() {
+	case reflect.Pointer:
+		return tsTypeFromReflectInner(t.Elem(), seen) + " | null"
+	case reflect.Interface:
+		return "any"
+	}
+
+	switch t {
+	case timeType:
+		return "string"
+	case fileRefType:
+		return "{ path: string; url: string; mime: string; size: number }"
+	}
+
+	if seen[t] {
+		return "any"
+	}
+
+	switch t.Kind() {
+	case reflect.Bool:
+		return "boolean"
+	case reflect.String:
+		return "string"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return "number"
+	case reflect.Slice, reflect.Array:
+		return "(" + tsTypeFromReflectInner(t.Elem(), seen) + ")[]"
+	case reflect.Map:
+		if t.Key().Kind() == reflect.String {
+			return "Record<string, " + tsTypeFromReflectInner(t.Elem(), seen) + ">"
+		}
+		return "Record<string, any>"
+	case reflect.Struct:
+		seen[t] = true
+		props := make([]string, 0, t.NumField())
+		for i := 0; i < t.NumField(); i++ {
+			sf := t.Field(i)
+			if sf.PkgPath != "" && !sf.Anonymous {
+				continue
+			}
+			jsonName, omitempty, skip := parseJSONTag(sf)
+			if skip {
+				continue
+			}
+			if jsonName == "" {
+				jsonName = lowerCamel(sf.Name)
+			}
+			opt := ""
+			if omitempty || isNullableType(sf.Type) {
+				opt = "?"
+			}
+			props = append(props, jsonName+opt+": "+tsTypeFromReflectInner(sf.Type, seen))
+		}
+		sort.Strings(props)
+		return "{ " + strings.Join(props, "; ") + " }"
+	default:
+		return "any"
+	}
+}
+
+func lowerCamel(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToLower(r[0])
+	return string(r)
+}

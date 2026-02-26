@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 3,
+  "runId": "20260226-122255-24db7ab",
+  "createdAt": "2026-02-26T12:22:55.115Z",
+  "git": {
+    "sha": "24db7ab",
+    "branch": "go",
+    "dirty": true
+  },
+  "host": {
+    "os": "darwin",
+    "arch": "aarch64",
+    "deno": "2.6.10"
+  },
+  "scenarios": [
+    {
+      "name": "reads",
+      "config": {
+        "name": "reads",
+        "kind": "reads",
+        "users": 600,
+        "setupConcurrency": 50,
+        "concurrency": 220,
+        "durationSec": 1,
+        "accountsPerUser": 3
+      },
+      "scoreLabel": "ops/s",
+      "results": [
+        {
+          "engine": "flop-ts",
+          "ok": true,
+          "elapsedMs": 2533.5663329999998,
+          "metrics": {
+            "kind": "workload",
+            "mode": "reads",
+            "host": "http://localhost:41085",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 1,
+            "startedAt": "2026-02-26T12:22:55.447Z",
+            "finishedAt": "2026-02-26T12:22:57.687Z",
+            "totalMs": 2239.283875,
+            "setup": {
+              "register": {
+                "durationMs": 308.244584,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 1946.5062198789517
+              },
+              "createAccounts": {
+                "durationMs": 193.554417,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 9299.710272176326
+              },
+              "deposit": {
+                "durationMs": 202.858334,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 8873.187334763383
+              }
+            },
+            "workload": {
+              "durationMs": 1529.833583,
+              "attempted": 629,
+              "success": 629,
+              "failed": 0,
+              "opsPerSec": 411.1558322353811,
+              "readOps": 629,
+              "writeOps": 0,
+              "readOpsPerSec": 411.1558322353811,
+              "writeOpsPerSec": 0,
+              "transferOpsPerSec": 0,
+              "byOp": {
+                "get_stats": 244,
+                "get_recent_transactions": 234,
+                "get_all_accounts": 98,
+                "get_transactions": 53
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 1800,
+              "completedTransactions": 1800,
+              "failedTransactions": 0,
+              "totalVolume": 124259862.31999998,
+              "totalBalance": 124259862.31999996
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -6,12 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 
+	flop "github.com/marcisbee/flop"
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/runtime"
 	"github.com/marcisbee/flop/internal/server"
@@ -101,7 +100,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Pool error: %v\n", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
 
 	// --- Step 5: Set up auth ---
 	port := defaultPort
@@ -170,24 +168,20 @@ func main() {
 	)
 
 	// --- Step 8: Print startup info ---
-	fmt.Println()
-	fmt.Println("┌─────────────────────────────────────────┐")
-	fmt.Printf("│   Server:  http://localhost:%-13s│\n", strconv.Itoa(port))
-	fmt.Printf("│   Admin:   http://localhost:%s/_%-8s│\n", strconv.Itoa(port), "")
-	fmt.Printf("│   Tables:  %-29s│\n", strconv.Itoa(len(tableDefs)))
-	fmt.Printf("│   Routes:  %-29s│\n", strconv.Itoa(len(routes)))
-	fmt.Printf("│   Pages:   %-29s│\n", strconv.Itoa(len(meta.Routes)))
-	if setupToken != "" {
-		fmt.Println("│                                         │")
-		fmt.Printf("│   Setup:   /_/setup?token=%s...  │\n", setupToken[:6])
-	}
-	fmt.Println("└─────────────────────────────────────────┘")
-	fmt.Println()
-
-	if setupToken != "" {
-		fmt.Println("  Create your admin account:")
-		fmt.Printf("  http://localhost:%d/_/setup?token=%s\n\n", port, setupToken)
-	}
+	flop.PrintServerInfo(flop.DefaultServerInfo{
+		AppName:    filepath.Base(absAppPath),
+		Port:       port,
+		DataDir:    dataDir,
+		Engine:     "quickjs runtime",
+		AdminPath:  "/_",
+		SetupToken: setupToken,
+		SetupHint:  setupHint(setupToken),
+		Extra: []string{
+			fmt.Sprintf("Tables:  %d", len(tableDefs)),
+			fmt.Sprintf("Routes:  %d", len(routes)),
+			fmt.Sprintf("Pages:   %d", len(meta.Routes)),
+		},
+	})
 
 	for _, route := range routes {
 		access := "[public]"
@@ -212,42 +206,23 @@ func main() {
 		WriteTimeout: 0, // no timeout for SSE
 		IdleTimeout:  120 * time.Second,
 	}
-
-	// Periodic checkpoint
-	checkpointTicker := time.NewTicker(30 * time.Second)
-
-	// Graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigCh
-		fmt.Println("\nShutting down...")
-		checkpointTicker.Stop()
-
-		if err := db.Checkpoint(); err != nil {
-			fmt.Fprintf(os.Stderr, "Checkpoint error: %v\n", err)
-		}
-		if err := db.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Close error: %v\n", err)
-		}
-
-		pool.Close()
-		srv.Close()
-	}()
-
-	go func() {
-		for range checkpointTicker.C {
-			if err := db.Checkpoint(); err != nil {
-				fmt.Fprintf(os.Stderr, "Checkpoint error: %v\n", err)
-			}
-		}
-	}()
-
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if err := flop.ServeWithDefaults(flop.DefaultServeOptions{
+		Server:             srv,
+		Checkpoint:         db.Checkpoint,
+		Close:              db.Close,
+		CheckpointInterval: 30 * time.Second,
+		OnShutdown:         pool.Close,
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func setupHint(token string) string {
+	if token != "" {
+		return ""
+	}
+	return "already configured"
 }
 
 func generateToken(length int) string {

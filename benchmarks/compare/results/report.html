@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flop Benchmark Report</title>
+<style>
+  :root {
+    --bg: #eceff4;
+    --panel: #f7f8fb;
+    --panel-solid: #ffffff;
+    --line: #d8dde7;
+    --text: #1f2633;
+    --muted: #697386;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(circle at 10% -10%, #dde6fb 0, transparent 48%), var(--bg);
+    color: var(--text);
+    font-family: "Manrope", "Inter", system-ui, -apple-system, sans-serif;
+  }
+  .wrap {
+    max-width: 1260px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 26px;
+    letter-spacing: -0.015em;
+  }
+  .sub {
+    margin: 8px 0 16px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .bar button,
+  .bar input[type="file"] {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel-solid);
+    color: var(--text);
+    font-size: 13px;
+    padding: 9px 12px;
+  }
+  .bar button { cursor: pointer; font-weight: 600; }
+  .status { color: var(--muted); font-size: 12px; }
+
+  .grid {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .title {
+    margin: 0;
+    font-size: 22px;
+    letter-spacing: -0.01em;
+  }
+  .meta {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 2px;
+  }
+  .expand {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-solid);
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .mini-chart {
+    width: 100%;
+    height: 142px;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: linear-gradient(180deg, #ffffff, #f9fbff);
+  }
+  .legend {
+    margin-top: 10px;
+    display: grid;
+    gap: 6px;
+  }
+  .legend-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .left {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .left span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .value {
+    color: #343d4e;
+    font-variant-numeric: tabular-nums;
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 99px;
+    flex-shrink: 0;
+  }
+  .empty {
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    padding: 14px;
+    color: var(--muted);
+    background: #f8fbff;
+  }
+
+  .modal {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(20, 26, 40, 0.45);
+  }
+  .modal.show { display: flex; }
+  .modal-card {
+    width: min(1120px, 100%);
+    max-height: 92vh;
+    overflow: auto;
+    background: var(--panel-solid);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .modal-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .modal-title {
+    margin: 0;
+    font-size: 20px;
+  }
+  .close {
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: #fff;
+    padding: 8px 10px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .detail-chart {
+    width: 100%;
+    height: 360px;
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: linear-gradient(180deg, #fff, #f9fbff);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  th, td {
+    padding: 10px;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+    text-align: left;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    background: #f8f9fc;
+  }
+  tr:last-child td { border-bottom: none; }
+  th.num, td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+<script>window.__BENCH_HISTORY__ = {"schemaVersion":3,"updatedAt":"2026-02-26T12:36:33.532Z","runs":[{"schemaVersion":3,"runId":"20260226-123215-24db7ab","createdAt":"2026-02-26T12:32:15.302Z","git":{"sha":"24db7ab","branch":"go","dirty":true},"host":{"os":"darwin","arch":"aarch64","deno":"2.6.10"},"scenarios":[{"name":"high-load-rw","config":{"name":"high-load-rw","kind":"mixed","users":600,"setupConcurrency":50,"concurrency":220,"durationSec":15,"readShare":0.55,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":15906.794458,"metrics":{"kind":"workload","mode":"mixed","host":"http://localhost:41085","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:32:16.710Z","finishedAt":"2026-02-26T12:32:32.315Z","totalMs":15605.0535,"setup":{"register":{"durationMs":291.391584,"attempted":600,"success":600,"ratePerSec":2059.0848636177493},"createAccounts":{"durationMs":109.48683299999999,"attempted":1800,"success":1800,"ratePerSec":16440.33305813129},"deposit":{"durationMs":126.84875000000005,"attempted":1800,"success":1800,"ratePerSec":14190.12800677972}},"workload":{"durationMs":15071.4375,"attempted":9997,"success":9997,"failed":0,"opsPerSec":663.3076639172607,"readOps":5473,"writeOps":4524,"readOpsPerSec":363.13722562960567,"writeOpsPerSec":300.17043828765503,"transferOpsPerSec":226.78659550557137,"byOp":{"get_recent_transactions":1975,"get_stats":1915,"get_all_accounts":1049,"get_transactions":534,"transfer":3418,"deposit":1106}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":6324,"completedTransactions":2959,"failedTransactions":0,"totalVolume":125296896.13999988,"totalBalance":125311972.3199998}}},{"engine":"flop-go","ok":true,"elapsedMs":15936.561083,"metrics":{"kind":"workload","mode":"mixed","host":"http://localhost:41086","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:32:32.988Z","finishedAt":"2026-02-26T12:32:48.363Z","totalMs":15375.284209,"setup":{"register":{"durationMs":200.19708300000002,"attempted":600,"success":600,"ratePerSec":2997.0466652603523},"createAccounts":{"durationMs":74.74216699999997,"attempted":1800,"success":1800,"ratePerSec":24082.791177301573},"deposit":{"durationMs":79.068084,"attempted":1800,"success":1800,"ratePerSec":22765.190566651396}},"workload":{"durationMs":15018.496374999999,"attempted":88616,"success":88616,"failed":0,"opsPerSec":5900.457528325635,"readOps":48950,"writeOps":39666,"readOpsPerSec":3259.3143000309183,"writeOpsPerSec":2641.143228294717,"transferOpsPerSec":1984.2199415918562,"byOp":{"get_transactions":4856,"get_stats":17177,"transfer":29800,"get_recent_transactions":17184,"get_all_accounts":9733,"deposit":9866}},"stats":{"accountCount":1800,"completedTransactions":41466,"failedTransactions":0,"totalBalance":123595206.11999859,"totalVolume":124802014.179998,"transactionCount":41466,"userCount":600}}},{"engine":"sqlite-ts","ok":true,"elapsedMs":16068.626375,"metrics":{"kind":"workload","mode":"mixed","host":"http://localhost:41087","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:32:48.829Z","finishedAt":"2026-02-26T12:33:04.596Z","totalMs":15766.765041999999,"setup":{"register":{"durationMs":60.509125000000004,"attempted":600,"success":600,"ratePerSec":9915.859798005673},"createAccounts":{"durationMs":139.46550000000002,"attempted":1800,"success":1800,"ratePerSec":12906.417716209384},"deposit":{"durationMs":213.502041,"attempted":1800,"success":1800,"ratePerSec":8430.832752554343}},"workload":{"durationMs":15351.02375,"attempted":10898,"success":10898,"failed":0,"opsPerSec":709.9200794344416,"readOps":6039,"writeOps":4859,"readOpsPerSec":393.3939584973934,"writeOpsPerSec":316.5261209370483,"transferOpsPerSec":235.48918032258274,"byOp":{"get_all_accounts":1266,"deposit":1244,"transfer":3615,"get_stats":2061,"get_recent_transactions":2150,"get_transactions":562}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":6659,"completedTransactions":6659,"failedTransactions":0,"totalVolume":125203256.77,"totalBalance":125057984.46}}},{"engine":"sqlite-go","ok":true,"elapsedMs":16126.029999999999,"metrics":{"kind":"workload","mode":"mixed","host":"http://localhost:41088","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:33:05.162Z","finishedAt":"2026-02-26T12:33:20.738Z","totalMs":15576.129291,"setup":{"register":{"durationMs":168.89362500000001,"attempted":600,"success":525,"ratePerSec":3108.4654616182224},"createAccounts":{"durationMs":186.197625,"attempted":1575,"success":1503,"ratePerSec":8072.068588415133},"deposit":{"durationMs":157.60549999999995,"attempted":1503,"success":1503,"ratePerSec":9536.469222203543}},"workload":{"durationMs":15058.486167,"attempted":21507,"success":21507,"failed":0,"opsPerSec":1428.2312153748649,"readOps":11834,"writeOps":9673,"readOpsPerSec":785.869168305489,"writeOpsPerSec":642.3620470693759,"transferOpsPerSec":482.1201759251183,"byOp":{"get_transactions":1221,"transfer":7260,"get_stats":4069,"deposit":2413,"get_all_accounts":2428,"get_recent_transactions":4116}},"stats":{"accountCount":1503,"completedTransactions":11176,"failedTransactions":0,"totalBalance":105674418.39,"totalVolume":105968951.59,"transactionCount":11176,"userCount":525}}}]},{"name":"reads","config":{"name":"reads","kind":"reads","users":600,"setupConcurrency":50,"concurrency":220,"durationSec":15,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":16498.736916,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41105","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:33:21.070Z","finishedAt":"2026-02-26T12:33:37.262Z","totalMs":16192.760167,"setup":{"register":{"durationMs":314.99375000000003,"attempted":600,"success":600,"ratePerSec":1904.7996984067142},"createAccounts":{"durationMs":219.452625,"attempted":1800,"success":1800,"ratePerSec":8202.225879047926},"deposit":{"durationMs":131.40537500000005,"attempted":1800,"success":1800,"ratePerSec":13698.069808788257}},"workload":{"durationMs":15522.165833000001,"attempted":6677,"success":6677,"failed":0,"opsPerSec":430.1590429993185,"readOps":6677,"writeOps":0,"readOpsPerSec":430.1590429993185,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_recent_transactions":2353,"get_stats":2267,"get_all_accounts":1393,"get_transactions":664}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":1800,"completedTransactions":1800,"failedTransactions":0,"totalVolume":124904157.03999999,"totalBalance":124904157.04000002}}},{"engine":"flop-go","ok":true,"elapsedMs":15700.537083000003,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41106","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:33:37.678Z","finishedAt":"2026-02-26T12:33:53.069Z","totalMs":15390.12275,"setup":{"register":{"durationMs":168.02245900000003,"attempted":600,"success":600,"ratePerSec":3570.9511905191193},"createAccounts":{"durationMs":76.40883399999998,"attempted":1800,"success":1800,"ratePerSec":23557.48551273535},"deposit":{"durationMs":102.26862500000001,"attempted":1800,"success":1800,"ratePerSec":17600.70598387335}},"workload":{"durationMs":15042.479959,"attempted":56309,"success":56309,"failed":0,"opsPerSec":3743.3322266990963,"readOps":56309,"writeOps":0,"readOpsPerSec":3743.3322266990963,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_recent_transactions":19554,"get_stats":19871,"get_transactions":5575,"get_all_accounts":11309}},"stats":{"accountCount":1800,"completedTransactions":1800,"failedTransactions":0,"totalBalance":126807713.49000031,"totalVolume":126807713.49000031,"transactionCount":1800,"userCount":600}}},{"engine":"sqlite-ts","ok":true,"elapsedMs":16174.3995,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41107","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:33:53.536Z","finishedAt":"2026-02-26T12:34:09.407Z","totalMs":15870.689250000001,"setup":{"register":{"durationMs":64.843334,"attempted":600,"success":600,"ratePerSec":9253.071410547767},"createAccounts":{"durationMs":168.06604199999998,"attempted":1800,"success":1800,"ratePerSec":10710.075507103335},"deposit":{"durationMs":282.875541,"attempted":1800,"success":1800,"ratePerSec":6363.2224745793765}},"workload":{"durationMs":15351.825333,"attempted":8950,"success":8950,"failed":0,"opsPerSec":582.9925631554213,"readOps":8950,"writeOps":0,"readOpsPerSec":582.9925631554213,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_stats":3133,"get_recent_transactions":3156,"get_transactions":856,"get_all_accounts":1805}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":1800,"completedTransactions":1800,"failedTransactions":0,"totalVolume":124061491.4,"totalBalance":124061491.4}}},{"engine":"sqlite-go","ok":true,"elapsedMs":16017.363666000005,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41108","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:34:09.716Z","finishedAt":"2026-02-26T12:34:25.439Z","totalMs":15723.408084,"setup":{"register":{"durationMs":132.132666,"attempted":600,"success":551,"ratePerSec":4170.051333104866},"createAccounts":{"durationMs":210.165542,"attempted":1653,"success":1559,"ratePerSec":7417.961979704552},"deposit":{"durationMs":320.81487500000003,"attempted":1559,"success":1559,"ratePerSec":4859.500358267364}},"workload":{"durationMs":15058.845958,"attempted":31113,"success":31113,"failed":0,"opsPerSec":2066.094579011962,"readOps":31113,"writeOps":0,"readOpsPerSec":2066.094579011962,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_transactions":3065,"get_all_accounts":6324,"get_recent_transactions":10697,"get_stats":11027}},"stats":{"accountCount":1559,"completedTransactions":1559,"failedTransactions":0,"totalBalance":106753508.39,"totalVolume":106753508.39,"transactionCount":1559,"userCount":551}}}]},{"name":"writes","config":{"name":"writes","kind":"writes","users":600,"setupConcurrency":50,"concurrency":160,"durationSec":15,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":16202.392084000006,"metrics":{"kind":"workload","mode":"writes","host":"http://localhost:41125","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:34:25.759Z","finishedAt":"2026-02-26T12:34:41.656Z","totalMs":15897.123209,"setup":{"register":{"durationMs":299.29387499999996,"attempted":600,"success":600,"ratePerSec":2004.7186064198613},"createAccounts":{"durationMs":220.310333,"attempted":1800,"success":1800,"ratePerSec":8170.293129192446},"deposit":{"durationMs":145.26595799999996,"attempted":1800,"success":1800,"ratePerSec":12391.065496570096}},"workload":{"durationMs":15006.896125,"attempted":126306,"success":126306,"failed":0,"opsPerSec":8416.530570208102,"readOps":0,"writeOps":126306,"readOpsPerSec":0,"writeOpsPerSec":8416.530570208102,"transferOpsPerSec":6312.564517734343,"byOp":{"deposit":31574,"transfer":94732}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":128106,"completedTransactions":100000,"failedTransactions":0,"totalVolume":128066014.9699984,"totalBalance":125521032.16999993}}},{"engine":"flop-go","ok":true,"elapsedMs":15616.91320900002,"metrics":{"kind":"workload","mode":"writes","host":"http://localhost:41126","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:34:42.217Z","finishedAt":"2026-02-26T12:34:57.536Z","totalMs":15319.381458,"setup":{"register":{"durationMs":163.19412499999999,"attempted":600,"success":600,"ratePerSec":3676.602941435545},"createAccounts":{"durationMs":71.49924999999999,"attempted":1800,"success":1800,"ratePerSec":25175.089249187935},"deposit":{"durationMs":61.20629200000002,"attempted":1800,"success":1800,"ratePerSec":29408.741179746678}},"workload":{"durationMs":15022.651208,"attempted":263317,"success":263317,"failed":0,"opsPerSec":17527.997978131585,"readOps":0,"writeOps":263317,"readOpsPerSec":0,"writeOpsPerSec":17527.997978131585,"transferOpsPerSec":13152.538607484923,"byOp":{"transfer":197586,"deposit":65731}},"stats":{"accountCount":1800,"completedTransactions":265117,"failedTransactions":0,"totalBalance":131530520.12000293,"totalVolume":139542222.23000613,"transactionCount":265117,"userCount":600}}},{"engine":"sqlite-ts","ok":true,"elapsedMs":15783.986917000002,"metrics":{"kind":"workload","mode":"writes","host":"http://localhost:41127","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:34:58.047Z","finishedAt":"2026-02-26T12:35:13.520Z","totalMs":15472.956875,"setup":{"register":{"durationMs":66.920583,"attempted":600,"success":600,"ratePerSec":8965.851358467695},"createAccounts":{"durationMs":137.08608299999997,"attempted":1800,"success":1800,"ratePerSec":13130.435713156969},"deposit":{"durationMs":217.93158299999996,"attempted":1800,"success":1800,"ratePerSec":8259.47288236786}},"workload":{"durationMs":15032.349457999999,"attempted":70402,"success":70402,"failed":0,"opsPerSec":4683.366375741955,"readOps":0,"writeOps":70402,"readOpsPerSec":0,"writeOpsPerSec":4683.366375741955,"transferOpsPerSec":3507.768372956355,"byOp":{"transfer":52730,"deposit":17672}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":72202,"completedTransactions":72202,"failedTransactions":0,"totalVolume":127322698.01,"totalBalance":125195277.11}}},{"engine":"sqlite-go","ok":true,"elapsedMs":15897.639708000002,"metrics":{"kind":"workload","mode":"writes","host":"http://localhost:41128","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:35:13.839Z","finishedAt":"2026-02-26T12:35:29.449Z","totalMs":15609.993208,"setup":{"register":{"durationMs":140.13637500000002,"attempted":600,"success":545,"ratePerSec":3889.0687731861194},"createAccounts":{"durationMs":207.4135,"attempted":1635,"success":1538,"ratePerSec":7415.139323139526},"deposit":{"durationMs":195.18437500000005,"attempted":1538,"success":1538,"ratePerSec":7879.729102291101}},"workload":{"durationMs":15039.212334,"attempted":64372,"success":64372,"failed":0,"opsPerSec":4280.277355647847,"readOps":0,"writeOps":64372,"readOpsPerSec":0,"writeOpsPerSec":4280.277355647847,"transferOpsPerSec":3215.793415634077,"byOp":{"transfer":48363,"deposit":16009}},"stats":{"accountCount":1538,"completedTransactions":65910,"failedTransactions":0,"totalBalance":108344510.01,"totalVolume":110305151.92,"transactionCount":65910,"userCount":545}}}]},{"name":"edits","config":{"name":"edits","kind":"edits","users":600,"setupConcurrency":50,"concurrency":160,"durationSec":15,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":16141.700167000003,"metrics":{"kind":"workload","mode":"edits","host":"http://localhost:41145","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:35:29.777Z","finishedAt":"2026-02-26T12:35:45.616Z","totalMs":15839.206,"setup":{"register":{"durationMs":297.067375,"attempted":600,"success":600,"ratePerSec":2019.7438375722004},"createAccounts":{"durationMs":111.35108399999996,"attempted":1800,"success":1800,"ratePerSec":16165.08735559324},"deposit":{"durationMs":134.59912499999996,"attempted":1800,"success":1800,"ratePerSec":13373.043844081458}},"workload":{"durationMs":15057.043042,"attempted":118591,"success":118591,"failed":0,"opsPerSec":7876.114830063458,"readOps":0,"writeOps":118591,"readOpsPerSec":0,"writeOpsPerSec":7876.114830063458,"transferOpsPerSec":7876.114830063458,"byOp":{"edit_transfer":118591}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":120391,"completedTransactions":100000,"failedTransactions":0,"totalVolume":126541666.840002,"totalBalance":125601322.49999982}}},{"engine":"flop-go","ok":true,"elapsedMs":15712.232041999989,"metrics":{"kind":"workload","mode":"edits","host":"http://localhost:41146","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:35:46.175Z","finishedAt":"2026-02-26T12:36:01.595Z","totalMs":15420.057208,"setup":{"register":{"durationMs":180.84229200000001,"attempted":600,"success":600,"ratePerSec":3317.807982659277},"createAccounts":{"durationMs":117.99175000000002,"attempted":1800,"success":1800,"ratePerSec":15255.30386658389},"deposit":{"durationMs":88.23674999999997,"attempted":1800,"success":1800,"ratePerSec":20399.663405553812}},"workload":{"durationMs":15032.062667,"attempted":254278,"success":254278,"failed":0,"opsPerSec":16915.70915003025,"readOps":0,"writeOps":254278,"readOpsPerSec":0,"writeOpsPerSec":16915.70915003025,"transferOpsPerSec":16915.70915003025,"byOp":{"edit_transfer":254278}},"stats":{"accountCount":1800,"completedTransactions":256078,"failedTransactions":0,"totalBalance":125171390.16000028,"totalVolume":127845849.77000034,"transactionCount":256078,"userCount":600}}},{"engine":"sqlite-ts","ok":true,"elapsedMs":15763.920790999982,"metrics":{"kind":"workload","mode":"edits","host":"http://localhost:41147","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:36:02.102Z","finishedAt":"2026-02-26T12:36:17.565Z","totalMs":15462.581917,"setup":{"register":{"durationMs":62.551458000000004,"attempted":600,"success":600,"ratePerSec":9592.102553388922},"createAccounts":{"durationMs":137.13079199999999,"attempted":1800,"success":1800,"ratePerSec":13126.154773466198},"deposit":{"durationMs":214.26870800000003,"attempted":1800,"success":1800,"ratePerSec":8400.666699311034}},"workload":{"durationMs":15030.071041,"attempted":69620,"success":69620,"failed":0,"opsPerSec":4632.04730104642,"readOps":0,"writeOps":69620,"readOpsPerSec":0,"writeOpsPerSec":4632.04730104642,"transferOpsPerSec":4632.04730104642,"byOp":{"edit_transfer":69620}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":71420,"completedTransactions":71420,"failedTransactions":0,"totalVolume":125975052.76,"totalBalance":125243821.88}}},{"engine":"sqlite-go","ok":true,"elapsedMs":15892.167958000005,"metrics":{"kind":"workload","mode":"edits","host":"http://localhost:41148","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:36:17.883Z","finishedAt":"2026-02-26T12:36:33.488Z","totalMs":15605.310167000001,"setup":{"register":{"durationMs":129.568208,"attempted":600,"success":558,"ratePerSec":4306.612004697943},"createAccounts":{"durationMs":193.12629099999998,"attempted":1674,"success":1600,"ratePerSec":8284.734262307145},"deposit":{"durationMs":212.361584,"attempted":1600,"success":1600,"ratePerSec":7534.319389894926}},"workload":{"durationMs":15040.382042,"attempted":58780,"success":58780,"failed":0,"opsPerSec":3908.1454072016186,"readOps":0,"writeOps":58780,"readOpsPerSec":0,"writeOpsPerSec":3908.1454072016186,"transferOpsPerSec":3908.1454072016186,"byOp":{"edit_transfer":58780}},"stats":{"accountCount":1600,"completedTransactions":60380,"failedTransactions":0,"totalBalance":110272181.44,"totalVolume":110889259.96,"transactionCount":60380,"userCount":558}}}]}]},{"schemaVersion":3,"runId":"20260226-122255-24db7ab","createdAt":"2026-02-26T12:22:55.115Z","git":{"sha":"24db7ab","branch":"go","dirty":true},"host":{"os":"darwin","arch":"aarch64","deno":"2.6.10"},"scenarios":[{"name":"reads","config":{"name":"reads","kind":"reads","users":600,"setupConcurrency":50,"concurrency":220,"durationSec":1,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":2533.5663329999998,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41085","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":1,"startedAt":"2026-02-26T12:22:55.447Z","finishedAt":"2026-02-26T12:22:57.687Z","totalMs":2239.283875,"setup":{"register":{"durationMs":308.244584,"attempted":600,"success":600,"ratePerSec":1946.5062198789517},"createAccounts":{"durationMs":193.554417,"attempted":1800,"success":1800,"ratePerSec":9299.710272176326},"deposit":{"durationMs":202.858334,"attempted":1800,"success":1800,"ratePerSec":8873.187334763383}},"workload":{"durationMs":1529.833583,"attempted":629,"success":629,"failed":0,"opsPerSec":411.1558322353811,"readOps":629,"writeOps":0,"readOpsPerSec":411.1558322353811,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_stats":244,"get_recent_transactions":234,"get_all_accounts":98,"get_transactions":53}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":1800,"completedTransactions":1800,"failedTransactions":0,"totalVolume":124259862.31999998,"totalBalance":124259862.31999996}}}]}]},{"schemaVersion":3,"runId":"20260226-121608-24db7ab","createdAt":"2026-02-26T12:16:08.954Z","git":{"sha":"24db7ab","branch":"go","dirty":true},"host":{"os":"darwin","arch":"aarch64","deno":"2.6.10"},"scenarios":[{"name":"high-load-rw","config":{"name":"high-load-rw","kind":"mixed","users":600,"setupConcurrency":50,"concurrency":220,"durationSec":15,"readShare":0.55,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":15929.609792000001,"metrics":{"kind":"workload","mode":"mixed","host":"http://localhost:41085","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:16:10.260Z","finishedAt":"2026-02-26T12:16:25.882Z","totalMs":15623.099417,"setup":{"register":{"durationMs":294.187,"attempted":600,"success":600,"ratePerSec":2039.5190814006055},"createAccounts":{"durationMs":108.90787499999999,"attempted":1800,"success":1800,"ratePerSec":16527.730432716646},"deposit":{"durationMs":131.18483399999997,"attempted":1800,"success":1800,"ratePerSec":13721.098278784271}},"workload":{"durationMs":15078.208125,"attempted":9799,"success":9799,"failed":0,"opsPerSec":649.8782825363077,"readOps":5335,"writeOps":4464,"readOpsPerSec":353.8218835933464,"writeOpsPerSec":296.05639894296127,"transferOpsPerSec":218.5936135564517,"byOp":{"get_stats":1895,"get_recent_transactions":1863,"get_transactions":546,"get_all_accounts":1031,"transfer":3296,"deposit":1168}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":6264,"completedTransactions":3183,"failedTransactions":0,"totalVolume":128656095.5499998,"totalBalance":128664463.17}}},{"engine":"flop-go","ok":true,"elapsedMs":15879.171708999998,"metrics":{"kind":"workload","mode":"mixed","host":"http://localhost:41086","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:16:26.550Z","finishedAt":"2026-02-26T12:16:41.878Z","totalMs":15327.940209,"setup":{"register":{"durationMs":161.223459,"attempted":600,"success":600,"ratePerSec":3721.5427811904224},"createAccounts":{"durationMs":70.83291700000001,"attempted":1800,"success":1800,"ratePerSec":25411.91406814433},"deposit":{"durationMs":62.97479200000001,"attempted":1800,"success":1800,"ratePerSec":28582.865347137627}},"workload":{"durationMs":15032.024959,"attempted":88129,"success":88129,"failed":0,"opsPerSec":5862.749712056276,"readOps":48306,"writeOps":39823,"readOpsPerSec":3213.539102799197,"writeOpsPerSec":2649.2106092570784,"transferOpsPerSec":1994.9408068302555,"byOp":{"get_stats":16845,"transfer":29988,"get_transactions":4877,"get_recent_transactions":16944,"get_all_accounts":9640,"deposit":9835}},"stats":{"accountCount":1800,"completedTransactions":41623,"failedTransactions":0,"totalBalance":124425944.70000029,"totalVolume":125634380.03000009,"transactionCount":41623,"userCount":600}}},{"engine":"sqlite-ts","ok":true,"elapsedMs":16088.584875,"metrics":{"kind":"workload","mode":"mixed","host":"http://localhost:41087","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:16:42.340Z","finishedAt":"2026-02-26T12:16:58.129Z","totalMs":15788.364708000001,"setup":{"register":{"durationMs":61.461999999999996,"attempted":600,"success":600,"ratePerSec":9762.129445836452},"createAccounts":{"durationMs":138.244333,"attempted":1800,"success":1800,"ratePerSec":13020.425220612839},"deposit":{"durationMs":211.912166,"attempted":1800,"success":1800,"ratePerSec":8494.085233407504}},"workload":{"durationMs":15372.566832999999,"attempted":11058,"success":11058,"failed":0,"opsPerSec":719.3333501248471,"readOps":6160,"writeOps":4898,"readOpsPerSec":400.7138213753896,"writeOpsPerSec":318.6195287494575,"transferOpsPerSec":239.8428343199775,"byOp":{"get_recent_transactions":2216,"get_stats":2107,"transfer":3687,"get_all_accounts":1247,"deposit":1211,"get_transactions":590}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":6698,"completedTransactions":6698,"failedTransactions":0,"totalVolume":124365166.66,"totalBalance":124216377.63}}},{"engine":"sqlite-go","ok":true,"elapsedMs":16148.644500000002,"metrics":{"kind":"workload","mode":"mixed","host":"http://localhost:41088","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:16:58.687Z","finishedAt":"2026-02-26T12:17:14.281Z","totalMs":15595.059374999999,"setup":{"register":{"durationMs":127.61512499999999,"attempted":600,"success":559,"ratePerSec":4380.358519415312},"createAccounts":{"durationMs":195.886958,"attempted":1677,"success":1584,"ratePerSec":8086.296383243646},"deposit":{"durationMs":205.57862499999993,"attempted":1584,"success":1584,"ratePerSec":7705.0812067645675}},"workload":{"durationMs":15058.809666,"attempted":21229,"success":21229,"failed":0,"opsPerSec":1409.7395790804865,"readOps":11683,"writeOps":9546,"readOpsPerSec":775.8249329877679,"writeOpsPerSec":633.9146460927186,"transferOpsPerSec":473.9418425690062,"byOp":{"get_transactions":1133,"deposit":2409,"get_all_accounts":2400,"get_recent_transactions":4023,"transfer":7137,"get_stats":4127}},"stats":{"accountCount":1584,"completedTransactions":11130,"failedTransactions":0,"totalBalance":112721895.02,"totalVolume":113009550.16,"transactionCount":11130,"userCount":559}}}]},{"name":"reads","config":{"name":"reads","kind":"reads","users":600,"setupConcurrency":50,"concurrency":220,"durationSec":15,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":16533.435875000003,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41105","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:17:14.603Z","finishedAt":"2026-02-26T12:17:30.831Z","totalMs":16227.966792000001,"setup":{"register":{"durationMs":316.28916599999997,"attempted":600,"success":600,"ratePerSec":1896.9982677180922},"createAccounts":{"durationMs":222.0165,"attempted":1800,"success":1800,"ratePerSec":8107.505523238137},"deposit":{"durationMs":131.24254200000007,"attempted":1800,"success":1800,"ratePerSec":13715.065043467377}},"workload":{"durationMs":15553.710959,"attempted":6614,"success":6614,"failed":0,"opsPerSec":425.2361393004333,"readOps":6614,"writeOps":0,"readOpsPerSec":425.2361393004333,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_recent_transactions":2317,"get_transactions":654,"get_all_accounts":1360,"get_stats":2283}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":1800,"completedTransactions":1800,"failedTransactions":0,"totalVolume":125873272.54000013,"totalBalance":125873272.54000016}}},{"engine":"flop-go","ok":true,"elapsedMs":15793.547374999995,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41106","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:17:31.245Z","finishedAt":"2026-02-26T12:17:46.743Z","totalMs":15497.539166999999,"setup":{"register":{"durationMs":160.49325000000002,"attempted":600,"success":600,"ratePerSec":3738.4749825927256},"createAccounts":{"durationMs":135.09000000000003,"attempted":1800,"success":1800,"ratePerSec":13324.450366422381},"deposit":{"durationMs":137.189416,"attempted":1800,"success":1800,"ratePerSec":13120.545684078137}},"workload":{"durationMs":15063.861084,"attempted":56857,"success":56857,"failed":0,"opsPerSec":3774.3975255049554,"readOps":56857,"writeOps":0,"readOpsPerSec":3774.3975255049554,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_stats":20049,"get_transactions":5599,"get_recent_transactions":19957,"get_all_accounts":11252}},"stats":{"accountCount":1800,"completedTransactions":1800,"failedTransactions":0,"totalBalance":124558621.7400001,"totalVolume":124558621.7400001,"transactionCount":1800,"userCount":600}}},{"engine":"sqlite-ts","ok":true,"elapsedMs":16186.632125000004,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41107","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:17:47.196Z","finishedAt":"2026-02-26T12:18:03.081Z","totalMs":15885.281875,"setup":{"register":{"durationMs":66.7295,"attempted":600,"success":600,"ratePerSec":8991.525487228288},"createAccounts":{"durationMs":198.03766700000003,"attempted":1800,"success":1800,"ratePerSec":9089.179989178521},"deposit":{"durationMs":256.997042,"attempted":1800,"success":1800,"ratePerSec":7003.971664389818}},"workload":{"durationMs":15362.028292,"attempted":9001,"success":9001,"failed":0,"opsPerSec":585.9252325871188,"readOps":9001,"writeOps":0,"readOpsPerSec":585.9252325871188,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_stats":3170,"get_recent_transactions":3112,"get_transactions":916,"get_all_accounts":1803}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":1800,"completedTransactions":1800,"failedTransactions":0,"totalVolume":126362597.04,"totalBalance":126362597.04}}},{"engine":"sqlite-go","ok":true,"elapsedMs":15995.217791999996,"metrics":{"kind":"workload","mode":"reads","host":"http://localhost:41108","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":220,"durationSecRequested":15,"startedAt":"2026-02-26T12:18:03.379Z","finishedAt":"2026-02-26T12:18:19.081Z","totalMs":15701.550083,"setup":{"register":{"durationMs":117.674375,"attempted":600,"success":565,"ratePerSec":4801.385178378895},"createAccounts":{"durationMs":191.045708,"attempted":1695,"success":1619,"ratePerSec":8474.41178840825},"deposit":{"durationMs":330.520875,"attempted":1619,"success":1619,"ratePerSec":4898.329038975224}},"workload":{"durationMs":15060.890916999999,"attempted":29807,"success":29807,"failed":0,"opsPerSec":1979.0993882277783,"readOps":29807,"writeOps":0,"readOpsPerSec":1979.0993882277783,"writeOpsPerSec":0,"transferOpsPerSec":0,"byOp":{"get_transactions":2942,"get_recent_transactions":10438,"get_all_accounts":6109,"get_stats":10318}},"stats":{"accountCount":1619,"completedTransactions":1619,"failedTransactions":0,"totalBalance":112897699.42,"totalVolume":112897699.42,"transactionCount":1619,"userCount":565}}}]},{"name":"writes","config":{"name":"writes","kind":"writes","users":600,"setupConcurrency":50,"concurrency":160,"durationSec":15,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":16256.359999999986,"metrics":{"kind":"workload","mode":"writes","host":"http://localhost:41125","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:18:19.384Z","finishedAt":"2026-02-26T12:18:35.339Z","totalMs":15955.054124999999,"setup":{"register":{"durationMs":290.856792,"attempted":600,"success":600,"ratePerSec":2062.870857765632},"createAccounts":{"durationMs":223.60187499999995,"attempted":1800,"success":1800,"ratePerSec":8050.021941900087},"deposit":{"durationMs":146.11537500000009,"attempted":1800,"success":1800,"ratePerSec":12319.03213470861}},"workload":{"durationMs":15052.596041,"attempted":125395,"success":125395,"failed":0,"opsPerSec":8330.456730417216,"readOps":0,"writeOps":125395,"readOpsPerSec":0,"writeOpsPerSec":8330.456730417216,"transferOpsPerSec":6234.14059238687,"byOp":{"deposit":31555,"transfer":93840}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":127195,"completedTransactions":100000,"failedTransactions":0,"totalVolume":131281734.26999666,"totalBalance":128714610.66}}},{"engine":"flop-go","ok":true,"elapsedMs":15596.421333000006,"metrics":{"kind":"workload","mode":"writes","host":"http://localhost:41126","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:18:35.889Z","finishedAt":"2026-02-26T12:18:51.191Z","totalMs":15301.269083,"setup":{"register":{"durationMs":164.506875,"attempted":600,"success":600,"ratePerSec":3647.2639821284065},"createAccounts":{"durationMs":72.1585,"attempted":1800,"success":1800,"ratePerSec":24945.086164485125},"deposit":{"durationMs":61.69366700000003,"attempted":1800,"success":1800,"ratePerSec":29176.414493241242}},"workload":{"durationMs":15002.0975,"attempted":262700,"success":262700,"failed":0,"opsPerSec":17510.88472795221,"readOps":0,"writeOps":262700,"readOpsPerSec":0,"writeOpsPerSec":17510.88472795221,"transferOpsPerSec":13136.563070597294,"byOp":{"deposit":65624,"transfer":197076}},"stats":{"accountCount":1800,"completedTransactions":264500,"failedTransactions":0,"totalBalance":130192780.8700006,"totalVolume":138162562.5100028,"transactionCount":264500,"userCount":600}}},{"engine":"sqlite-ts","ok":true,"elapsedMs":15761.697625,"metrics":{"kind":"workload","mode":"writes","host":"http://localhost:41127","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:18:51.667Z","finishedAt":"2026-02-26T12:19:07.132Z","totalMs":15464.720167,"setup":{"register":{"durationMs":62.198292,"attempted":600,"success":600,"ratePerSec":9646.56714367655},"createAccounts":{"durationMs":139.63404200000002,"attempted":1800,"success":1800,"ratePerSec":12890.839326988757},"deposit":{"durationMs":213.82299999999998,"attempted":1800,"success":1800,"ratePerSec":8418.177651609041}},"workload":{"durationMs":15030.341916,"attempted":70613,"success":70613,"failed":0,"opsPerSec":4698.030184185732,"readOps":0,"writeOps":70613,"readOpsPerSec":0,"writeOpsPerSec":4698.030184185732,"transferOpsPerSec":3532.6541669339895,"byOp":{"transfer":53097,"deposit":17516}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":72413,"completedTransactions":72413,"failedTransactions":0,"totalVolume":127720352.21,"totalBalance":125564197.27}}},{"engine":"sqlite-go","ok":true,"elapsedMs":15842.714290999982,"metrics":{"kind":"workload","mode":"writes","host":"http://localhost:41128","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:19:07.444Z","finishedAt":"2026-02-26T12:19:22.998Z","totalMs":15549.17225,"setup":{"register":{"durationMs":123.370084,"attempted":600,"success":560,"ratePerSec":4539.187960672864},"createAccounts":{"durationMs":184.863417,"attempted":1680,"success":1598,"ratePerSec":8644.21974846435},"deposit":{"durationMs":168.92612499999996,"attempted":1598,"success":1598,"ratePerSec":9459.756446789983}},"workload":{"durationMs":15044.779541,"attempted":64517,"success":64517,"failed":0,"opsPerSec":4288.331365985019,"readOps":0,"writeOps":64517,"readOpsPerSec":0,"writeOpsPerSec":4288.331365985019,"transferOpsPerSec":3225.8365679430995,"byOp":{"transfer":48532,"deposit":15985}},"stats":{"accountCount":1598,"completedTransactions":66115,"failedTransactions":0,"totalBalance":114067694.64,"totalVolume":116047817.87,"transactionCount":66115,"userCount":560}}}]},{"name":"edits","config":{"name":"edits","kind":"edits","users":600,"setupConcurrency":50,"concurrency":160,"durationSec":15,"accountsPerUser":3},"scoreLabel":"ops/s","results":[{"engine":"flop-ts","ok":true,"elapsedMs":16055.226666000002,"metrics":{"kind":"workload","mode":"edits","host":"http://localhost:41145","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:19:23.313Z","finishedAt":"2026-02-26T12:19:39.070Z","totalMs":15755.288292,"setup":{"register":{"durationMs":289.447458,"attempted":600,"success":600,"ratePerSec":2072.9150780795594},"createAccounts":{"durationMs":113.135291,"attempted":1800,"success":1800,"ratePerSec":15910.154860520048},"deposit":{"durationMs":130.27008299999994,"attempted":1800,"success":1800,"ratePerSec":13817.447249189214}},"workload":{"durationMs":15005.447458,"attempted":118334,"success":118334,"failed":0,"opsPerSec":7886.069397877998,"readOps":0,"writeOps":118334,"readOpsPerSec":0,"writeOpsPerSec":7886.069397877998,"transferOpsPerSec":7886.069397877998,"byOp":{"edit_transfer":118334}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":120134,"completedTransactions":100000,"failedTransactions":0,"totalVolume":126926648.52000087,"totalBalance":125985685.85999985}}},{"engine":"flop-go","ok":true,"elapsedMs":15687.067458000005,"metrics":{"kind":"workload","mode":"edits","host":"http://localhost:41146","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:19:39.633Z","finishedAt":"2026-02-26T12:19:55.017Z","totalMs":15383.674374999999,"setup":{"register":{"durationMs":168.5805,"attempted":600,"success":600,"ratePerSec":3559.1305044177707},"createAccounts":{"durationMs":98.27074999999999,"attempted":1800,"success":1800,"ratePerSec":18316.74226562838},"deposit":{"durationMs":110.54145799999998,"attempted":1800,"success":1800,"ratePerSec":16283.48343297589}},"workload":{"durationMs":15005.253375,"attempted":255177,"success":255177,"failed":0,"opsPerSec":17005.844128240187,"readOps":0,"writeOps":255177,"readOpsPerSec":0,"writeOpsPerSec":17005.844128240187,"transferOpsPerSec":17005.844128240187,"byOp":{"edit_transfer":255177}},"stats":{"accountCount":1800,"completedTransactions":256977,"failedTransactions":0,"totalBalance":126713658.07999992,"totalVolume":129393943.52000025,"transactionCount":256977,"userCount":600}}},{"engine":"sqlite-ts","ok":true,"elapsedMs":15766.529666999995,"metrics":{"kind":"workload","mode":"edits","host":"http://localhost:41147","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:19:55.532Z","finishedAt":"2026-02-26T12:20:10.995Z","totalMs":15462.065208,"setup":{"register":{"durationMs":62.079541,"attempted":600,"success":600,"ratePerSec":9665.019913726488},"createAccounts":{"durationMs":139.76570800000002,"attempted":1800,"success":1800,"ratePerSec":12878.695538107242},"deposit":{"durationMs":212.20520799999997,"attempted":1800,"success":1800,"ratePerSec":8482.355437760982}},"workload":{"durationMs":15029.120208,"attempted":69824,"success":69824,"failed":0,"opsPerSec":4645.9140011956715,"readOps":0,"writeOps":69824,"readOpsPerSec":0,"writeOpsPerSec":4645.9140011956715,"transferOpsPerSec":4645.9140011956715,"byOp":{"edit_transfer":69824}},"stats":{"userCount":600,"accountCount":1800,"transactionCount":71624,"completedTransactions":71624,"failedTransactions":0,"totalVolume":126481905.56,"totalBalance":125749785.19}}},{"engine":"sqlite-go","ok":true,"elapsedMs":15905.946999999986,"metrics":{"kind":"workload","mode":"edits","host":"http://localhost:41148","usersRequested":600,"accountsPerUser":3,"setupConcurrency":50,"concurrency":160,"durationSecRequested":15,"startedAt":"2026-02-26T12:20:11.307Z","finishedAt":"2026-02-26T12:20:26.919Z","totalMs":15612.589167,"setup":{"register":{"durationMs":142.960708,"attempted":600,"success":545,"ratePerSec":3812.2362964234894},"createAccounts":{"durationMs":206.8765,"attempted":1635,"success":1551,"ratePerSec":7497.226606211919},"deposit":{"durationMs":191.06370800000002,"attempted":1551,"success":1551,"ratePerSec":8117.711187725928}},"workload":{"durationMs":15044.72825,"attempted":62121,"success":62121,"failed":0,"opsPerSec":4129.087542674624,"readOps":0,"writeOps":62121,"readOpsPerSec":0,"writeOpsPerSec":4129.087542674624,"transferOpsPerSec":4129.087542674624,"byOp":{"edit_transfer":62121}},"stats":{"accountCount":1551,"completedTransactions":63672,"failedTransactions":0,"totalBalance":109786173.4,"totalVolume":110438742.45,"transactionCount":63672,"userCount":545}}}]}]}]};</script>
+</head>
+<body>
+<div class="wrap">
+  <h1>Benchmark Report</h1>
+  <p class="sub">All scenarios are shown at once. Click <code>Expand</code> for full chart and details.</p>
+
+  <div class="bar">
+    <button id="reloadBtn">Reload</button>
+    <input id="fileInput" type="file" accept="application/json" />
+    <span id="status" class="status">Loading history...</span>
+  </div>
+
+  <div id="cards" class="grid"></div>
+</div>
+
+<div id="modal" class="modal">
+  <div class="modal-card">
+    <div class="modal-top">
+      <h2 id="modalTitle" class="modal-title">Scenario</h2>
+      <button id="closeBtn" class="close">Close</button>
+    </div>
+    <svg id="detailChart" class="detail-chart" viewBox="0 0 1120 360" preserveAspectRatio="none"></svg>
+    <table id="detailTable"></table>
+  </div>
+</div>
+
+<script>
+const COLORS = {
+  "flop-ts": "#5db39c",
+  "flop-go": "#b56ad0",
+  "sqlite-ts": "#4f7de0",
+  "sqlite-go": "#e08545",
+};
+const ENGINES = ["flop-ts", "flop-go", "sqlite-ts", "sqlite-go"];
+let history = { runs: [] };
+
+function metricForKind(kind) {
+  if (kind === "reads") return { key: "readOpsPerSec", label: "Read ops/s" };
+  if (kind === "writes") return { key: "writeOpsPerSec", label: "Write ops/s" };
+  if (kind === "edits") return { key: "transferOpsPerSec", label: "Edit transfer ops/s" };
+  return { key: "opsPerSec", label: "Ops/s" };
+}
+
+function fmt(v) {
+  if (v == null || Number.isNaN(v)) return "-";
+  return Math.round(v).toLocaleString();
+}
+
+function average(values) {
+  if (!values.length) return null;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function scenarioNames() {
+  const set = new Set();
+  const out = [];
+  const latest = history.runs?.[0];
+  for (const s of latest?.scenarios || []) {
+    if (["reads", "writes", "edits", "mixed"].includes(s?.config?.kind) && !set.has(s.name)) {
+      set.add(s.name);
+      out.push(s.name);
+    }
+  }
+  for (const run of history.runs || []) {
+    for (const s of run.scenarios || []) {
+      if (["reads", "writes", "edits", "mixed"].includes(s?.config?.kind) && !set.has(s.name)) {
+        set.add(s.name);
+        out.push(s.name);
+      }
+    }
+  }
+  return out;
+}
+
+function scenarioFromRun(run, name) {
+  return (run.scenarios || []).find((s) => s.name === name) || null;
+}
+
+function runsForScenario(name) {
+  return [...(history.runs || [])]
+    .filter((run) => (run.scenarios || []).some((s) => s.name === name))
+    .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
+}
+
+function collectScenario(name) {
+  const runs = runsForScenario(name);
+  const scenarios = runs.map((run) => scenarioFromRun(run, name));
+  const sample = scenarios.find(Boolean);
+  const metric = metricForKind(sample?.config?.kind);
+
+  const series = {};
+  for (const engine of ENGINES) {
+    series[engine] = scenarios.map((s) => {
+      const result = (s?.results || []).find((r) => r.engine === engine);
+      const w = result?.ok ? result?.metrics?.workload : null;
+      const v = w?.[metric.key];
+      return typeof v === "number" ? v : null;
+    });
+  }
+
+  return { runs, scenarios, metric, series };
+}
+
+function drawChart(svg, runs, series, cfg) {
+  const width = cfg.width;
+  const height = cfg.height;
+  const pad = cfg.pad;
+
+  const values = Object.values(series).flat().filter((v) => v != null);
+  if (!runs.length || !values.length) {
+    svg.innerHTML = `<text x="16" y="24" fill="#6a7488" font-size="12">No data</text>`;
+    return;
+  }
+
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    min = min * 0.9;
+    max = max * 1.1;
+  }
+  const range = Math.max(1e-9, max - min);
+
+  const xCount = runs.length;
+  const x = (i) => pad.l + (i * (width - pad.l - pad.r)) / Math.max(1, xCount - 1);
+  const y = (v) => pad.t + ((max - v) * (height - pad.t - pad.b)) / range;
+
+  let html = "";
+
+  if (cfg.axes) {
+    for (let i = 0; i <= 4; i++) {
+      const yy = pad.t + ((height - pad.t - pad.b) * i) / 4;
+      const vv = max - ((max - min) * i) / 4;
+      html += `<line x1="${pad.l}" y1="${yy}" x2="${width - pad.r}" y2="${yy}" stroke="#d8dee8" stroke-width="1"/>`;
+      html += `<text x="8" y="${yy + 4}" fill="#6a7488" font-size="11">${fmt(vv)}</text>`;
+    }
+    html += `<line x1="${pad.l}" y1="${height - pad.b}" x2="${width - pad.r}" y2="${height - pad.b}" stroke="#ced6e2"/>`;
+
+    runs.forEach((run, i) => {
+      if (runs.length > 12 && i % 2 === 1) return;
+      const label = new Date(run.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      html += `<text x="${x(i)}" y="${height - 12}" text-anchor="middle" fill="#6a7488" font-size="11">${label}</text>`;
+    });
+  }
+
+  for (const engine of ENGINES) {
+    const pts = series[engine].map((v, i) => ({ v, i })).filter((p) => p.v != null);
+    if (!pts.length) continue;
+
+    const d = pts.map((p, idx) => `${idx === 0 ? "M" : "L"}${x(p.i)},${y(p.v)}`).join(" ");
+    html += `<path d="${d}" fill="none" stroke="${COLORS[engine]}" stroke-width="2"/>`;
+
+    if (cfg.points) {
+      for (const p of pts) {
+        html += `<circle cx="${x(p.i)}" cy="${y(p.v)}" r="3" fill="${COLORS[engine]}"/>`;
+      }
+    }
+  }
+
+  svg.innerHTML = html;
+}
+
+function renderCards() {
+  const container = document.getElementById("cards");
+  const names = scenarioNames();
+
+  if (!names.length) {
+    container.innerHTML = `<div class="empty">No benchmark runs yet. Run <code>deno task bench</code>.</div>`;
+    return;
+  }
+
+  container.innerHTML = names.map((name) => {
+    const data = collectScenario(name);
+    const runCount = data.runs.length;
+
+    const legend = ENGINES
+      .map((engine) => {
+        const vals = data.series[engine].filter((v) => v != null);
+        return { engine, avg: average(vals), has: vals.length > 0 };
+      })
+      .filter((x) => x.has)
+      .sort((a, b) => (b.avg ?? 0) - (a.avg ?? 0))
+      .map((x) => `
+        <div class="legend-row">
+          <span class="left"><i class="dot" style="background:${COLORS[x.engine]}"></i><span>${x.engine}</span></span>
+          <span class="value">Avg ${fmt(x.avg)} ${data.metric.label}</span>
+        </div>
+      `)
+      .join("");
+
+    return `
+      <article class="card" data-name="${name}">
+        <div class="card-head">
+          <div>
+            <h3 class="title">${name}</h3>
+            <div class="meta">${data.metric.label} · ${runCount} run${runCount === 1 ? "" : "s"}</div>
+          </div>
+          <button class="expand" data-expand="${name}">Expand</button>
+        </div>
+        <svg class="mini-chart" data-mini="${name}" viewBox="0 0 420 142" preserveAspectRatio="none"></svg>
+        <div class="legend">${legend || `<div class="meta">No successful runs yet</div>`}</div>
+      </article>
+    `;
+  }).join("");
+
+  for (const name of names) {
+    const svg = container.querySelector(`svg[data-mini="${name}"]`);
+    if (!svg) continue;
+    const data = collectScenario(name);
+    drawChart(svg, data.runs, data.series, {
+      width: 420,
+      height: 142,
+      pad: { l: 10, r: 10, t: 8, b: 8 },
+      axes: false,
+      points: false,
+    });
+  }
+
+  container.querySelectorAll("[data-expand]").forEach((el) => {
+    el.addEventListener("click", (ev) => {
+      const name = ev.currentTarget.getAttribute("data-expand");
+      openDetail(name);
+    });
+  });
+}
+
+function openDetail(name) {
+  if (!name) return;
+
+  const data = collectScenario(name);
+  document.getElementById("modalTitle").textContent = `${name} · ${data.metric.label}`;
+
+  const chart = document.getElementById("detailChart");
+  drawChart(chart, data.runs, data.series, {
+    width: 1120,
+    height: 360,
+    pad: { l: 56, r: 20, t: 16, b: 42 },
+    axes: true,
+    points: true,
+  });
+
+  const rows = ENGINES.map((engine) => {
+    const vals = data.series[engine].filter((v) => v != null);
+    if (!vals.length) {
+      return `
+        <tr>
+          <td><span class="left"><i class="dot" style="background:${COLORS[engine]}"></i><span>${engine}</span></span></td>
+          <td class="num">-</td>
+          <td class="num">-</td>
+          <td class="num">-</td>
+          <td class="num">-</td>
+        </tr>
+      `;
+    }
+
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const avg = average(vals);
+    const latest = vals[vals.length - 1];
+
+    return `
+      <tr>
+        <td><span class="left"><i class="dot" style="background:${COLORS[engine]}"></i><span>${engine}</span></span></td>
+        <td class="num">${fmt(min)}</td>
+        <td class="num">${fmt(max)}</td>
+        <td class="num">${fmt(avg)}</td>
+        <td class="num">${fmt(latest)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  document.getElementById("detailTable").innerHTML = `
+    <thead>
+      <tr>
+        <th>Engine</th>
+        <th class="num">Min (${data.metric.label})</th>
+        <th class="num">Max (${data.metric.label})</th>
+        <th class="num">Avg (${data.metric.label})</th>
+        <th class="num">Latest (${data.metric.label})</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  `;
+
+  document.getElementById("modal").classList.add("show");
+}
+
+function closeDetail() {
+  document.getElementById("modal").classList.remove("show");
+}
+
+function setStatus(text) {
+  document.getElementById("status").textContent = text;
+}
+
+async function loadHistory() {
+  if (window.__BENCH_HISTORY__?.runs?.length) {
+    history = window.__BENCH_HISTORY__;
+    setStatus(`Loaded ${history.runs.length} runs (embedded)`);
+    renderCards();
+    return;
+  }
+
+  setStatus("Loading history...");
+  try {
+    const res = await fetch("../results/history.json", { cache: "no-store" });
+    if (!res.ok) throw new Error(`${res.status}`);
+    history = await res.json();
+    setStatus(`Loaded ${history.runs?.length || 0} runs`);
+    renderCards();
+  } catch (err) {
+    history = { runs: [] };
+    setStatus(`Fetch failed (${err}). Load history.json manually.`);
+    renderCards();
+  }
+}
+
+function bindUI() {
+  document.getElementById("reloadBtn").addEventListener("click", loadHistory);
+  document.getElementById("closeBtn").addEventListener("click", closeDetail);
+  document.getElementById("modal").addEventListener("click", (ev) => {
+    if (ev.target.id === "modal") closeDetail();
+  });
+  document.getElementById("fileInput").addEventListener("change", async (ev) => {
+    const f = ev.target.files?.[0];
+    if (!f) return;
+    const raw = await f.text();
+    history = JSON.parse(raw);
+    setStatus(`Loaded ${history.runs?.length || 0} runs from ${f.name}`);
+    renderCards();
+  });
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeDetail();
+  });
+}
+
+bindUI();
+loadHistory();
+</script>
+</body>
+</html>

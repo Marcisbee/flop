@@ -1,0 +1,1106 @@
+{
+  "schemaVersion": 3,
+  "runId": "20260226-121608-24db7ab",
+  "createdAt": "2026-02-26T12:16:08.954Z",
+  "git": {
+    "sha": "24db7ab",
+    "branch": "go",
+    "dirty": true
+  },
+  "host": {
+    "os": "darwin",
+    "arch": "aarch64",
+    "deno": "2.6.10"
+  },
+  "scenarios": [
+    {
+      "name": "high-load-rw",
+      "config": {
+        "name": "high-load-rw",
+        "kind": "mixed",
+        "users": 600,
+        "setupConcurrency": 50,
+        "concurrency": 220,
+        "durationSec": 15,
+        "readShare": 0.55,
+        "accountsPerUser": 3
+      },
+      "scoreLabel": "ops/s",
+      "results": [
+        {
+          "engine": "flop-ts",
+          "ok": true,
+          "elapsedMs": 15929.609792000001,
+          "metrics": {
+            "kind": "workload",
+            "mode": "mixed",
+            "host": "http://localhost:41085",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:16:10.260Z",
+            "finishedAt": "2026-02-26T12:16:25.882Z",
+            "totalMs": 15623.099417,
+            "setup": {
+              "register": {
+                "durationMs": 294.187,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 2039.5190814006055
+              },
+              "createAccounts": {
+                "durationMs": 108.90787499999999,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 16527.730432716646
+              },
+              "deposit": {
+                "durationMs": 131.18483399999997,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 13721.098278784271
+              }
+            },
+            "workload": {
+              "durationMs": 15078.208125,
+              "attempted": 9799,
+              "success": 9799,
+              "failed": 0,
+              "opsPerSec": 649.8782825363077,
+              "readOps": 5335,
+              "writeOps": 4464,
+              "readOpsPerSec": 353.8218835933464,
+              "writeOpsPerSec": 296.05639894296127,
+              "transferOpsPerSec": 218.5936135564517,
+              "byOp": {
+                "get_stats": 1895,
+                "get_recent_transactions": 1863,
+                "get_transactions": 546,
+                "get_all_accounts": 1031,
+                "transfer": 3296,
+                "deposit": 1168
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 6264,
+              "completedTransactions": 3183,
+              "failedTransactions": 0,
+              "totalVolume": 128656095.5499998,
+              "totalBalance": 128664463.17
+            }
+          }
+        },
+        {
+          "engine": "flop-go",
+          "ok": true,
+          "elapsedMs": 15879.171708999998,
+          "metrics": {
+            "kind": "workload",
+            "mode": "mixed",
+            "host": "http://localhost:41086",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:16:26.550Z",
+            "finishedAt": "2026-02-26T12:16:41.878Z",
+            "totalMs": 15327.940209,
+            "setup": {
+              "register": {
+                "durationMs": 161.223459,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 3721.5427811904224
+              },
+              "createAccounts": {
+                "durationMs": 70.83291700000001,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 25411.91406814433
+              },
+              "deposit": {
+                "durationMs": 62.97479200000001,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 28582.865347137627
+              }
+            },
+            "workload": {
+              "durationMs": 15032.024959,
+              "attempted": 88129,
+              "success": 88129,
+              "failed": 0,
+              "opsPerSec": 5862.749712056276,
+              "readOps": 48306,
+              "writeOps": 39823,
+              "readOpsPerSec": 3213.539102799197,
+              "writeOpsPerSec": 2649.2106092570784,
+              "transferOpsPerSec": 1994.9408068302555,
+              "byOp": {
+                "get_stats": 16845,
+                "transfer": 29988,
+                "get_transactions": 4877,
+                "get_recent_transactions": 16944,
+                "get_all_accounts": 9640,
+                "deposit": 9835
+              }
+            },
+            "stats": {
+              "accountCount": 1800,
+              "completedTransactions": 41623,
+              "failedTransactions": 0,
+              "totalBalance": 124425944.70000029,
+              "totalVolume": 125634380.03000009,
+              "transactionCount": 41623,
+              "userCount": 600
+            }
+          }
+        },
+        {
+          "engine": "sqlite-ts",
+          "ok": true,
+          "elapsedMs": 16088.584875,
+          "metrics": {
+            "kind": "workload",
+            "mode": "mixed",
+            "host": "http://localhost:41087",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:16:42.340Z",
+            "finishedAt": "2026-02-26T12:16:58.129Z",
+            "totalMs": 15788.364708000001,
+            "setup": {
+              "register": {
+                "durationMs": 61.461999999999996,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 9762.129445836452
+              },
+              "createAccounts": {
+                "durationMs": 138.244333,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 13020.425220612839
+              },
+              "deposit": {
+                "durationMs": 211.912166,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 8494.085233407504
+              }
+            },
+            "workload": {
+              "durationMs": 15372.566832999999,
+              "attempted": 11058,
+              "success": 11058,
+              "failed": 0,
+              "opsPerSec": 719.3333501248471,
+              "readOps": 6160,
+              "writeOps": 4898,
+              "readOpsPerSec": 400.7138213753896,
+              "writeOpsPerSec": 318.6195287494575,
+              "transferOpsPerSec": 239.8428343199775,
+              "byOp": {
+                "get_recent_transactions": 2216,
+                "get_stats": 2107,
+                "transfer": 3687,
+                "get_all_accounts": 1247,
+                "deposit": 1211,
+                "get_transactions": 590
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 6698,
+              "completedTransactions": 6698,
+              "failedTransactions": 0,
+              "totalVolume": 124365166.66,
+              "totalBalance": 124216377.63
+            }
+          }
+        },
+        {
+          "engine": "sqlite-go",
+          "ok": true,
+          "elapsedMs": 16148.644500000002,
+          "metrics": {
+            "kind": "workload",
+            "mode": "mixed",
+            "host": "http://localhost:41088",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:16:58.687Z",
+            "finishedAt": "2026-02-26T12:17:14.281Z",
+            "totalMs": 15595.059374999999,
+            "setup": {
+              "register": {
+                "durationMs": 127.61512499999999,
+                "attempted": 600,
+                "success": 559,
+                "ratePerSec": 4380.358519415312
+              },
+              "createAccounts": {
+                "durationMs": 195.886958,
+                "attempted": 1677,
+                "success": 1584,
+                "ratePerSec": 8086.296383243646
+              },
+              "deposit": {
+                "durationMs": 205.57862499999993,
+                "attempted": 1584,
+                "success": 1584,
+                "ratePerSec": 7705.0812067645675
+              }
+            },
+            "workload": {
+              "durationMs": 15058.809666,
+              "attempted": 21229,
+              "success": 21229,
+              "failed": 0,
+              "opsPerSec": 1409.7395790804865,
+              "readOps": 11683,
+              "writeOps": 9546,
+              "readOpsPerSec": 775.8249329877679,
+              "writeOpsPerSec": 633.9146460927186,
+              "transferOpsPerSec": 473.9418425690062,
+              "byOp": {
+                "get_transactions": 1133,
+                "deposit": 2409,
+                "get_all_accounts": 2400,
+                "get_recent_transactions": 4023,
+                "transfer": 7137,
+                "get_stats": 4127
+              }
+            },
+            "stats": {
+              "accountCount": 1584,
+              "completedTransactions": 11130,
+              "failedTransactions": 0,
+              "totalBalance": 112721895.02,
+              "totalVolume": 113009550.16,
+              "transactionCount": 11130,
+              "userCount": 559
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "reads",
+      "config": {
+        "name": "reads",
+        "kind": "reads",
+        "users": 600,
+        "setupConcurrency": 50,
+        "concurrency": 220,
+        "durationSec": 15,
+        "accountsPerUser": 3
+      },
+      "scoreLabel": "ops/s",
+      "results": [
+        {
+          "engine": "flop-ts",
+          "ok": true,
+          "elapsedMs": 16533.435875000003,
+          "metrics": {
+            "kind": "workload",
+            "mode": "reads",
+            "host": "http://localhost:41105",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:17:14.603Z",
+            "finishedAt": "2026-02-26T12:17:30.831Z",
+            "totalMs": 16227.966792000001,
+            "setup": {
+              "register": {
+                "durationMs": 316.28916599999997,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 1896.9982677180922
+              },
+              "createAccounts": {
+                "durationMs": 222.0165,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 8107.505523238137
+              },
+              "deposit": {
+                "durationMs": 131.24254200000007,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 13715.065043467377
+              }
+            },
+            "workload": {
+              "durationMs": 15553.710959,
+              "attempted": 6614,
+              "success": 6614,
+              "failed": 0,
+              "opsPerSec": 425.2361393004333,
+              "readOps": 6614,
+              "writeOps": 0,
+              "readOpsPerSec": 425.2361393004333,
+              "writeOpsPerSec": 0,
+              "transferOpsPerSec": 0,
+              "byOp": {
+                "get_recent_transactions": 2317,
+                "get_transactions": 654,
+                "get_all_accounts": 1360,
+                "get_stats": 2283
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 1800,
+              "completedTransactions": 1800,
+              "failedTransactions": 0,
+              "totalVolume": 125873272.54000013,
+              "totalBalance": 125873272.54000016
+            }
+          }
+        },
+        {
+          "engine": "flop-go",
+          "ok": true,
+          "elapsedMs": 15793.547374999995,
+          "metrics": {
+            "kind": "workload",
+            "mode": "reads",
+            "host": "http://localhost:41106",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:17:31.245Z",
+            "finishedAt": "2026-02-26T12:17:46.743Z",
+            "totalMs": 15497.539166999999,
+            "setup": {
+              "register": {
+                "durationMs": 160.49325000000002,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 3738.4749825927256
+              },
+              "createAccounts": {
+                "durationMs": 135.09000000000003,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 13324.450366422381
+              },
+              "deposit": {
+                "durationMs": 137.189416,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 13120.545684078137
+              }
+            },
+            "workload": {
+              "durationMs": 15063.861084,
+              "attempted": 56857,
+              "success": 56857,
+              "failed": 0,
+              "opsPerSec": 3774.3975255049554,
+              "readOps": 56857,
+              "writeOps": 0,
+              "readOpsPerSec": 3774.3975255049554,
+              "writeOpsPerSec": 0,
+              "transferOpsPerSec": 0,
+              "byOp": {
+                "get_stats": 20049,
+                "get_transactions": 5599,
+                "get_recent_transactions": 19957,
+                "get_all_accounts": 11252
+              }
+            },
+            "stats": {
+              "accountCount": 1800,
+              "completedTransactions": 1800,
+              "failedTransactions": 0,
+              "totalBalance": 124558621.7400001,
+              "totalVolume": 124558621.7400001,
+              "transactionCount": 1800,
+              "userCount": 600
+            }
+          }
+        },
+        {
+          "engine": "sqlite-ts",
+          "ok": true,
+          "elapsedMs": 16186.632125000004,
+          "metrics": {
+            "kind": "workload",
+            "mode": "reads",
+            "host": "http://localhost:41107",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:17:47.196Z",
+            "finishedAt": "2026-02-26T12:18:03.081Z",
+            "totalMs": 15885.281875,
+            "setup": {
+              "register": {
+                "durationMs": 66.7295,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 8991.525487228288
+              },
+              "createAccounts": {
+                "durationMs": 198.03766700000003,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 9089.179989178521
+              },
+              "deposit": {
+                "durationMs": 256.997042,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 7003.971664389818
+              }
+            },
+            "workload": {
+              "durationMs": 15362.028292,
+              "attempted": 9001,
+              "success": 9001,
+              "failed": 0,
+              "opsPerSec": 585.9252325871188,
+              "readOps": 9001,
+              "writeOps": 0,
+              "readOpsPerSec": 585.9252325871188,
+              "writeOpsPerSec": 0,
+              "transferOpsPerSec": 0,
+              "byOp": {
+                "get_stats": 3170,
+                "get_recent_transactions": 3112,
+                "get_transactions": 916,
+                "get_all_accounts": 1803
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 1800,
+              "completedTransactions": 1800,
+              "failedTransactions": 0,
+              "totalVolume": 126362597.04,
+              "totalBalance": 126362597.04
+            }
+          }
+        },
+        {
+          "engine": "sqlite-go",
+          "ok": true,
+          "elapsedMs": 15995.217791999996,
+          "metrics": {
+            "kind": "workload",
+            "mode": "reads",
+            "host": "http://localhost:41108",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 220,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:18:03.379Z",
+            "finishedAt": "2026-02-26T12:18:19.081Z",
+            "totalMs": 15701.550083,
+            "setup": {
+              "register": {
+                "durationMs": 117.674375,
+                "attempted": 600,
+                "success": 565,
+                "ratePerSec": 4801.385178378895
+              },
+              "createAccounts": {
+                "durationMs": 191.045708,
+                "attempted": 1695,
+                "success": 1619,
+                "ratePerSec": 8474.41178840825
+              },
+              "deposit": {
+                "durationMs": 330.520875,
+                "attempted": 1619,
+                "success": 1619,
+                "ratePerSec": 4898.329038975224
+              }
+            },
+            "workload": {
+              "durationMs": 15060.890916999999,
+              "attempted": 29807,
+              "success": 29807,
+              "failed": 0,
+              "opsPerSec": 1979.0993882277783,
+              "readOps": 29807,
+              "writeOps": 0,
+              "readOpsPerSec": 1979.0993882277783,
+              "writeOpsPerSec": 0,
+              "transferOpsPerSec": 0,
+              "byOp": {
+                "get_transactions": 2942,
+                "get_recent_transactions": 10438,
+                "get_all_accounts": 6109,
+                "get_stats": 10318
+              }
+            },
+            "stats": {
+              "accountCount": 1619,
+              "completedTransactions": 1619,
+              "failedTransactions": 0,
+              "totalBalance": 112897699.42,
+              "totalVolume": 112897699.42,
+              "transactionCount": 1619,
+              "userCount": 565
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "writes",
+      "config": {
+        "name": "writes",
+        "kind": "writes",
+        "users": 600,
+        "setupConcurrency": 50,
+        "concurrency": 160,
+        "durationSec": 15,
+        "accountsPerUser": 3
+      },
+      "scoreLabel": "ops/s",
+      "results": [
+        {
+          "engine": "flop-ts",
+          "ok": true,
+          "elapsedMs": 16256.359999999986,
+          "metrics": {
+            "kind": "workload",
+            "mode": "writes",
+            "host": "http://localhost:41125",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 160,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:18:19.384Z",
+            "finishedAt": "2026-02-26T12:18:35.339Z",
+            "totalMs": 15955.054124999999,
+            "setup": {
+              "register": {
+                "durationMs": 290.856792,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 2062.870857765632
+              },
+              "createAccounts": {
+                "durationMs": 223.60187499999995,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 8050.021941900087
+              },
+              "deposit": {
+                "durationMs": 146.11537500000009,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 12319.03213470861
+              }
+            },
+            "workload": {
+              "durationMs": 15052.596041,
+              "attempted": 125395,
+              "success": 125395,
+              "failed": 0,
+              "opsPerSec": 8330.456730417216,
+              "readOps": 0,
+              "writeOps": 125395,
+              "readOpsPerSec": 0,
+              "writeOpsPerSec": 8330.456730417216,
+              "transferOpsPerSec": 6234.14059238687,
+              "byOp": {
+                "deposit": 31555,
+                "transfer": 93840
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 127195,
+              "completedTransactions": 100000,
+              "failedTransactions": 0,
+              "totalVolume": 131281734.26999666,
+              "totalBalance": 128714610.66
+            }
+          }
+        },
+        {
+          "engine": "flop-go",
+          "ok": true,
+          "elapsedMs": 15596.421333000006,
+          "metrics": {
+            "kind": "workload",
+            "mode": "writes",
+            "host": "http://localhost:41126",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 160,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:18:35.889Z",
+            "finishedAt": "2026-02-26T12:18:51.191Z",
+            "totalMs": 15301.269083,
+            "setup": {
+              "register": {
+                "durationMs": 164.506875,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 3647.2639821284065
+              },
+              "createAccounts": {
+                "durationMs": 72.1585,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 24945.086164485125
+              },
+              "deposit": {
+                "durationMs": 61.69366700000003,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 29176.414493241242
+              }
+            },
+            "workload": {
+              "durationMs": 15002.0975,
+              "attempted": 262700,
+              "success": 262700,
+              "failed": 0,
+              "opsPerSec": 17510.88472795221,
+              "readOps": 0,
+              "writeOps": 262700,
+              "readOpsPerSec": 0,
+              "writeOpsPerSec": 17510.88472795221,
+              "transferOpsPerSec": 13136.563070597294,
+              "byOp": {
+                "deposit": 65624,
+                "transfer": 197076
+              }
+            },
+            "stats": {
+              "accountCount": 1800,
+              "completedTransactions": 264500,
+              "failedTransactions": 0,
+              "totalBalance": 130192780.8700006,
+              "totalVolume": 138162562.5100028,
+              "transactionCount": 264500,
+              "userCount": 600
+            }
+          }
+        },
+        {
+          "engine": "sqlite-ts",
+          "ok": true,
+          "elapsedMs": 15761.697625,
+          "metrics": {
+            "kind": "workload",
+            "mode": "writes",
+            "host": "http://localhost:41127",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 160,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:18:51.667Z",
+            "finishedAt": "2026-02-26T12:19:07.132Z",
+            "totalMs": 15464.720167,
+            "setup": {
+              "register": {
+                "durationMs": 62.198292,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 9646.56714367655
+              },
+              "createAccounts": {
+                "durationMs": 139.63404200000002,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 12890.839326988757
+              },
+              "deposit": {
+                "durationMs": 213.82299999999998,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 8418.177651609041
+              }
+            },
+            "workload": {
+              "durationMs": 15030.341916,
+              "attempted": 70613,
+              "success": 70613,
+              "failed": 0,
+              "opsPerSec": 4698.030184185732,
+              "readOps": 0,
+              "writeOps": 70613,
+              "readOpsPerSec": 0,
+              "writeOpsPerSec": 4698.030184185732,
+              "transferOpsPerSec": 3532.6541669339895,
+              "byOp": {
+                "transfer": 53097,
+                "deposit": 17516
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 72413,
+              "completedTransactions": 72413,
+              "failedTransactions": 0,
+              "totalVolume": 127720352.21,
+              "totalBalance": 125564197.27
+            }
+          }
+        },
+        {
+          "engine": "sqlite-go",
+          "ok": true,
+          "elapsedMs": 15842.714290999982,
+          "metrics": {
+            "kind": "workload",
+            "mode": "writes",
+            "host": "http://localhost:41128",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 160,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:19:07.444Z",
+            "finishedAt": "2026-02-26T12:19:22.998Z",
+            "totalMs": 15549.17225,
+            "setup": {
+              "register": {
+                "durationMs": 123.370084,
+                "attempted": 600,
+                "success": 560,
+                "ratePerSec": 4539.187960672864
+              },
+              "createAccounts": {
+                "durationMs": 184.863417,
+                "attempted": 1680,
+                "success": 1598,
+                "ratePerSec": 8644.21974846435
+              },
+              "deposit": {
+                "durationMs": 168.92612499999996,
+                "attempted": 1598,
+                "success": 1598,
+                "ratePerSec": 9459.756446789983
+              }
+            },
+            "workload": {
+              "durationMs": 15044.779541,
+              "attempted": 64517,
+              "success": 64517,
+              "failed": 0,
+              "opsPerSec": 4288.331365985019,
+              "readOps": 0,
+              "writeOps": 64517,
+              "readOpsPerSec": 0,
+              "writeOpsPerSec": 4288.331365985019,
+              "transferOpsPerSec": 3225.8365679430995,
+              "byOp": {
+                "transfer": 48532,
+                "deposit": 15985
+              }
+            },
+            "stats": {
+              "accountCount": 1598,
+              "completedTransactions": 66115,
+              "failedTransactions": 0,
+              "totalBalance": 114067694.64,
+              "totalVolume": 116047817.87,
+              "transactionCount": 66115,
+              "userCount": 560
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "edits",
+      "config": {
+        "name": "edits",
+        "kind": "edits",
+        "users": 600,
+        "setupConcurrency": 50,
+        "concurrency": 160,
+        "durationSec": 15,
+        "accountsPerUser": 3
+      },
+      "scoreLabel": "ops/s",
+      "results": [
+        {
+          "engine": "flop-ts",
+          "ok": true,
+          "elapsedMs": 16055.226666000002,
+          "metrics": {
+            "kind": "workload",
+            "mode": "edits",
+            "host": "http://localhost:41145",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 160,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:19:23.313Z",
+            "finishedAt": "2026-02-26T12:19:39.070Z",
+            "totalMs": 15755.288292,
+            "setup": {
+              "register": {
+                "durationMs": 289.447458,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 2072.9150780795594
+              },
+              "createAccounts": {
+                "durationMs": 113.135291,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 15910.154860520048
+              },
+              "deposit": {
+                "durationMs": 130.27008299999994,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 13817.447249189214
+              }
+            },
+            "workload": {
+              "durationMs": 15005.447458,
+              "attempted": 118334,
+              "success": 118334,
+              "failed": 0,
+              "opsPerSec": 7886.069397877998,
+              "readOps": 0,
+              "writeOps": 118334,
+              "readOpsPerSec": 0,
+              "writeOpsPerSec": 7886.069397877998,
+              "transferOpsPerSec": 7886.069397877998,
+              "byOp": {
+                "edit_transfer": 118334
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 120134,
+              "completedTransactions": 100000,
+              "failedTransactions": 0,
+              "totalVolume": 126926648.52000087,
+              "totalBalance": 125985685.85999985
+            }
+          }
+        },
+        {
+          "engine": "flop-go",
+          "ok": true,
+          "elapsedMs": 15687.067458000005,
+          "metrics": {
+            "kind": "workload",
+            "mode": "edits",
+            "host": "http://localhost:41146",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 160,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:19:39.633Z",
+            "finishedAt": "2026-02-26T12:19:55.017Z",
+            "totalMs": 15383.674374999999,
+            "setup": {
+              "register": {
+                "durationMs": 168.5805,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 3559.1305044177707
+              },
+              "createAccounts": {
+                "durationMs": 98.27074999999999,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 18316.74226562838
+              },
+              "deposit": {
+                "durationMs": 110.54145799999998,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 16283.48343297589
+              }
+            },
+            "workload": {
+              "durationMs": 15005.253375,
+              "attempted": 255177,
+              "success": 255177,
+              "failed": 0,
+              "opsPerSec": 17005.844128240187,
+              "readOps": 0,
+              "writeOps": 255177,
+              "readOpsPerSec": 0,
+              "writeOpsPerSec": 17005.844128240187,
+              "transferOpsPerSec": 17005.844128240187,
+              "byOp": {
+                "edit_transfer": 255177
+              }
+            },
+            "stats": {
+              "accountCount": 1800,
+              "completedTransactions": 256977,
+              "failedTransactions": 0,
+              "totalBalance": 126713658.07999992,
+              "totalVolume": 129393943.52000025,
+              "transactionCount": 256977,
+              "userCount": 600
+            }
+          }
+        },
+        {
+          "engine": "sqlite-ts",
+          "ok": true,
+          "elapsedMs": 15766.529666999995,
+          "metrics": {
+            "kind": "workload",
+            "mode": "edits",
+            "host": "http://localhost:41147",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 160,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:19:55.532Z",
+            "finishedAt": "2026-02-26T12:20:10.995Z",
+            "totalMs": 15462.065208,
+            "setup": {
+              "register": {
+                "durationMs": 62.079541,
+                "attempted": 600,
+                "success": 600,
+                "ratePerSec": 9665.019913726488
+              },
+              "createAccounts": {
+                "durationMs": 139.76570800000002,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 12878.695538107242
+              },
+              "deposit": {
+                "durationMs": 212.20520799999997,
+                "attempted": 1800,
+                "success": 1800,
+                "ratePerSec": 8482.355437760982
+              }
+            },
+            "workload": {
+              "durationMs": 15029.120208,
+              "attempted": 69824,
+              "success": 69824,
+              "failed": 0,
+              "opsPerSec": 4645.9140011956715,
+              "readOps": 0,
+              "writeOps": 69824,
+              "readOpsPerSec": 0,
+              "writeOpsPerSec": 4645.9140011956715,
+              "transferOpsPerSec": 4645.9140011956715,
+              "byOp": {
+                "edit_transfer": 69824
+              }
+            },
+            "stats": {
+              "userCount": 600,
+              "accountCount": 1800,
+              "transactionCount": 71624,
+              "completedTransactions": 71624,
+              "failedTransactions": 0,
+              "totalVolume": 126481905.56,
+              "totalBalance": 125749785.19
+            }
+          }
+        },
+        {
+          "engine": "sqlite-go",
+          "ok": true,
+          "elapsedMs": 15905.946999999986,
+          "metrics": {
+            "kind": "workload",
+            "mode": "edits",
+            "host": "http://localhost:41148",
+            "usersRequested": 600,
+            "accountsPerUser": 3,
+            "setupConcurrency": 50,
+            "concurrency": 160,
+            "durationSecRequested": 15,
+            "startedAt": "2026-02-26T12:20:11.307Z",
+            "finishedAt": "2026-02-26T12:20:26.919Z",
+            "totalMs": 15612.589167,
+            "setup": {
+              "register": {
+                "durationMs": 142.960708,
+                "attempted": 600,
+                "success": 545,
+                "ratePerSec": 3812.2362964234894
+              },
+              "createAccounts": {
+                "durationMs": 206.8765,
+                "attempted": 1635,
+                "success": 1551,
+                "ratePerSec": 7497.226606211919
+              },
+              "deposit": {
+                "durationMs": 191.06370800000002,
+                "attempted": 1551,
+                "success": 1551,
+                "ratePerSec": 8117.711187725928
+              }
+            },
+            "workload": {
+              "durationMs": 15044.72825,
+              "attempted": 62121,
+              "success": 62121,
+              "failed": 0,
+              "opsPerSec": 4129.087542674624,
+              "readOps": 0,
+              "writeOps": 62121,
+              "readOpsPerSec": 0,
+              "writeOpsPerSec": 4129.087542674624,
+              "transferOpsPerSec": 4129.087542674624,
+              "byOp": {
+                "edit_transfer": 62121
+              }
+            },
+            "stats": {
+              "accountCount": 1551,
+              "completedTransactions": 63672,
+              "failedTransactions": 0,
+              "totalBalance": 109786173.4,
+              "totalVolume": 110438742.45,
+              "transactionCount": 63672,
+              "userCount": 545
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

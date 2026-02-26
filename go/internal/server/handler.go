@@ -1,6 +1,8 @@
+//go:generate deno run -A gen_admin_ui.ts
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,12 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/runtime"
 	"github.com/marcisbee/flop/internal/schema"
+	"github.com/marcisbee/flop/internal/storage"
 )
 
 // ServerConfig holds HTTP server settings.
@@ -793,6 +797,21 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 		}
 	}
 
+	// File upload/delete: /_/api/tables/{table}/rows/{id}/files/{field}
+	if re := regexp.MustCompile(`^/_/api/tables/([^/]+)/rows/([^/]+)/files/([^/]+)$`); true {
+		match := re.FindStringSubmatch(path)
+		if match != nil {
+			switch r.Method {
+			case "POST":
+				h.handleFileUpload(w, r, match[1], match[2], match[3])
+				return
+			case "DELETE":
+				h.handleFileDelete(w, match[1], match[2], match[3])
+				return
+			}
+		}
+	}
+
 	// Single row
 	if re := regexp.MustCompile(`^/_/api/tables/([^/]+)/rows/([^/]+)$`); true {
 		match := re.FindStringSubmatch(path)
@@ -816,7 +835,11 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 	// Backup
 	if path == "/_/api/backup" {
 		if r.Method == "GET" {
-			// TODO: implement backup download
+			// Preserve API shape with explicit message until restore/download is wired for pure-go runtime.
+			jsonError(w, "Not implemented yet", 501)
+			return
+		}
+		if r.Method == "POST" {
 			jsonError(w, "Not implemented yet", 501)
 			return
 		}
@@ -826,37 +849,68 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 }
 
 func (h *Handler) handleListTables(w http.ResponseWriter) {
-	tables := make([]map[string]interface{}, 0)
+	type tableMeta struct {
+		Name     string          `json:"name"`
+		Schema   json.RawMessage `json:"schema"`
+		RowCount int             `json:"rowCount"`
+	}
+
+	tables := make([]tableMeta, 0)
 	for name, table := range h.db.Tables {
 		def := table.GetDef()
-		schemaMap := make(map[string]interface{})
-		for _, f := range def.CompiledSchema.Fields {
-			entry := map[string]interface{}{
-				"type":     string(f.Kind),
-				"required": f.Required,
-				"unique":   f.Unique,
-			}
-			if f.RefTableName != "" {
-				entry["refTable"] = f.RefTableName
-			}
-			if f.RefField != "" {
-				entry["refField"] = f.RefField
-			}
-			if len(f.EnumValues) > 0 {
-				entry["enumValues"] = f.EnumValues
-			}
-			if len(f.MimeTypes) > 0 {
-				entry["mimeTypes"] = f.MimeTypes
-			}
-			schemaMap[f.Name] = entry
+		orderedSchema, err := marshalOrderedSchema(def.CompiledSchema)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
 		}
-		tables = append(tables, map[string]interface{}{
-			"name":     name,
-			"schema":   schemaMap,
-			"rowCount": table.Count(),
+		tables = append(tables, tableMeta{
+			Name:     name,
+			Schema:   orderedSchema,
+			RowCount: table.Count(),
 		})
 	}
 	jsonResponse(w, map[string]interface{}{"tables": tables})
+}
+
+func marshalOrderedSchema(cs *schema.CompiledSchema) (json.RawMessage, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, f := range cs.Fields {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		key, err := json.Marshal(f.Name)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(key)
+		buf.WriteByte(':')
+
+		entry := map[string]interface{}{
+			"type":     string(f.Kind),
+			"required": f.Required,
+			"unique":   f.Unique,
+		}
+		if f.RefTableName != "" {
+			entry["refTable"] = f.RefTableName
+		}
+		if f.RefField != "" {
+			entry["refField"] = f.RefField
+		}
+		if len(f.EnumValues) > 0 {
+			entry["enumValues"] = f.EnumValues
+		}
+		if len(f.MimeTypes) > 0 {
+			entry["mimeTypes"] = f.MimeTypes
+		}
+		val, err := json.Marshal(entry)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(val)
+	}
+	buf.WriteByte('}')
+	return json.RawMessage(buf.Bytes()), nil
 }
 
 func (h *Handler) handleListRows(w http.ResponseWriter, r *http.Request, tableName string) {
@@ -874,8 +928,39 @@ func (h *Handler) handleListRows(w http.ResponseWriter, r *http.Request, tableNa
 
 	rows, err := table.Scan(10000, 0)
 	if err != nil {
-		jsonResponse(w, map[string]interface{}{"rows": []interface{}{}, "total": 0, "page": page, "pages": 0, "limit": limit})
+		jsonResponse(w, map[string]interface{}{
+			"rows":  []interface{}{},
+			"total": 0,
+			"page":  page,
+			"pages": 0,
+			"limit": limit,
+			"busy":  true,
+		})
 		return
+	}
+
+	// Stable ordering by primary key to match TS admin behavior.
+	if len(rows) > 0 {
+		pk := table.GetDef().CompiledSchema.Fields[0].Name
+		sort.Slice(rows, func(i, j int) bool {
+			ai := rows[i][pk]
+			aj := rows[j][pk]
+			switch aiv := ai.(type) {
+			case float64:
+				if ajv, ok := aj.(float64); ok {
+					return aiv < ajv
+				}
+			case int:
+				if ajv, ok := aj.(int); ok {
+					return aiv < ajv
+				}
+			case int64:
+				if ajv, ok := aj.(int64); ok {
+					return aiv < ajv
+				}
+			}
+			return fmt.Sprint(ai) < fmt.Sprint(aj)
+		})
 	}
 
 	// Search filter
@@ -992,6 +1077,115 @@ func (h *Handler) handleDeleteRow(w http.ResponseWriter, tableName, id string) {
 		return
 	}
 	jsonResponse(w, map[string]interface{}{"ok": true, "deleted": id})
+}
+
+func (h *Handler) handleFileUpload(w http.ResponseWriter, r *http.Request, tableName, rowID, fieldName string) {
+	table := h.db.GetTable(tableName)
+	if table == nil {
+		jsonError(w, "Table not found", 404)
+		return
+	}
+	field := table.GetDef().CompiledSchema.FieldMap[fieldName]
+	if field == nil || (field.Kind != schema.KindFileSingle && field.Kind != schema.KindFileMulti) {
+		jsonError(w, "Field is not a file field", 400)
+		return
+	}
+
+	row, err := table.Get(rowID)
+	if err != nil || row == nil {
+		jsonError(w, "Row not found", 404)
+		return
+	}
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		jsonError(w, "Expected multipart/form-data", 400)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		jsonError(w, "No file provided", 400)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		jsonError(w, "Failed to read file", 400)
+		return
+	}
+
+	mime := header.Header.Get("Content-Type")
+	if mime == "" {
+		mime = storage.MimeFromExtension(header.Filename)
+	}
+	if !storage.ValidateMimeType(mime, field.MimeTypes) {
+		jsonError(w, fmt.Sprintf("File type %s not allowed. Accepted: %s", mime, strings.Join(field.MimeTypes, ", ")), 400)
+		return
+	}
+
+	ref, err := storage.StoreFile(h.db.GetDataDir(), tableName, rowID, fieldName, header.Filename, data, mime)
+	if err != nil {
+		jsonError(w, err.Error(), 400)
+		return
+	}
+
+	refMap := map[string]interface{}{
+		"path": ref.Path,
+		"name": ref.Name,
+		"size": ref.Size,
+		"mime": ref.Mime,
+		"url":  ref.URL,
+	}
+	if field.Kind == schema.KindFileSingle {
+		if _, err := table.Update(rowID, map[string]interface{}{fieldName: refMap}, nil); err != nil {
+			jsonError(w, err.Error(), 400)
+			return
+		}
+	} else {
+		var existing []interface{}
+		if cur, ok := row[fieldName].([]interface{}); ok {
+			existing = append(existing, cur...)
+		}
+		existing = append(existing, refMap)
+		if _, err := table.Update(rowID, map[string]interface{}{fieldName: existing}, nil); err != nil {
+			jsonError(w, err.Error(), 400)
+			return
+		}
+	}
+
+	jsonResponse(w, map[string]interface{}{"ok": true, "file": refMap})
+}
+
+func (h *Handler) handleFileDelete(w http.ResponseWriter, tableName, rowID, fieldName string) {
+	table := h.db.GetTable(tableName)
+	if table == nil {
+		jsonError(w, "Table not found", 404)
+		return
+	}
+	field := table.GetDef().CompiledSchema.FieldMap[fieldName]
+	if field == nil || (field.Kind != schema.KindFileSingle && field.Kind != schema.KindFileMulti) {
+		jsonError(w, "Field is not a file field", 400)
+		return
+	}
+	row, err := table.Get(rowID)
+	if err != nil || row == nil {
+		jsonError(w, "Row not found", 404)
+		return
+	}
+
+	// Best effort cleanup for the field directory.
+	_ = os.RemoveAll(filepath.Join(h.db.GetDataDir(), "_files", tableName, rowID, fieldName))
+
+	update := map[string]interface{}{fieldName: nil}
+	if field.Kind == schema.KindFileMulti {
+		update[fieldName] = []interface{}{}
+	}
+	if _, err := table.Update(rowID, update, nil); err != nil {
+		jsonError(w, err.Error(), 400)
+		return
+	}
+
+	jsonResponse(w, map[string]interface{}{"ok": true})
 }
 
 func (h *Handler) handleAdminSSE(w http.ResponseWriter, r *http.Request) {
@@ -1205,10 +1399,3 @@ func extractParamNames(pattern string) []string {
 	}
 	return names
 }
-
-// Minimal admin HTML templates (inline, no external deps)
-const adminLoginHTML = `<!DOCTYPE html><html><head><title>Flop Admin - Login</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh}.card{background:#1e293b;border-radius:12px;padding:2rem;width:100%;max-width:400px}h1{margin-bottom:1.5rem;text-align:center;font-size:1.5rem}input{width:100%;padding:.75rem;border:1px solid #334155;border-radius:6px;background:#0f172a;color:#e2e8f0;margin-bottom:1rem;font-size:1rem}button{width:100%;padding:.75rem;border:none;border-radius:6px;background:#3b82f6;color:white;font-size:1rem;cursor:pointer}button:hover{background:#2563eb}.error{color:#f87171;text-align:center;margin-bottom:1rem;display:none}</style></head><body><div class="card"><h1>Flop Admin</h1><div class="error" id="error"></div><form id="form"><input name="email" type="email" placeholder="Email" required><input name="password" type="password" placeholder="Password" required><button type="submit">Sign in</button></form></div><script>document.getElementById('form').onsubmit=async e=>{e.preventDefault();const d=new FormData(e.target);try{const r=await fetch('/_/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:d.get('email'),password:d.get('password')})});const j=await r.json();if(j.error){document.getElementById('error').textContent=j.error;document.getElementById('error').style.display='block';return}localStorage.setItem('flop_token',j.token);localStorage.setItem('flop_refresh',j.refreshToken);location.href='/_'}catch(err){document.getElementById('error').textContent=err.message;document.getElementById('error').style.display='block'}}</script></body></html>`
-
-const adminSetupHTML = `<!DOCTYPE html><html><head><title>Flop - Setup</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh}.card{background:#1e293b;border-radius:12px;padding:2rem;width:100%;max-width:400px}h1{margin-bottom:.5rem;text-align:center;font-size:1.5rem}p{margin-bottom:1.5rem;text-align:center;color:#94a3b8;font-size:.875rem}input{width:100%;padding:.75rem;border:1px solid #334155;border-radius:6px;background:#0f172a;color:#e2e8f0;margin-bottom:1rem;font-size:1rem}button{width:100%;padding:.75rem;border:none;border-radius:6px;background:#3b82f6;color:white;font-size:1rem;cursor:pointer}button:hover{background:#2563eb}.error{color:#f87171;text-align:center;margin-bottom:1rem;display:none}</style></head><body><div class="card"><h1>Create Admin Account</h1><p>Set up your superadmin account</p><div class="error" id="error"></div><form id="form"><input name="name" placeholder="Name"><input name="email" type="email" placeholder="Email" required><input name="password" type="password" placeholder="Password" required><button type="submit">Create Account</button></form></div><script>document.getElementById('form').onsubmit=async e=>{e.preventDefault();const d=new FormData(e.target);const t=new URLSearchParams(location.search).get('token');try{const r=await fetch('/_/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t,email:d.get('email'),password:d.get('password'),name:d.get('name')})});const j=await r.json();if(j.error){document.getElementById('error').textContent=j.error;document.getElementById('error').style.display='block';return}location.href='/_/login'}catch(err){document.getElementById('error').textContent=err.message;document.getElementById('error').style.display='block'}}</script></body></html>`
-
-const adminPageHTML = `<!DOCTYPE html><html><head><title>Flop Admin</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0}nav{background:#1e293b;padding:1rem 2rem;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #334155}nav h1{font-size:1.25rem}nav button{background:#334155;color:#e2e8f0;border:none;padding:.5rem 1rem;border-radius:6px;cursor:pointer}.container{max-width:1200px;margin:2rem auto;padding:0 2rem}.tables{display:grid;gap:1rem}.table-card{background:#1e293b;border-radius:8px;padding:1.5rem;cursor:pointer;transition:background .2s}.table-card:hover{background:#263548}.table-card h2{font-size:1.125rem;margin-bottom:.5rem}.table-card .count{color:#94a3b8;font-size:.875rem}#content{margin-top:2rem}table{width:100%;border-collapse:collapse;margin-top:1rem}th,td{padding:.75rem;text-align:left;border-bottom:1px solid #334155;font-size:.875rem}th{color:#94a3b8;font-weight:600}tr:hover{background:#1e293b}</style></head><body><nav><h1>Flop Admin</h1><button onclick="logout()">Logout</button></nav><div class="container"><div id="app">Loading...</div></div><script>const token=localStorage.getItem('flop_token');if(!token)location.href='/_/login';async function api(path,opts){const r=await fetch(path,{...opts,headers:{...opts?.headers,Authorization:'Bearer '+token}});if(r.status===401){location.href='/_/login';return null}return r.json()}function logout(){localStorage.removeItem('flop_token');localStorage.removeItem('flop_refresh');location.href='/_/login'}async function init(){const data=await api('/_/api/tables');if(!data)return;const app=document.getElementById('app');app.innerHTML='<div class="tables">'+data.tables.map(t=>'<div class="table-card" onclick="showTable(\''+t.name+'\')"><h2>'+t.name+'</h2><div class="count">'+t.rowCount+' rows</div></div>').join('')+'</div><div id="content"></div>'}window.showTable=async function(name){const data=await api('/_/api/tables/'+name+'/rows');if(!data)return;const fields=Object.keys(data.rows[0]||{});document.getElementById('content').innerHTML='<h2>'+name+' ('+data.total+' rows)</h2><table><tr>'+fields.map(f=>'<th>'+f+'</th>').join('')+'</tr>'+data.rows.map(r=>'<tr>'+fields.map(f=>'<td>'+esc(r[f])+'</td>').join('')+'</tr>').join('')+'</table>'}function esc(v){if(v===null||v===undefined)return'<span style="color:#64748b">null</span>';if(typeof v==='object')return JSON.stringify(v).slice(0,100);return String(v).replace(/</g,'&lt;')}init()</script></body></html>`

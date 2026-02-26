@@ -6,3 +6,6 @@
 /examples/chat/data
 /examples/blog/data
 go/flop
+/.claude/skills
+/.playwright-cli
+/benchmarks/compare/results/tmp
