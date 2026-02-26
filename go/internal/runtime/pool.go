@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"fmt"
+	"os"
 	"runtime"
+	"strconv"
 	"sync"
 
 	"github.com/marcisbee/flop/internal/engine"
@@ -18,9 +20,25 @@ type HandlerPool struct {
 
 // NewHandlerPool creates a pool of N VMs, each initialized with the app bundle and host functions.
 func NewHandlerPool(db *engine.Database, bundleCode string) (*HandlerPool, error) {
-	size := runtime.NumCPU() * 8
-	if size < 16 {
-		size = 16
+	workers := runtime.GOMAXPROCS(0)
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
+
+	// Default to a moderate pool size to avoid scheduler/mutex thrash.
+	size := workers * 2
+	if size < 8 {
+		size = 8
+	}
+	if size > 64 {
+		size = 64
+	}
+
+	// Optional override for benchmarks/tuning.
+	if env := os.Getenv("FLOP_VM_POOL_SIZE"); env != "" {
+		if n, err := strconv.Atoi(env); err == nil && n > 0 {
+			size = n
+		}
 	}
 
 	pool := &HandlerPool{

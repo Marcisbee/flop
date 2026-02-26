@@ -349,6 +349,7 @@ func (db *Database) Close() error {
 // --- TableInstance ---
 
 const walCheckpointThreshold = 10000
+const updateLockShards = 256
 
 // TableInstance manages a single table's storage, indexes, and WAL.
 type TableInstance struct {
@@ -366,7 +367,11 @@ type TableInstance struct {
 	pubsub         *PubSub
 	db             *Database
 
-	mu            sync.Mutex // write lock
+	// mu coordinates checkpoints/schema-changing writes.
+	// Insert/Delete/Checkpoint take Lock; Update fast path uses RLock.
+	mu            sync.RWMutex
+	rowLocks      [updateLockShards]sync.Mutex
+	pageLocks     [updateLockShards]sync.Mutex
 	walEntryCount int
 }
 
@@ -781,8 +786,18 @@ func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 // Update modifies an existing row. If txBuf is non-nil, WAL records are buffered
 // into it for batch commit later (transaction mode). Otherwise commits immediately.
 func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry) (map[string]interface{}, error) {
-	ti.mu.Lock()
-	defer ti.mu.Unlock()
+	// Fast path: allow concurrent in-place updates on different rows/pages.
+	// Complex updates that require row relocation fall back to the locked path.
+	ti.mu.RLock()
+	rowLock := ti.rowLockForKey(key)
+	rowLock.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			rowLock.Unlock()
+			ti.mu.RUnlock()
+		}
+	}()
 
 	existing, err := ti.Get(key)
 	if err != nil {
@@ -827,6 +842,97 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 	txID := ti.wal.BeginTransaction()
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
 
+	pageLock := ti.pageLockFor(pointer.PageNumber)
+	pageLock.Lock()
+
+	page, err := ti.tableFile.GetPage(pointer.PageNumber)
+	if err != nil {
+		pageLock.Unlock()
+		return nil, err
+	}
+	_, oldLen := page.GetSlot(int(pointer.SlotIndex))
+	if oldLen == 0 || uint16(len(serialized)) > oldLen {
+		pageLock.Unlock()
+		rowLock.Unlock()
+		ti.mu.RUnlock()
+		locked = false
+		return ti.updateSlowLocked(key, updates, txBuf)
+	}
+
+	if !page.UpdateRow(int(pointer.SlotIndex), serialized) {
+		pageLock.Unlock()
+		rowLock.Unlock()
+		ti.mu.RUnlock()
+		locked = false
+		return ti.updateSlowLocked(key, updates, txBuf)
+	}
+	ti.tableFile.MarkPageDirty(pointer.PageNumber)
+	pageLock.Unlock()
+
+	// WAL commit: buffer into transaction or commit immediately
+	if txBuf != nil {
+		entry := txBuf[ti.Name]
+		if entry == nil {
+			entry = &walBufEntry{}
+			txBuf[ti.Name] = entry
+		}
+		entry.records = append(entry.records, walRecord)
+		entry.txIDs = append(entry.txIDs, txID)
+	} else {
+		walBuf := map[string]*walBufEntry{
+			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
+		}
+		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			return nil, err
+		}
+	}
+
+	rowLock.Unlock()
+	ti.mu.RUnlock()
+	locked = false
+	ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow})
+
+	return newRow, nil
+}
+
+// updateSlowLocked performs the original update flow under the table write lock.
+// Used as a fallback when an in-place concurrent update cannot be applied.
+func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry) (map[string]interface{}, error) {
+	ti.mu.Lock()
+	defer ti.mu.Unlock()
+
+	existing, err := ti.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, nil
+	}
+
+	pointer, _ := ti.primaryIndex.Get(key)
+	newRow := copyRow(existing)
+	for k, v := range updates {
+		newRow[k] = v
+	}
+
+	for _, field := range ti.def.CompiledSchema.Fields {
+		val := newRow[field.Name]
+		if val != nil {
+			if err := validateFieldValue(&field, val); err != nil {
+				return nil, err
+			}
+		}
+		if field.Kind == schema.KindSet {
+			if arr, ok := val.([]interface{}); ok {
+				newRow[field.Name] = deduplicateStrings(arr)
+			}
+		}
+	}
+
+	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	txID := ti.wal.BeginTransaction()
+	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
+
 	page, err := ti.tableFile.GetPage(pointer.PageNumber)
 	if err != nil {
 		return nil, err
@@ -834,7 +940,6 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 	updated := page.UpdateRow(int(pointer.SlotIndex), serialized)
 
 	if !updated {
-		// Doesn't fit — delete old, insert new
 		page.DeleteRow(int(pointer.SlotIndex))
 		ti.tableFile.MarkPageDirty(pointer.PageNumber)
 
@@ -867,7 +972,6 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 		ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	}
 
-	// WAL commit: buffer into transaction or commit immediately
 	if txBuf != nil {
 		entry := txBuf[ti.Name]
 		if entry == nil {
@@ -886,7 +990,6 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 	}
 
 	ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow})
-
 	return newRow, nil
 }
 
@@ -1110,6 +1213,23 @@ func (ti *TableInstance) Close() error {
 }
 
 // --- Helpers ---
+
+func (ti *TableInstance) rowLockForKey(key string) *sync.Mutex {
+	return &ti.rowLocks[hashString(key)%updateLockShards]
+}
+
+func (ti *TableInstance) pageLockFor(pageNumber uint32) *sync.Mutex {
+	return &ti.pageLocks[pageNumber%updateLockShards]
+}
+
+func hashString(s string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= 16777619
+	}
+	return h
+}
 
 func copyRow(row map[string]interface{}) map[string]interface{} {
 	cp := make(map[string]interface{}, len(row))

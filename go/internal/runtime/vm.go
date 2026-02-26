@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -140,12 +141,20 @@ func (vm *VM) CallSyncFirst(handlerType, name, paramsJSON, authJSON string, sync
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	// Set call args via Eval (avoids Call's function-name eval overhead).
-	setExpr := `globalThis.__flop_call_args=[` +
-		jsonStr(handlerType) + `,` +
-		jsonStr(name) + `,` +
-		jsonStr(paramsJSON) + `,` +
-		jsonStr(authJSON) + `]`
+	paramsExpr, err := normalizeJSONExpr(paramsJSON)
+	if err != nil {
+		return "", fmt.Errorf("invalid params JSON: %w", err)
+	}
+	authExpr, err := normalizeJSONExpr(authJSON)
+	if err != nil {
+		return "", fmt.Errorf("invalid auth JSON: %w", err)
+	}
+
+	// Set call args via Eval without per-request JSON.parse in JS.
+	setExpr := `globalThis.__flop_call_type=` + jsonStr(handlerType) + `;` +
+		`globalThis.__flop_call_name=` + jsonStr(name) + `;` +
+		`globalThis.__flop_call_params=` + paramsExpr + `;` +
+		`globalThis.__flop_call_auth=` + authExpr + `;`
 	if _, err := vm.qjs.Eval(setExpr, quickjs.EvalGlobal); err != nil {
 		return "", err
 	}
@@ -174,6 +183,17 @@ func (vm *VM) CallSyncFirst(handlerType, name, paramsJSON, authJSON string, sync
 	}
 	b, _ := json.Marshal(last)
 	return string(b), nil
+}
+
+func normalizeJSONExpr(s string) (string, error) {
+	trimmed := bytes.TrimSpace([]byte(s))
+	if len(trimmed) == 0 {
+		return "null", nil
+	}
+	if !json.Valid(trimmed) {
+		return "", fmt.Errorf("malformed JSON")
+	}
+	return string(trimmed), nil
 }
 
 // jsonStr wraps a Go string as a JSON string literal for embedding in JS.

@@ -3,6 +3,8 @@ package storage
 import (
 	"encoding/binary"
 	"os"
+	"sync"
+	"sync/atomic"
 
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/util"
@@ -29,7 +31,8 @@ type WALEntry struct {
 type WAL struct {
 	Path      string
 	file      *os.File
-	txCounter uint32
+	txCounter atomic.Uint32
+	mu        sync.Mutex
 	closed    bool
 }
 
@@ -66,7 +69,7 @@ func OpenWAL(path string) (*WAL, error) {
 func (w *WAL) writeHeader() error {
 	buf := make([]byte, walHeaderSize)
 	copy(buf[0:4], schema.WALFileMagic[:])
-	binary.LittleEndian.PutUint32(buf[4:8], 1)  // version
+	binary.LittleEndian.PutUint32(buf[4:8], 1)   // version
 	binary.LittleEndian.PutUint32(buf[8:12], 0)  // checkpoint LSN
 	binary.LittleEndian.PutUint32(buf[12:16], 0) // reserved
 	_, err := w.file.WriteAt(buf, 0)
@@ -88,12 +91,17 @@ func (w *WAL) readHeader() error {
 
 // BeginTransaction returns a new transaction ID.
 func (w *WAL) BeginTransaction() uint32 {
-	w.txCounter++
-	return w.txCounter
+	return w.txCounter.Add(1)
 }
 
 // Append writes a WAL entry to disk.
 func (w *WAL) Append(txID uint32, op byte, data []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.appendLocked(txID, op, data)
+}
+
+func (w *WAL) appendLocked(txID uint32, op byte, data []byte) error {
 	record := w.BuildRecord(txID, op, data)
 	_, err := w.file.Seek(0, os.SEEK_END)
 	if err != nil {
@@ -105,7 +113,10 @@ func (w *WAL) Append(txID uint32, op byte, data []byte) error {
 
 // Commit writes a COMMIT entry and fsyncs.
 func (w *WAL) Commit(txID uint32) error {
-	if err := w.Append(txID, WALOpCommit, nil); err != nil {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if err := w.appendLocked(txID, WALOpCommit, nil); err != nil {
 		return err
 	}
 	return w.file.Sync()
@@ -140,6 +151,9 @@ func (w *WAL) BuildRecord(txID uint32, op byte, data []byte) []byte {
 
 // FlushBatch writes multiple pre-built records + commit markers in one write.
 func (w *WAL) FlushBatch(records [][]byte, txIDs []uint32) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	// Build commit records
 	var commitRecords [][]byte
 	for _, txID := range txIDs {
@@ -171,11 +185,16 @@ func (w *WAL) FlushBatch(records [][]byte, txIDs []uint32) error {
 
 // Fsync flushes the WAL file.
 func (w *WAL) Fsync() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.file.Sync()
 }
 
 // Replay reads all WAL entries for crash recovery.
 func (w *WAL) Replay() ([]WALEntry, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	stat, err := w.file.Stat()
 	if err != nil {
 		return nil, err
@@ -236,6 +255,9 @@ func FindCommittedTxIDs(entries []WALEntry) map[uint32]bool {
 
 // Truncate resets the WAL to header only.
 func (w *WAL) Truncate() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if err := w.file.Truncate(walHeaderSize); err != nil {
 		return err
 	}
@@ -244,6 +266,9 @@ func (w *WAL) Truncate() error {
 
 // Close closes the WAL file.
 func (w *WAL) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if w.closed {
 		return nil
 	}

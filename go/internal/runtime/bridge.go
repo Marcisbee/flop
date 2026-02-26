@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/marcisbee/flop/internal/engine"
+	"modernc.org/quickjs"
 )
 
 // Bridge connects the QuickJS VM to the Go database engine.
@@ -14,11 +15,16 @@ type Bridge struct {
 	callBC    []byte                         // pre-compiled GLOBAL script (fast sync path)
 	asyncBC   []byte                         // pre-compiled MODULE script (fallback for Promises)
 	txBuf     map[string]*engine.WalBufEntry // active transaction buffer (nil = no tx)
+	fieldAtom map[string]map[string]quickjs.Atom
 }
 
 // NewBridge creates a new bridge and registers all host functions.
 func NewBridge(vm *VM, db *engine.Database) *Bridge {
-	b := &Bridge{vm: vm, db: db}
+	b := &Bridge{
+		vm:        vm,
+		db:        db,
+		fieldAtom: make(map[string]map[string]quickjs.Atom),
+	}
 	b.registerHostFunctions()
 	return b
 }
@@ -42,62 +48,79 @@ func (b *Bridge) registerHostFunctions() {
 		return ""
 	}, false)
 
-	// __flop_insert(tableName, jsonData) -> jsonResult
-	b.vm.RegisterFunc("__flop_insert", func(tableName, dataJSON string) string {
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
-			return b.errJSON(fmt.Sprintf("invalid JSON: %s", err))
+	// __flop_insert(tableName, dataObject) -> [rowObject, error]
+	b.vm.RegisterFunc("__flop_insert", func(tableName string, data quickjs.Value) (quickjs.Value, error) {
+		obj, err := b.extractDataObject(tableName, data)
+		if err != nil {
+			return quickjs.UndefinedValue, err
 		}
-
 		table := b.db.GetTable(tableName)
 		if table == nil {
-			return b.errJSON(fmt.Sprintf("table not found: %s", tableName))
+			return quickjs.UndefinedValue, fmt.Errorf("table not found: %s", tableName)
 		}
 
-		result, err := table.Insert(data, b.txBuf)
+		result, err := table.Insert(obj, b.txBuf)
 		if err != nil {
-			return b.errJSON(err.Error())
+			return quickjs.UndefinedValue, err
 		}
 
-		return b.okJSON(result)
+		jsRow, err := b.rowToJSValue(tableName, result)
+		if err != nil {
+			return quickjs.UndefinedValue, err
+		}
+		return jsRow, nil
 	}, false)
 
-	// __flop_get(tableName, key) -> jsonResult | "null"
-	b.vm.RegisterFunc("__flop_get", func(tableName, key string) string {
+	// __flop_get(tableName, key) -> [rowObject|undefined, error]
+	b.vm.RegisterFunc("__flop_get", func(tableName, key string) (quickjs.Value, error) {
 		table := b.db.GetTable(tableName)
 		if table == nil {
-			return "null"
+			return quickjs.UndefinedValue, nil
 		}
 
 		result, err := table.Get(key)
-		if err != nil || result == nil {
-			return "null"
-		}
-
-		return b.okJSON(result)
-	}, false)
-
-	// __flop_update(tableName, key, jsonData) -> jsonResult | "null"
-	b.vm.RegisterFunc("__flop_update", func(tableName, key, dataJSON string) string {
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
-			return b.errJSON(fmt.Sprintf("invalid JSON: %s", err))
-		}
-
-		table := b.db.GetTable(tableName)
-		if table == nil {
-			return "null"
-		}
-
-		result, err := table.Update(key, data, b.txBuf)
 		if err != nil {
-			return b.errJSON(err.Error())
+			return quickjs.UndefinedValue, err
 		}
 		if result == nil {
-			return "null"
+			return quickjs.UndefinedValue, nil
 		}
 
-		return b.okJSON(result)
+		jsRow, err := b.rowToJSValue(tableName, result)
+		if err != nil {
+			return quickjs.UndefinedValue, err
+		}
+		return jsRow, nil
+	}, false)
+
+	// __flop_update_sparse(tableName, key, dataObject, keysJSON) -> [rowObject|undefined, error]
+	b.vm.RegisterFunc("__flop_update_sparse", func(tableName, key string, data quickjs.Value, keysJSON string) (quickjs.Value, error) {
+		var keys []string
+		if err := json.Unmarshal([]byte(keysJSON), &keys); err != nil {
+			return quickjs.UndefinedValue, fmt.Errorf("invalid update keys: %w", err)
+		}
+		obj, err := b.extractDataObjectKeys(tableName, data, keys)
+		if err != nil {
+			return quickjs.UndefinedValue, err
+		}
+		table := b.db.GetTable(tableName)
+		if table == nil {
+			return quickjs.UndefinedValue, nil
+		}
+
+		result, err := table.Update(key, obj, b.txBuf)
+		if err != nil {
+			return quickjs.UndefinedValue, err
+		}
+		if result == nil {
+			return quickjs.UndefinedValue, nil
+		}
+
+		jsRow, err := b.rowToJSValue(tableName, result)
+		if err != nil {
+			return quickjs.UndefinedValue, err
+		}
+		return jsRow, nil
 	}, false)
 
 	// __flop_delete(tableName, key) -> jsonResult
@@ -189,22 +212,29 @@ func (b *Bridge) registerHostFunctions() {
 func (b *Bridge) RegisterHandlerBridge() error {
 	handlerBridge := `
 globalThis.__flop_build_db_proxy = function() {
+  var __flop_table_cache = Object.create(null);
   return new Proxy({}, {
     get: function(_, tableName) {
-      return {
+      if (__flop_table_cache[tableName]) return __flop_table_cache[tableName];
+
+      var api = {
         insert: function(data) {
-          var result = __flop_insert(tableName, JSON.stringify(data));
-          return JSON.parse(result);
+          var result = __flop_insert(tableName, data);
+          if (result[1] !== null) throw new Error(String(result[1]));
+          return result[0];
         },
         get: function(key) {
           var result = __flop_get(tableName, String(key));
-          if (result === null || result === 'null') return null;
-          return JSON.parse(result);
+          if (result[1] !== null) throw new Error(String(result[1]));
+          if (result[0] === undefined) return null;
+          return result[0];
         },
         update: function(key, data) {
-          var result = __flop_update(tableName, String(key), JSON.stringify(data));
-          if (result === null || result === 'null') return null;
-          return JSON.parse(result);
+          var keys = Object.keys(data || {});
+          var result = __flop_update_sparse(tableName, String(key), data, JSON.stringify(keys));
+          if (result[1] !== null) throw new Error(String(result[1]));
+          if (result[0] === undefined) return null;
+          return result[0];
         },
         delete: function(key) {
           var result = __flop_delete(tableName, String(key));
@@ -220,6 +250,8 @@ globalThis.__flop_build_db_proxy = function() {
           return __flop_count(tableName);
         },
       };
+      __flop_table_cache[tableName] = api;
+      return api;
     }
   });
 };
@@ -250,15 +282,52 @@ globalThis.__flop_ctx_reducer = {
 };
 
 // Handler caller. Returns raw result (may be a Promise for async handlers).
-globalThis.__flop_call_handler = function(type, name, paramsJSON, authJSON) {
-  var params = JSON.parse(paramsJSON);
-  var auth = (authJSON && authJSON !== 'null') ? JSON.parse(authJSON) : null;
-
+globalThis.__flop_call_handler = function(type, name, params, auth) {
   var exports = globalThis.__FLOP_EXPORTS__;
   if (!exports) throw new Error('Module exports not available');
   var endpoint = exports[name];
   if (!endpoint || !endpoint._handler) {
     throw new Error(type + ' not found: ' + name);
+  }
+
+  // Coerce query-string style params into typed values expected by handlers.
+  var defs = endpoint._compiledParams || {};
+  for (var k in defs) {
+    if (!Object.prototype.hasOwnProperty.call(params, k)) continue;
+    var def = defs[k] || {};
+    var v = params[k];
+    if (typeof v !== 'string') continue;
+
+    if (def.kind === 'number' || def.kind === 'timestamp') {
+      var n = Number(v);
+      if (!Number.isNaN(n)) params[k] = n;
+      continue;
+    }
+
+    if (def.kind === 'integer') {
+      var i = Number(v);
+      if (Number.isInteger(i)) params[k] = i;
+      continue;
+    }
+
+    if (def.kind === 'boolean') {
+      if (v === 'true') params[k] = true;
+      else if (v === 'false') params[k] = false;
+      continue;
+    }
+
+    if (
+      def.kind === 'json' ||
+      def.kind === 'vector' ||
+      def.kind === 'set' ||
+      def.kind === 'roles' ||
+      def.kind === 'refMulti' ||
+      def.kind === 'fileMulti'
+    ) {
+      if (v.length > 0 && (v[0] === '[' || v[0] === '{')) {
+        try { params[k] = JSON.parse(v); } catch (_) {}
+      }
+    }
   }
 
   // Reuse pre-built ctx, just update auth
@@ -277,13 +346,17 @@ globalThis.__flop_call_handler = function(type, name, paramsJSON, authJSON) {
 	// return synchronous values. If a handler still returns a Promise (e.g. Promise.all),
 	// the sync path stores it in __flop_pending and returns false as a sentinel.
 	callScript := `(function() {
-		var a = globalThis.__flop_call_args;
-		var r = globalThis.__flop_call_handler(a[0], a[1], a[2], a[3]);
+		var r = globalThis.__flop_call_handler(
+			globalThis.__flop_call_type,
+			globalThis.__flop_call_name,
+			globalThis.__flop_call_params,
+			globalThis.__flop_call_auth
+		);
 		if (r && typeof r === 'object' && typeof r.then === 'function') {
 			globalThis.__flop_pending = r;
 			return false;
 		}
-		globalThis.__flop_last_result = JSON.stringify(r);
+		globalThis.__flop_last_result = (r === undefined) ? null : r;
 		return true;
 	})()`
 	callBC, err := b.vm.CompileGlobal(callScript)
@@ -293,7 +366,10 @@ globalThis.__flop_call_handler = function(type, name, paramsJSON, authJSON) {
 	b.callBC = callBC
 
 	// 2. ASYNC fallback (module) — for handlers that still return Promises.
-	asyncScript := `globalThis.__flop_last_result = JSON.stringify(await globalThis.__flop_pending);`
+	asyncScript := `{
+		var r = await globalThis.__flop_pending;
+		globalThis.__flop_last_result = (r === undefined) ? null : r;
+	}`
 	asyncBC, err := b.vm.CompileModule(asyncScript)
 	if err != nil {
 		return fmt.Errorf("pre-compile async module: %w", err)
@@ -311,6 +387,143 @@ func (b *Bridge) CallHandler(handlerType, name, paramsJSON, authJSON string) (st
 		return "", fmt.Errorf("call %s %q: %w", handlerType, name, err)
 	}
 	return result, nil
+}
+
+func (b *Bridge) extractDataObject(tableName string, data quickjs.Value) (map[string]interface{}, error) {
+	table := b.db.GetTable(tableName)
+	if table == nil {
+		return nil, fmt.Errorf("table not found: %s", tableName)
+	}
+
+	fields := table.GetDef().CompiledSchema.Fields
+	names := make([]string, 0, len(fields))
+	for _, f := range fields {
+		names = append(names, f.Name)
+	}
+	return b.extractDataObjectKeys(tableName, data, names)
+}
+
+func (b *Bridge) extractDataObjectKeys(tableName string, data quickjs.Value, keys []string) (map[string]interface{}, error) {
+	table := b.db.GetTable(tableName)
+	if table == nil {
+		return nil, fmt.Errorf("table not found: %s", tableName)
+	}
+
+	fieldSet := make(map[string]struct{}, len(table.GetDef().CompiledSchema.Fields))
+	for _, f := range table.GetDef().CompiledSchema.Fields {
+		fieldSet[f.Name] = struct{}{}
+	}
+
+	row := make(map[string]interface{}, len(keys))
+	for _, fieldName := range keys {
+		if _, ok := fieldSet[fieldName]; !ok {
+			continue
+		}
+
+		atom, err := b.getFieldAtom(tableName, fieldName)
+		if err != nil {
+			return nil, fmt.Errorf("create atom %q: %w", fieldName, err)
+		}
+
+		v, err := data.GetPropertyValue(atom)
+		if err != nil {
+			return nil, fmt.Errorf("read field %q: %w", fieldName, err)
+		}
+
+		if v.IsUndefined() {
+			v.Free()
+			continue
+		}
+
+		anyVal, err := v.Any()
+		v.Free()
+		if err != nil {
+			return nil, fmt.Errorf("decode field %q: %w", fieldName, err)
+		}
+
+		normalized, err := normalizeJSValue(anyVal)
+		if err != nil {
+			return nil, fmt.Errorf("normalize field %q: %w", fieldName, err)
+		}
+		row[fieldName] = normalized
+	}
+
+	return row, nil
+}
+
+func (b *Bridge) rowToJSValue(tableName string, row map[string]interface{}) (quickjs.Value, error) {
+	obj, err := b.vm.QJS().NewObjectValue()
+	if err != nil {
+		return quickjs.UndefinedValue, err
+	}
+
+	for k, v := range row {
+		atom, err := b.getFieldAtom(tableName, k)
+		if err != nil {
+			obj.Free()
+			return quickjs.UndefinedValue, err
+		}
+
+		// Fast path for primitives/slices supported by quickjs conversion.
+		if err := obj.SetProperty(atom, v); err == nil {
+			continue
+		}
+
+		// Fallback for nested/complex values: marshal once and parse inside QuickJS.
+		jsVal, err := b.anyToJSValue(v)
+		if err != nil {
+			obj.Free()
+			return quickjs.UndefinedValue, err
+		}
+		if err := obj.SetPropertyValue(atom, jsVal); err != nil {
+			jsVal.Free()
+			obj.Free()
+			return quickjs.UndefinedValue, err
+		}
+		jsVal.Free()
+	}
+
+	return obj, nil
+}
+
+func (b *Bridge) anyToJSValue(v interface{}) (quickjs.Value, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return quickjs.UndefinedValue, err
+	}
+	return b.vm.QJS().CallValue("JSON.parse", string(data))
+}
+
+func (b *Bridge) getFieldAtom(tableName, fieldName string) (quickjs.Atom, error) {
+	tableAtoms := b.fieldAtom[tableName]
+	if tableAtoms == nil {
+		tableAtoms = make(map[string]quickjs.Atom)
+		b.fieldAtom[tableName] = tableAtoms
+	}
+
+	if atom, ok := tableAtoms[fieldName]; ok {
+		return atom, nil
+	}
+
+	atom, err := b.vm.QJS().NewAtom(fieldName)
+	if err != nil {
+		return 0, err
+	}
+	tableAtoms[fieldName] = atom
+	return atom, nil
+}
+
+func normalizeJSValue(v interface{}) (interface{}, error) {
+	obj, ok := v.(*quickjs.Object)
+	if !ok {
+		return v, nil
+	}
+
+	var decoded interface{}
+	if err := obj.Into(&decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 func (b *Bridge) okJSON(v interface{}) string {

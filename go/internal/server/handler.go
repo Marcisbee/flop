@@ -18,9 +18,9 @@ import (
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Port       int
-	JWTSecret  string
-	StaticDir  string
+	Port      int
+	JWTSecret string
+	StaticDir string
 }
 
 // HandlerCaller calls JS view/reducer handlers.
@@ -391,11 +391,21 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send snapshots for each view
-	for _, name := range viewNames {
-		name = strings.TrimSpace(name)
+	type snapshotResult struct {
+		name   string
+		result string
+		err    error
+	}
+
+	results := make(chan snapshotResult, len(viewNames))
+	scheduled := 0
+
+	for _, rawName := range viewNames {
+		name := strings.TrimSpace(rawName)
 		route := h.findRoute(fmt.Sprintf("/api/view/%s", name))
 		if route == nil {
 			sseEvent(w, fmt.Sprintf("error:%s", name), fmt.Sprintf(`{"error":"View not found: %s"}`, name))
+			flusher.Flush()
 			continue
 		}
 
@@ -408,15 +418,30 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		paramsJSON, _ := json.Marshal(params)
+		scheduled++
 
-		result, err := h.caller.CallHandler("view", name, string(paramsJSON), authJSON)
-		if err != nil {
-			sseEvent(w, fmt.Sprintf("error:%s", name), fmt.Sprintf(`{"error":%q}`, err.Error()))
-		} else {
-			sseEvent(w, fmt.Sprintf("snapshot:%s", name), result)
+		go func(viewName, pJSON string) {
+			res, err := h.caller.CallHandler("view", viewName, pJSON, authJSON)
+			select {
+			case results <- snapshotResult{name: viewName, result: res, err: err}:
+			case <-r.Context().Done():
+			}
+		}(name, string(paramsJSON))
+	}
+
+	for i := 0; i < scheduled; i++ {
+		select {
+		case <-r.Context().Done():
+			return
+		case out := <-results:
+			if out.err != nil {
+				sseEvent(w, fmt.Sprintf("error:%s", out.name), fmt.Sprintf(`{"error":%q}`, out.err.Error()))
+			} else {
+				sseEvent(w, fmt.Sprintf("snapshot:%s", out.name), out.result)
+			}
+			flusher.Flush()
 		}
 	}
-	flusher.Flush()
 
 	// Subscribe to all table changes
 	tables := make([]string, 0)
