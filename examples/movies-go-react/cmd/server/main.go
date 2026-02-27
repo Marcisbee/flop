@@ -23,6 +23,8 @@ import (
 type autocompleteItem struct {
 	Norm          string
 	NormNoArticle string
+	Raw           string
+	RawNoArticle  string
 	Slug          string
 	Title         string
 	Year          int
@@ -66,9 +68,13 @@ func (a *autocompleteIndex) add(entries []movies.MovieIndexEntry) {
 		if entry.Slug == "" || entry.Title == "" {
 			continue
 		}
+		raw := normalizeSearchRaw(entry.Title)
+		norm := normalizeSearch(entry.Title)
 		item := autocompleteItem{
-			Norm:          normalizeSearch(entry.Title),
-			NormNoArticle: removeLeadingArticle(normalizeSearch(entry.Title)),
+			Norm:          norm,
+			NormNoArticle: removeLeadingArticle(norm),
+			Raw:           raw,
+			RawNoArticle:  removeLeadingArticle(raw),
 			Slug:          entry.Slug,
 			Title:         entry.Title,
 			Year:          entry.Year,
@@ -95,7 +101,12 @@ func (a *autocompleteIndex) query(prefix string, limit int) []map[string]any {
 	if norm == "" {
 		return []map[string]any{}
 	}
+	rawNorm := normalizeSearchRaw(prefix)
+	if rawNorm == "" {
+		rawNorm = norm
+	}
 	queryTokens := strings.Fields(norm)
+	rawQueryTokens := strings.Fields(rawNorm)
 	multiTokenQuery := len(queryTokens) > 1
 	useOrderedTokenFallback := shouldUseOrderedTokenFallback(queryTokens)
 
@@ -143,11 +154,17 @@ func (a *autocompleteIndex) query(prefix string, limit int) []map[string]any {
 	if len(out) < limit {
 		for _, item := range a.items {
 			match := strings.HasPrefix(item.NormNoArticle, norm) || strings.Contains(item.Norm, norm)
+			if !match {
+				match = strings.HasPrefix(item.RawNoArticle, rawNorm) || strings.Contains(item.Raw, rawNorm)
+			}
 			if !match && !multiTokenQuery {
-				match = hasWordPrefix(item.Norm, norm)
+				match = hasWordPrefix(item.Norm, norm) || hasWordPrefix(item.Raw, rawNorm)
 			}
 			if !match && useOrderedTokenFallback {
 				match = hasOrderedTokenPrefixMatchTokens(item.Norm, queryTokens)
+				if !match {
+					match = hasOrderedTokenPrefixMatchTokens(item.Raw, rawQueryTokens)
+				}
 			}
 			if match {
 				appendMatch(item)
@@ -495,6 +512,23 @@ func writeJSON(w http.ResponseWriter, payload map[string]any) {
 }
 
 func normalizeSearch(s string) string {
+	norm := normalizeSearchRaw(s)
+	if norm == "" {
+		return ""
+	}
+
+	// Canonicalize Roman sequel numerals to Arabic numbers so:
+	// "Mortal Kombat II" and "Mortal Kombat 2" normalize identically.
+	tokens := strings.Fields(norm)
+	for i := range tokens {
+		if arabic, ok := romanNumeralArabic(tokens[i]); ok {
+			tokens[i] = arabic
+		}
+	}
+	return strings.Join(tokens, " ")
+}
+
+func normalizeSearchRaw(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	lastSpace := true
@@ -509,20 +543,7 @@ func normalizeSearch(s string) string {
 			lastSpace = true
 		}
 	}
-	norm := strings.TrimSpace(b.String())
-	if norm == "" {
-		return ""
-	}
-
-	// Canonicalize Roman sequel numerals to Arabic numbers so:
-	// "Mortal Kombat II" and "Mortal Kombat 2" normalize identically.
-	tokens := strings.Fields(norm)
-	for i := range tokens {
-		if arabic, ok := romanNumeralArabic(tokens[i]); ok {
-			tokens[i] = arabic
-		}
-	}
-	return strings.Join(tokens, " ")
+	return strings.TrimSpace(b.String())
 }
 
 func romanNumeralArabic(token string) (string, bool) {
