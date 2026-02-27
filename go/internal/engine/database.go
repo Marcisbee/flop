@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/storage"
@@ -15,19 +16,21 @@ import (
 
 // DatabaseConfig holds configuration for the database.
 type DatabaseConfig struct {
-	DataDir       string
-	MaxCachePages int
-	SyncMode      string // "full" or "normal"
+	DataDir               string
+	MaxCachePages         int
+	SyncMode              string // "full" or "normal"
+	AsyncSecondaryIndexes bool
 }
 
 // Database manages all table instances and coordinates group commit.
 type Database struct {
-	Tables   map[string]*TableInstance
-	dataDir  string
-	meta     *schema.StoredMeta
-	pubsub   *PubSub
-	opened   bool
-	syncMode string
+	Tables                map[string]*TableInstance
+	dataDir               string
+	meta                  *schema.StoredMeta
+	pubsub                *PubSub
+	opened                bool
+	syncMode              string
+	asyncSecondaryIndexes bool
 
 	maxCachePages int
 
@@ -62,11 +65,12 @@ func NewDatabase(config DatabaseConfig) *Database {
 		config.MaxCachePages = 256
 	}
 	return &Database{
-		Tables:        make(map[string]*TableInstance),
-		dataDir:       config.DataDir,
-		syncMode:      config.SyncMode,
-		maxCachePages: config.MaxCachePages,
-		pubsub:        NewPubSub(),
+		Tables:                make(map[string]*TableInstance),
+		dataDir:               config.DataDir,
+		syncMode:              config.SyncMode,
+		asyncSecondaryIndexes: config.AsyncSecondaryIndexes,
+		maxCachePages:         config.MaxCachePages,
+		pubsub:                NewPubSub(),
 	}
 }
 
@@ -362,7 +366,11 @@ type TableInstance struct {
 	tableFile      *storage.TableFile
 	wal            *storage.WAL
 	primaryIndex   *storage.HashIndex
-	secondaryIdxs  map[string]interface{} // *HashIndex or *MultiIndex
+	secondaryIdxs  map[string]interface{} // *HashIndex, *MultiIndex, or *FullTextIndex
+	indexDefsByKey map[string]schema.IndexDef
+	indexStateMu   sync.RWMutex
+	indexesReady   bool
+	indexBuildDone chan struct{}
 	migChains      map[int]*schema.MigrationChain
 	currentVersion int
 	tableMeta      *schema.StoredTableMeta
@@ -380,12 +388,13 @@ type TableInstance struct {
 
 func newTableInstance(name string, def *schema.TableDef, db *Database) (*TableInstance, error) {
 	return &TableInstance{
-		Name:          name,
-		def:           def,
-		primaryIndex:  storage.NewHashIndex(),
-		secondaryIdxs: make(map[string]interface{}),
-		migChains:     make(map[int]*schema.MigrationChain),
-		db:            db,
+		Name:           name,
+		def:            def,
+		primaryIndex:   storage.NewHashIndex(),
+		secondaryIdxs:  make(map[string]interface{}),
+		indexDefsByKey: make(map[string]schema.IndexDef),
+		migChains:      make(map[int]*schema.MigrationChain),
+		db:             db,
 	}, nil
 }
 
@@ -481,8 +490,10 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	}
 
 	// Set up secondary indexes
+	ti.indexDefsByKey = make(map[string]schema.IndexDef, len(ti.def.Indexes))
 	for _, indexDef := range ti.def.Indexes {
 		indexKey := secondaryIndexKey(indexDef)
+		ti.indexDefsByKey[indexKey] = indexDef
 		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
 			ti.secondaryIdxs[indexKey] = storage.NewFullTextIndex()
 		} else if indexDef.Unique {
@@ -492,12 +503,22 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		}
 	}
 
-	// Populate secondary indexes
-	if len(ti.def.Indexes) > 0 {
+	ti.setIndexesReady(len(ti.def.Indexes) == 0)
+
+	// Populate secondary indexes.
+	if len(ti.def.Indexes) == 0 {
+		return nil
+	}
+	if !ti.db.asyncSecondaryIndexes {
 		if err := ti.rebuildSecondaryIndexes(); err != nil {
 			return err
 		}
+		ti.setIndexesReady(true)
+		return nil
 	}
+
+	ti.indexBuildDone = make(chan struct{})
+	go ti.rebuildSecondaryIndexesAsync()
 
 	return nil
 }
@@ -561,6 +582,17 @@ func (ti *TableInstance) rebuildIndex() error {
 }
 
 func (ti *TableInstance) rebuildSecondaryIndexes() error {
+	for _, idx := range ti.secondaryIdxs {
+		switch idx := idx.(type) {
+		case *storage.FullTextIndex:
+			idx.Clear()
+		case *storage.HashIndex:
+			idx.Clear()
+		case *storage.MultiIndex:
+			idx.Clear()
+		}
+	}
+
 	rows, err := ti.tableFile.ScanAllRows()
 	if err != nil {
 		return err
@@ -606,6 +638,38 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 	}
 
 	return nil
+}
+
+func (ti *TableInstance) rebuildSecondaryIndexesAsync() {
+	defer close(ti.indexBuildDone)
+	ti.mu.Lock()
+	defer ti.mu.Unlock()
+	if err := ti.rebuildSecondaryIndexes(); err != nil {
+		ti.setIndexesReady(false)
+		return
+	}
+	ti.setIndexesReady(true)
+}
+
+func (ti *TableInstance) setIndexesReady(ready bool) {
+	ti.indexStateMu.Lock()
+	ti.indexesReady = ready
+	ti.indexStateMu.Unlock()
+}
+
+func (ti *TableInstance) secondaryIndexesReady() bool {
+	ti.indexStateMu.RLock()
+	ready := ti.indexesReady
+	ti.indexStateMu.RUnlock()
+	return ready
+}
+
+func (ti *TableInstance) waitForSecondaryIndexBuild() {
+	done := ti.indexBuildDone
+	if done == nil {
+		return
+	}
+	<-done
 }
 
 func (ti *TableInstance) primaryKeyField() string {
@@ -684,17 +748,23 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText || !indexDef.Unique {
 			continue
 		}
-		indexKey := secondaryIndexKey(indexDef)
-		idx := ti.secondaryIdxs[indexKey]
-		if hi, ok := idx.(*storage.HashIndex); ok {
-			keyValues := make([]interface{}, len(indexDef.Fields))
-			for i, f := range indexDef.Fields {
-				keyValues[i] = row[f]
+		key := secondaryIndexRowKey(indexDef.Fields, row)
+		if ti.secondaryIndexesReady() {
+			indexKey := secondaryIndexKey(indexDef)
+			idx := ti.secondaryIdxs[indexKey]
+			if hi, ok := idx.(*storage.HashIndex); ok {
+				if hi.Has(key) {
+					return nil, fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
+				}
 			}
-			key := storage.CompositeKey(keyValues)
-			if hi.Has(key) {
-				return nil, fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
-			}
+			continue
+		}
+		conflict, err := ti.uniqueConflictByScan(indexDef.Fields, key, "")
+		if err != nil {
+			return nil, err
+		}
+		if conflict {
+			return nil, fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
 		}
 	}
 
@@ -1107,10 +1177,22 @@ func (ti *TableInstance) validateIndexChanges(existing, newRow map[string]interf
 			continue
 		}
 
-		if hi, ok := idx.(*storage.HashIndex); ok {
-			if hi.Has(newKey) {
-				return fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
+		if ti.secondaryIndexesReady() {
+			if hi, ok := idx.(*storage.HashIndex); ok {
+				if hi.Has(newKey) {
+					return fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
+				}
 			}
+			continue
+		}
+
+		excludePK := toString(existing[ti.primaryKeyField()])
+		conflict, err := ti.uniqueConflictByScan(indexDef.Fields, newKey, excludePK)
+		if err != nil {
+			return err
+		}
+		if conflict {
+			return fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
 		}
 	}
 	return nil
@@ -1300,6 +1382,23 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 // FindByIndex finds a row by a secondary unique index.
 func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema.RowPointer, bool) {
 	indexKey := strings.Join(fields, ",")
+	indexDef, exists := ti.indexDefsByKey[indexKey]
+	if !exists || normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+		return schema.RowPointer{}, false
+	}
+
+	if !ti.secondaryIndexesReady() {
+		matchKey := toString(value)
+		if len(fields) > 1 {
+			matchKey = storage.CompositeKey(anySlice(value))
+		}
+		ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 1)
+		if err != nil || len(ptrs) == 0 {
+			return schema.RowPointer{}, false
+		}
+		return ptrs[0], true
+	}
+
 	idx := ti.secondaryIdxs[indexKey]
 	if hi, ok := idx.(*storage.HashIndex); ok {
 		return hi.Get(toString(value))
@@ -1310,6 +1409,23 @@ func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema
 // FindAllByIndex returns all row pointers for a non-unique index value.
 func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []schema.RowPointer {
 	indexKey := strings.Join(fields, ",")
+	indexDef, exists := ti.indexDefsByKey[indexKey]
+	if !exists || normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+		return nil
+	}
+
+	if !ti.secondaryIndexesReady() {
+		matchKey := toString(value)
+		if len(fields) > 1 {
+			matchKey = storage.CompositeKey(anySlice(value))
+		}
+		ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
+		if err != nil {
+			return nil
+		}
+		return ptrs
+	}
+
 	idx := ti.secondaryIdxs[indexKey]
 	switch idx := idx.(type) {
 	case *storage.MultiIndex:
@@ -1325,7 +1441,15 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 
 // SearchFullText searches a full-text secondary index over the given fields.
 func (ti *TableInstance) SearchFullText(fields []string, query string, limit int) ([]map[string]interface{}, error) {
-	idx := ti.secondaryIdxs[fullTextIndexKey(fields)]
+	indexKey := fullTextIndexKey(fields)
+	indexDef, exists := ti.indexDefsByKey[indexKey]
+	if !exists || normalizeIndexType(indexDef.Type) != schema.IndexTypeFullText {
+		return nil, fmt.Errorf("full-text index not found on fields (%s)", strings.Join(fields, ", "))
+	}
+	if !ti.secondaryIndexesReady() {
+		return ti.searchFullTextByScan(fields, query, limit)
+	}
+	idx := ti.secondaryIdxs[indexKey]
 	fti, ok := idx.(*storage.FullTextIndex)
 	if !ok {
 		return nil, fmt.Errorf("full-text index not found on fields (%s)", strings.Join(fields, ", "))
@@ -1386,6 +1510,88 @@ func (ti *TableInstance) GetByPointer(pointer schema.RowPointer) (map[string]int
 	return row, nil
 }
 
+func (ti *TableInstance) uniqueConflictByScan(fields []string, matchKey, excludePK string) (bool, error) {
+	rows, err := ti.tableFile.ScanAllRows()
+	if err != nil {
+		return false, err
+	}
+	pkField := ti.primaryKeyField()
+	for _, scanned := range rows {
+		row, _, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
+		if err != nil {
+			continue
+		}
+		if excludePK != "" && toString(row[pkField]) == excludePK {
+			continue
+		}
+		if secondaryIndexRowKey(fields, row) == matchKey {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (ti *TableInstance) scanPointersByIndexKey(fields []string, matchKey string, limit int) ([]schema.RowPointer, error) {
+	rows, err := ti.tableFile.ScanAllRows()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]schema.RowPointer, 0, 16)
+	for _, scanned := range rows {
+		row, _, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
+		if err != nil {
+			continue
+		}
+		if secondaryIndexRowKey(fields, row) != matchKey {
+			continue
+		}
+		out = append(out, schema.RowPointer{
+			PageNumber: scanned.PageNumber,
+			SlotIndex:  uint16(scanned.SlotIndex),
+		})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (ti *TableInstance) searchFullTextByScan(fields []string, query string, limit int) ([]map[string]interface{}, error) {
+	queryTokens := tokenizeFullTextLike(query)
+	if len(queryTokens) == 0 {
+		return []map[string]interface{}{}, nil
+	}
+
+	rows, err := ti.tableFile.ScanAllRows()
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]map[string]interface{}, 0, 16)
+	for _, scanned := range rows {
+		row, _, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
+		if err != nil {
+			continue
+		}
+		docTokens := tokenizeFullTextLikeSet(textValuesForFields(row, fields)...)
+		match := true
+		for _, token := range queryTokens {
+			if _, ok := docTokens[token]; !ok {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		results = append(results, row)
+		if limit > 0 && len(results) >= limit {
+			break
+		}
+	}
+	return results, nil
+}
+
 // Checkpoint flushes all dirty pages, indexes, and WAL.
 func (ti *TableInstance) Checkpoint() error {
 	ti.mu.Lock()
@@ -1406,6 +1612,7 @@ func (ti *TableInstance) Checkpoint() error {
 
 // Close checkpoints and closes the table.
 func (ti *TableInstance) Close() error {
+	ti.waitForSecondaryIndexBuild()
 	if err := ti.Checkpoint(); err != nil {
 		return err
 	}
@@ -1464,6 +1671,75 @@ func copyRow(row map[string]interface{}) map[string]interface{} {
 		cp[k] = v
 	}
 	return cp
+}
+
+func secondaryIndexRowKey(fields []string, row map[string]interface{}) string {
+	values := make([]interface{}, len(fields))
+	for i, f := range fields {
+		values[i] = row[f]
+	}
+	return storage.CompositeKey(values)
+}
+
+func anySlice(value interface{}) []interface{} {
+	switch v := value.(type) {
+	case []interface{}:
+		return v
+	case []string:
+		out := make([]interface{}, len(v))
+		for i := range v {
+			out[i] = v[i]
+		}
+		return out
+	default:
+		return []interface{}{value}
+	}
+}
+
+var fullTextStopWords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {}, "by": {}, "for": {}, "from": {},
+	"has": {}, "he": {}, "in": {}, "is": {}, "it": {}, "its": {}, "of": {}, "on": {}, "or": {}, "that": {},
+	"the": {}, "to": {}, "was": {}, "were": {}, "will": {}, "with": {},
+}
+
+func tokenizeFullTextLike(texts ...string) []string {
+	set := tokenizeFullTextLikeSet(texts...)
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for token := range set {
+		out = append(out, token)
+	}
+	return out
+}
+
+func tokenizeFullTextLikeSet(texts ...string) map[string]struct{} {
+	const minTokenLen = 2
+	seen := make(map[string]struct{}, 16)
+	var token []rune
+	flush := func() {
+		if len(token) < minTokenLen {
+			token = token[:0]
+			return
+		}
+		t := string(token)
+		if _, stop := fullTextStopWords[t]; !stop {
+			seen[t] = struct{}{}
+		}
+		token = token[:0]
+	}
+	for _, text := range texts {
+		for _, r := range text {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				token = append(token, unicode.ToLower(r))
+				continue
+			}
+			flush()
+		}
+		flush()
+	}
+	return seen
 }
 
 func toString(v interface{}) string {

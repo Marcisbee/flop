@@ -35,8 +35,9 @@ func (a *App) Open() (*Database, error) {
 	tableDefs := a.buildTableDefs()
 
 	db := engine.NewDatabase(engine.DatabaseConfig{
-		DataDir:  a.config.DataDir,
-		SyncMode: a.config.SyncMode,
+		DataDir:               a.config.DataDir,
+		SyncMode:              a.config.SyncMode,
+		AsyncSecondaryIndexes: a.config.AsyncSecondaryIndexes,
 	})
 
 	if err := db.Open(tableDefs); err != nil {

@@ -18,8 +18,9 @@ import (
 var ErrNotImplemented = errors.New("flop: not implemented")
 
 type Config struct {
-	DataDir  string `json:"dataDir,omitempty"`
-	SyncMode string `json:"syncMode,omitempty"`
+	DataDir               string `json:"dataDir,omitempty"`
+	SyncMode              string `json:"syncMode,omitempty"`
+	AsyncSecondaryIndexes bool   `json:"asyncSecondaryIndexes,omitempty"`
 }
 
 // App is the top-level runtime registry.

@@ -75,6 +75,17 @@ func (f *FullTextIndex) Delete(pk string) {
 	delete(f.docTerms, docID)
 }
 
+// Clear removes all indexed data.
+func (f *FullTextIndex) Clear() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.postings = make(map[string][]uint32)
+	f.docTerms = make(map[uint32][]string)
+	f.docByPK = make(map[string]uint32)
+	f.pkByDoc = make(map[uint32]string)
+	f.nextDoc = 1
+}
+
 // Search returns primary keys that match all query tokens.
 func (f *FullTextIndex) Search(query string, limit int) []string {
 	tokens := tokenizeTexts(query)

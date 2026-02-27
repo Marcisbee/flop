@@ -42,8 +42,9 @@ func BuildWithDataDir(dataDir string) *flop.App {
 	}
 
 	application := flop.New(flop.Config{
-		DataDir:  dataDir,
-		SyncMode: "normal",
+		DataDir:               dataDir,
+		SyncMode:              "normal",
+		AsyncSecondaryIndexes: true,
 	})
 
 	flop.Define(application, "movies", func(s *flop.SchemaBuilder) {
