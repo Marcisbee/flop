@@ -4,6 +4,9 @@
  * - flop-go
  * - sqlite-ts
  * - sqlite-go
+ * - turso-ts
+ * - pglite-ts
+ * - turso-go
  *
  * Scenarios are workload-only:
  * - high-load-rw
@@ -14,7 +17,16 @@
 
 import { fromFileUrl, resolve } from "@std/path";
 
-type EngineID = "flop-ts" | "flop-go" | "sqlite-ts" | "sqlite-go";
+type EngineID =
+  | "flop-ts"
+  | "flop-go"
+  | "sqlite-ts"
+  | "sqlite-go"
+  | "turso-ts"
+  | "pglite-ts"
+  | "turso-go";
+type BenchmarkProfile = "smoke" | "quick" | "full";
+type EngineSet = "core" | "all";
 type ScenarioKind = "reads" | "writes" | "edits" | "mixed";
 
 type Scenario = {
@@ -162,7 +174,7 @@ const FALLBACK_REPORT_TEMPLATE = `<!doctype html>
 
 const ACTIVE_PROCS = new Set<Deno.ChildProcess>();
 
-const DEFAULT_SCENARIOS: Scenario[] = [
+const FULL_SCENARIOS: Scenario[] = [
   {
     name: "high-load-rw",
     kind: "mixed",
@@ -202,19 +214,115 @@ const DEFAULT_SCENARIOS: Scenario[] = [
   },
 ];
 
-const SCENARIO_CATALOG: Scenario[] = [...DEFAULT_SCENARIOS];
+const QUICK_SCENARIOS: Scenario[] = [
+  {
+    name: "high-load-rw",
+    kind: "mixed",
+    users: 320,
+    setupConcurrency: 40,
+    concurrency: 140,
+    durationSec: 8,
+    readShare: 0.55,
+    accountsPerUser: 3,
+  },
+  {
+    name: "reads",
+    kind: "reads",
+    users: 320,
+    setupConcurrency: 40,
+    concurrency: 140,
+    durationSec: 8,
+    accountsPerUser: 3,
+  },
+  {
+    name: "writes",
+    kind: "writes",
+    users: 320,
+    setupConcurrency: 40,
+    concurrency: 110,
+    durationSec: 8,
+    accountsPerUser: 3,
+  },
+  {
+    name: "edits",
+    kind: "edits",
+    users: 320,
+    setupConcurrency: 40,
+    concurrency: 110,
+    durationSec: 8,
+    accountsPerUser: 3,
+  },
+];
+
+const SMOKE_SCENARIOS: Scenario[] = [
+  {
+    name: "high-load-rw",
+    kind: "mixed",
+    users: 120,
+    setupConcurrency: 20,
+    concurrency: 60,
+    durationSec: 5,
+    readShare: 0.55,
+    accountsPerUser: 3,
+  },
+  {
+    name: "reads",
+    kind: "reads",
+    users: 120,
+    setupConcurrency: 20,
+    concurrency: 60,
+    durationSec: 5,
+    accountsPerUser: 3,
+  },
+  {
+    name: "writes",
+    kind: "writes",
+    users: 120,
+    setupConcurrency: 20,
+    concurrency: 50,
+    durationSec: 5,
+    accountsPerUser: 3,
+  },
+  {
+    name: "edits",
+    kind: "edits",
+    users: 120,
+    setupConcurrency: 20,
+    concurrency: 50,
+    durationSec: 5,
+    accountsPerUser: 3,
+  },
+];
+
+const SCENARIOS_BY_PROFILE: Record<BenchmarkProfile, Scenario[]> = {
+  smoke: SMOKE_SCENARIOS,
+  quick: QUICK_SCENARIOS,
+  full: FULL_SCENARIOS,
+};
+
+const SCENARIO_CATALOG: Scenario[] = [...FULL_SCENARIOS];
 
 const ENGINE_ORDER: EngineID[] = [
   "flop-ts",
   "flop-go",
   "sqlite-ts",
   "sqlite-go",
+  "turso-ts",
+  "pglite-ts",
+  "turso-go",
 ];
 const ENGINE_BASE_PORT: Record<EngineID, number> = {
   "flop-ts": 41085,
   "flop-go": 41086,
   "sqlite-ts": 41087,
   "sqlite-go": 41088,
+  "turso-ts": 41089,
+  "pglite-ts": 41090,
+  "turso-go": 41091,
+};
+const ENGINES_BY_SET: Record<EngineSet, EngineID[]> = {
+  core: ["flop-ts", "flop-go", "sqlite-ts", "sqlite-go"],
+  all: [...ENGINE_ORDER],
 };
 const MEMORY_SAMPLE_INTERVAL_MS = 250;
 
@@ -224,8 +332,20 @@ function arg(name: string, fallback = ""): string {
   return found ? found.slice(prefix.length) : fallback;
 }
 
-function parseEngineList(): EngineID[] {
-  const raw = arg("engines", ENGINE_ORDER.join(","));
+function parseProfile(): BenchmarkProfile {
+  const raw = arg("profile", "quick").trim().toLowerCase();
+  if (raw === "smoke" || raw === "full" || raw === "quick") return raw;
+  return "quick";
+}
+
+function parseEngineSet(): EngineSet {
+  const raw = arg("engine-set", "all").trim().toLowerCase();
+  if (raw === "all" || raw === "core") return raw;
+  return "all";
+}
+
+function parseEngineList(engineSet: EngineSet): EngineID[] {
+  const raw = arg("engines", ENGINES_BY_SET[engineSet].join(","));
   const values = raw.split(",").map((x) => x.trim()).filter(
     Boolean,
   ) as EngineID[];
@@ -233,15 +353,17 @@ function parseEngineList(): EngineID[] {
   for (const id of values) {
     if (ENGINE_ORDER.includes(id) && !out.includes(id)) out.push(id);
   }
-  return out.length ? out : [...ENGINE_ORDER];
+  return out.length ? out : [...ENGINES_BY_SET[engineSet]];
 }
 
-function parseScenarioList(): Scenario[] {
+function parseScenarioList(profile: BenchmarkProfile): Scenario[] {
   const selected = arg("scenarios", "").trim();
+  const defaults = SCENARIOS_BY_PROFILE[profile] ?? SCENARIOS_BY_PROFILE.quick;
   const picked = !selected
-    ? [...DEFAULT_SCENARIOS]
+    ? [...defaults]
     : selected.split(",").map((x) => x.trim()).filter(Boolean).map((n) =>
-      SCENARIO_CATALOG.find((s) => s.name === n)
+      defaults.find((s) => s.name === n) ??
+        SCENARIO_CATALOG.find((s) => s.name === n)
     ).filter((x): x is Scenario => Boolean(x));
 
   const usersOverride = Number(arg("users", "0"));
@@ -293,6 +415,20 @@ async function prepareData(
     await safeRemove(`${dir}/finance.db-wal`);
     return null;
   }
+  if (engine === "turso-ts") {
+    const dir = `${ROOT}/benchmarks/finance-turso/data`;
+    await Deno.mkdir(dir, { recursive: true });
+    await safeRemove(`${dir}/finance.db`);
+    await safeRemove(`${dir}/finance.db-shm`);
+    await safeRemove(`${dir}/finance.db-wal`);
+    return null;
+  }
+  if (engine === "pglite-ts") {
+    const dir = `${ROOT}/benchmarks/finance-pglite/data`;
+    await safeRemove(dir);
+    await Deno.mkdir(dir, { recursive: true });
+    return null;
+  }
   if (engine === "flop-go") {
     const dir =
       `${ROOT}/benchmarks/compare/results/tmp/${runId}/${scenario}/flop-go`;
@@ -300,8 +436,15 @@ async function prepareData(
     await Deno.mkdir(dir, { recursive: true });
     return `${dir}/data`;
   }
+  if (engine === "sqlite-go") {
+    const dir =
+      `${ROOT}/benchmarks/compare/results/tmp/${runId}/${scenario}/sqlite-go`;
+    await safeRemove(dir);
+    await Deno.mkdir(dir, { recursive: true });
+    return `${dir}/finance.db`;
+  }
   const dir =
-    `${ROOT}/benchmarks/compare/results/tmp/${runId}/${scenario}/sqlite-go`;
+    `${ROOT}/benchmarks/compare/results/tmp/${runId}/${scenario}/turso-go`;
   await safeRemove(dir);
   await Deno.mkdir(dir, { recursive: true });
   return `${dir}/finance.db`;
@@ -343,6 +486,32 @@ function commandFor(
     };
   }
 
+  if (engine === "turso-ts") {
+    return {
+      cmd: "deno",
+      args: [
+        "run",
+        "--allow-all",
+        "benchmarks/finance-turso/app.ts",
+        `--port=${port}`,
+      ],
+      cwd: ROOT,
+    };
+  }
+
+  if (engine === "pglite-ts") {
+    return {
+      cmd: "deno",
+      args: [
+        "run",
+        "--allow-all",
+        "benchmarks/finance-pglite/app.ts",
+        `--port=${port}`,
+      ],
+      cwd: ROOT,
+    };
+  }
+
   if (engine === "flop-go") {
     const bin = goBins["flop-go"];
     if (!bin) throw new Error("missing built binary for flop-go");
@@ -353,8 +522,18 @@ function commandFor(
     };
   }
 
-  const bin = goBins["sqlite-go"];
-  if (!bin) throw new Error("missing built binary for sqlite-go");
+  if (engine === "sqlite-go") {
+    const bin = goBins["sqlite-go"];
+    if (!bin) throw new Error("missing built binary for sqlite-go");
+    return {
+      cmd: bin,
+      args: [`--port=${port}`, ...(dataPath ? [`--data=${dataPath}`] : [])],
+      cwd: `${ROOT}/go`,
+    };
+  }
+
+  const bin = goBins["turso-go"];
+  if (!bin) throw new Error("missing built binary for turso-go");
   return {
     cmd: bin,
     args: [`--port=${port}`, ...(dataPath ? [`--data=${dataPath}`] : [])],
@@ -564,7 +743,8 @@ async function buildGoBinaries(
   const out: Partial<Record<EngineID, string>> = {};
   const needFlopGo = engines.includes("flop-go");
   const needSQLiteGo = engines.includes("sqlite-go");
-  if (!needFlopGo && !needSQLiteGo) return out;
+  const needTursoGo = engines.includes("turso-go");
+  if (!needFlopGo && !needSQLiteGo && !needTursoGo) return out;
 
   const binDir = `${RESULTS_DIR}/tmp/${runId}/bin`;
   await Deno.mkdir(binDir, { recursive: true });
@@ -573,6 +753,7 @@ async function buildGoBinaries(
   const gen = await new Deno.Command("go", {
     cwd: `${ROOT}/go`,
     args: ["generate", "./..."],
+    env: { GOCACHE: "/tmp/go-build-cache" },
     stdout: "inherit",
     stderr: "inherit",
   }).output();
@@ -602,6 +783,19 @@ async function buildGoBinaries(
     }).output();
     if (!build.success) throw new Error("failed to build sqlite-go binary");
     out["sqlite-go"] = binPath;
+  }
+
+  if (needTursoGo) {
+    const binPath = `${binDir}/turso-finance`;
+    const build = await new Deno.Command("go", {
+      cwd: `${ROOT}/benchmarks/finance-turso-go`,
+      args: ["build", "-o", binPath, "."],
+      env: { GOCACHE: "/tmp/go-build-cache" },
+      stdout: "inherit",
+      stderr: "inherit",
+    }).output();
+    if (!build.success) throw new Error("failed to build turso-go binary");
+    out["turso-go"] = binPath;
   }
 
   return out;
@@ -682,8 +876,10 @@ async function main() {
   }
 
   try {
-    const engines = parseEngineList();
-    const scenarios = parseScenarioList();
+    const profile = parseProfile();
+    const engineSet = parseEngineSet();
+    const engines = parseEngineList(engineSet);
+    const scenarios = parseScenarioList(profile);
     if (scenarios.length === 0) {
       throw new Error(
         `No scenarios selected. Available: ${
@@ -714,6 +910,8 @@ async function main() {
     };
 
     console.log(`Run ID: ${runId}`);
+    console.log(`Profile: ${profile}`);
+    console.log(`Engine set: ${engineSet}`);
     console.log(`Engines: ${engines.join(", ")}`);
     console.log(
       `Scenarios: ${scenarios.map((s) => `${s.name}:${s.kind}`).join(", ")}`,

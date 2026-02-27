@@ -2,10 +2,13 @@
 
 Compare these engines with identical benchmark scenarios:
 
-- `flop-ts` (`benchmarks/finance/app.ts`)
-- `flop-go` (`go/cmd/go-finance`)
-- `sqlite-ts` (`benchmarks/sqlite-finance/app.ts`)
-- `sqlite-go` (`go/cmd/sqlite-finance`)
+- `flop-ts` (`benchmarks/finance-ts/app.ts`)
+- `flop-go` (`benchmarks/finance-go`)
+- `sqlite-ts` (`benchmarks/finance-sqlite/app.ts`)
+- `sqlite-go` (`benchmarks/finance-sqlite-go`)
+- `turso-ts` (`benchmarks/finance-turso/app.ts`)
+- `pglite-ts` (`benchmarks/finance-pglite/app.ts`)
+- `turso-go` (`benchmarks/finance-turso-go`, SQLite-compatible Go baseline)
 
 ## Run Benchmarks
 
@@ -24,8 +27,13 @@ cd go && go get modernc.org/sqlite@v1.39.1 && go mod tidy
 Optional filters:
 
 ```bash
+# profile controls benchmark size:
+#   smoke (fastest), quick (default), full (largest)
+# engine-set defaults to all engines unless overridden by --engines
+deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --profile=quick --engine-set=all
+
 # only specific engines
-deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --engines=flop-ts,flop-go
+deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --engines=flop-ts,flop-go,turso-ts,pglite-ts,turso-go
 
 # only specific scenarios
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --scenarios=high-load-rw,reads,writes,edits
@@ -33,6 +41,11 @@ deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmar
 # override size/shape without editing scenarios
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --scenarios=high-load-rw,reads --users=500 --duration-sec=20 --concurrency=200
 ```
+
+Engine sets:
+
+- `all` (default): all available engines in the matrix
+- `core`: `flop-ts, flop-go, sqlite-ts, sqlite-go`
 
 Default scenarios:
 
@@ -60,9 +73,12 @@ Report supports:
 
 - all scenarios displayed at once as mini trend graphs
 - each mini graph includes per-engine averages
-- click `Expand` on any scenario to open full-size graph + min/max/avg/latest table
-- focused workload metrics only (`ops/s`, `read ops/s`, `write ops/s`, `edit transfer ops/s`)
-- memory efficiency tracking per engine (`avg RSS MB`, `peak RSS MB`, `ops/s per MB`)
+- click `Expand` on any scenario to open full-size graph + min/max/avg/latest
+  table
+- focused workload metrics only (`ops/s`, `read ops/s`, `write ops/s`,
+  `edit transfer ops/s`)
+- memory efficiency tracking per engine (`avg RSS MB`, `peak RSS MB`,
+  `ops/s per MB`)
 
 ## Notes
 
