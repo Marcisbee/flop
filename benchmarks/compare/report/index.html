@@ -69,6 +69,9 @@
         gap: 14px;
         grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       }
+      .top {
+        margin-bottom: 14px;
+      }
       .card {
         background: var(--panel);
         border: 1px solid var(--line);
@@ -119,6 +122,19 @@
         align-items: center;
         gap: 8px;
         font-size: 13px;
+        border-radius: 8px;
+        padding: 4px 6px;
+      }
+      .legend-row.engine-link {
+        cursor: pointer;
+        transition: background 120ms ease;
+      }
+      .legend-row.engine-link:hover {
+        background: #eef3ff;
+      }
+      .legend-row.engine-link.is-active {
+        background: #e7efff;
+        outline: 1px solid #c9d7f6;
       }
       .left {
         display: inline-flex;
@@ -147,6 +163,67 @@
         padding: 14px;
         color: var(--muted);
         background: #f8fbff;
+      }
+      .overall-chart {
+        margin-top: 8px;
+      }
+      .overall-bars {
+        display: grid;
+        gap: 8px;
+      }
+      .overall-col {
+        display: grid;
+        grid-template-columns:
+          minmax(90px, 120px) minmax(160px, 1fr)
+          minmax(58px, 72px) minmax(52px, 66px);
+        align-items: center;
+        gap: 8px;
+        padding: 2px 0;
+      }
+      .overall-value {
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        color: #2a3344;
+        font-weight: 600;
+        text-align: right;
+      }
+      .overall-track {
+        width: 100%;
+        height: 18px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: linear-gradient(180deg, #ffffff, #f5f8ff);
+        display: flex;
+        align-items: center;
+        overflow: hidden;
+      }
+      .overall-fill {
+        height: 100%;
+        min-width: 2px;
+        transition: width 180ms ease;
+      }
+      .overall-engine {
+        font-size: 12px;
+        font-weight: 600;
+        text-align: left;
+        line-height: 1.1;
+        white-space: nowrap;
+      }
+      .overall-sub {
+        font-size: 11px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
+      @media (max-width: 760px) {
+        .overall-col {
+          grid-template-columns:
+            minmax(72px, 98px) minmax(120px, 1fr)
+            minmax(52px, 64px);
+        }
+        .overall-sub {
+          display: none;
+        }
       }
 
       .modal {
@@ -220,6 +297,15 @@
       tr:last-child td {
         border-bottom: none;
       }
+      tr.engine-row {
+        transition: background 120ms ease;
+      }
+      tr.engine-row:hover {
+        background: #f4f8ff;
+      }
+      tr.engine-row.is-active {
+        background: #e7efff;
+      }
       th.num, td.num {
         text-align: right;
         font-variant-numeric: tabular-nums;
@@ -239,6 +325,8 @@
         <input id="fileInput" type="file" accept="application/json" />
         <span id="status" class="status">Loading history...</span>
       </div>
+
+      <section id="overallCard" class="card top"></section>
 
       <div id="cards" class="grid"></div>
     </div>
@@ -309,6 +397,37 @@
       function average(values) {
         if (!values.length) return null;
         return values.reduce((a, b) => a + b, 0) / values.length;
+      }
+
+      function lastScore(values) {
+        if (!values.length) return null;
+        const v = values[values.length - 1];
+        return typeof v === "number" ? v : null;
+      }
+
+      function engineOrderForSeries(series) {
+        return [...ENGINES].sort((a, b) => {
+          const aLast = lastScore(series[a] || []);
+          const bLast = lastScore(series[b] || []);
+          const aHasLast = typeof aLast === "number";
+          const bHasLast = typeof bLast === "number";
+
+          if (aHasLast && bHasLast && aLast !== bLast) {
+            return bLast - aLast;
+          }
+          if (aHasLast !== bHasLast) return aHasLast ? -1 : 1;
+
+          const aAvg = average((series[a] || []).filter((v) =>
+            v != null
+          )) ??
+            -Infinity;
+          const bAvg =
+            average((series[b] || []).filter((v) => v != null)) ??
+              -Infinity;
+          if (aAvg !== bAvg) return bAvg - aAvg;
+
+          return ENGINES.indexOf(a) - ENGINES.indexOf(b);
+        });
       }
 
       function scenarioNames() {
@@ -405,13 +524,131 @@
           memorySeries,
           peakSeries,
           efficiencySeries,
+          engineOrder: engineOrderForSeries(series),
         };
+      }
+
+      function collectLatestOverall() {
+        const run = history.runs?.[0];
+        if (!run) return null;
+
+        const scoreSum = {};
+        const scoreCount = {};
+        let scenarioCount = 0;
+
+        for (const scenario of run.scenarios || []) {
+          if (
+            !["reads", "writes", "edits", "mixed"].includes(
+              scenario?.config?.kind,
+            )
+          ) {
+            continue;
+          }
+          const metric = metricForKind(scenario?.config?.kind);
+          const values = [];
+          for (const result of scenario.results || []) {
+            if (!result?.ok) continue;
+            const v = result?.metrics?.workload?.[metric.key];
+            if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+              values.push([result.engine, v]);
+            }
+          }
+          if (!values.length) continue;
+
+          scenarioCount++;
+          const best = Math.max(...values.map(([, v]) => v));
+          if (!(best > 0)) continue;
+
+          for (const [engine, v] of values) {
+            scoreSum[engine] = (scoreSum[engine] ?? 0) +
+              (v / best) * 100;
+            scoreCount[engine] = (scoreCount[engine] ?? 0) + 1;
+          }
+        }
+
+        const rows = ENGINES.map((engine) => {
+          const count = scoreCount[engine] ?? 0;
+          const score = count > 0 ? scoreSum[engine] / count : null;
+          return {
+            engine,
+            score,
+            coverage: count,
+          };
+        }).filter((x) => x.score != null).sort((a, b) =>
+          b.score - a.score
+        );
+
+        return {
+          run,
+          scenarioCount,
+          rows,
+        };
+      }
+
+      function renderOverall() {
+        const container = document.getElementById("overallCard");
+        const data = collectLatestOverall();
+
+        if (!data || !data.rows.length) {
+          container.innerHTML = `
+            <div class="card-head">
+              <div>
+                <h3 class="title">Overall Score</h3>
+                <div class="meta">Latest run (normalized)</div>
+              </div>
+            </div>
+            <div class="empty">No successful latest-run scenario data yet.</div>
+          `;
+          return;
+        }
+
+        const maxScore = Math.max(...data.rows.map((x) => x.score), 1);
+        const created = new Date(data.run.createdAt).toLocaleString();
+        const bars = data.rows.map((row) => {
+          const w = Math.max(2, (row.score / maxScore) * 100);
+          return `
+            <div class="overall-col" title="${row.engine}: ${
+            row.score.toFixed(1)
+          } / 100">
+              <div class="overall-engine">${row.engine}</div>
+              <div class="overall-track">
+                <div class="overall-fill" style="width:${w}%; background:${
+            COLORS[row.engine]
+          }"></div>
+              </div>
+              <div class="overall-value">${row.score.toFixed(1)}</div>
+              <div class="overall-sub">${row.coverage}/${data.scenarioCount}</div>
+            </div>
+          `;
+        }).join("");
+
+        container.innerHTML = `
+          <div class="card-head">
+            <div>
+              <h3 class="title">Overall Score</h3>
+              <div class="meta">Latest run · ${created}</div>
+            </div>
+          </div>
+          <div class="overall-chart">
+            <div class="overall-bars">${bars}</div>
+          </div>
+          <div class="meta">
+            Score = average of (engine scenario score / best scenario score) × 100, across latest-run scenarios. Higher is better.
+          </div>
+        `;
       }
 
       function drawChart(svg, runs, series, cfg) {
         const width = cfg.width;
         const height = cfg.height;
         const pad = cfg.pad;
+        const activeEngine = ENGINES.includes(cfg.activeEngine)
+          ? cfg.activeEngine
+          : null;
+        const engineOrder = Array.isArray(cfg.engineOrder) &&
+            cfg.engineOrder.length
+          ? cfg.engineOrder
+          : ENGINES;
 
         const values = Object.values(series).flat().filter((v) =>
           v != null
@@ -431,9 +668,11 @@
         const range = Math.max(1e-9, max - min);
 
         const xCount = runs.length;
-        const x = (i) =>
-          pad.l +
-          (i * (width - pad.l - pad.r)) / Math.max(1, xCount - 1);
+        const plotWidth = width - pad.l - pad.r;
+        const x = (i) => {
+          if (xCount <= 1) return pad.l + plotWidth / 2;
+          return pad.l + (i * plotWidth) / Math.max(1, xCount - 1);
+        };
         const y = (v) =>
           pad.t + ((max - v) * (height - pad.t - pad.b)) / range;
 
@@ -466,24 +705,40 @@
           });
         }
 
-        for (const engine of ENGINES) {
+        for (const engine of engineOrder) {
           const pts = series[engine].map((v, i) => ({ v, i })).filter((
             p,
           ) => p.v != null);
           if (!pts.length) continue;
+          const isActive = !activeEngine || activeEngine === engine;
+          const strokeWidth = activeEngine ? (isActive ? 3 : 1.4) : 2;
+          const strokeOpacity = activeEngine
+            ? (isActive ? 1 : 0.18)
+            : 0.95;
 
-          const d = pts.map((p, idx) =>
-            `${idx === 0 ? "M" : "L"}${x(p.i)},${y(p.v)}`
-          ).join(" ");
-          html += `<path d="${d}" fill="none" stroke="${
-            COLORS[engine]
-          }" stroke-width="2"/>`;
+          if (xCount === 1 && pts.length === 1) {
+            const yy = y(pts[0].v);
+            html += `<line x1="${pad.l}" y1="${yy}" x2="${
+              width - pad.r
+            }" y2="${yy}" stroke="${
+              COLORS[engine]
+            }" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" stroke-linecap="round"/>`;
+          } else {
+            const d = pts.map((p, idx) =>
+              `${idx === 0 ? "M" : "L"}${x(p.i)},${y(p.v)}`
+            ).join(" ");
+            html += `<path d="${d}" fill="none" stroke="${
+              COLORS[engine]
+            }" stroke-width="${strokeWidth}" stroke-opacity="${strokeOpacity}" stroke-linecap="round"/>`;
+          }
 
           if (cfg.points) {
             for (const p of pts) {
-              html += `<circle cx="${x(p.i)}" cy="${
-                y(p.v)
-              }" r="3" fill="${COLORS[engine]}"/>`;
+              html += `<circle cx="${x(p.i)}" cy="${y(p.v)}" r="${
+                activeEngine ? (isActive ? 4 : 2.6) : 3
+              }" fill="${COLORS[engine]}" fill-opacity="${
+                activeEngine ? (isActive ? 1 : 0.22) : 0.95
+              }"/>`;
             }
           }
         }
@@ -491,8 +746,64 @@
         svg.innerHTML = html;
       }
 
+      function renderMiniChart(name, activeEngine = null) {
+        const svg = document.querySelector(`svg[data-mini="${name}"]`);
+        if (!svg) return;
+        const data = collectScenario(name);
+        drawChart(svg, data.runs, data.series, {
+          width: 420,
+          height: 142,
+          pad: { l: 10, r: 10, t: 8, b: 8 },
+          axes: false,
+          points: false,
+          activeEngine,
+          engineOrder: data.engineOrder,
+        });
+      }
+
+      function setMiniLegendActive(
+        container,
+        scenarioName,
+        activeEngine,
+      ) {
+        const rows = container.querySelectorAll(
+          `.legend-row.engine-link[data-scenario="${scenarioName}"]`,
+        );
+        rows.forEach((row) => {
+          row.classList.toggle(
+            "is-active",
+            !!activeEngine && row.dataset.engine === activeEngine,
+          );
+        });
+      }
+
+      function bindMiniLegendInteractions(container) {
+        container.querySelectorAll(".legend-row.engine-link").forEach(
+          (row) => {
+            const scenarioName = row.dataset.scenario;
+            const engine = row.dataset.engine;
+            if (!scenarioName || !engine) return;
+
+            const activate = () => {
+              setMiniLegendActive(container, scenarioName, engine);
+              renderMiniChart(scenarioName, engine);
+            };
+            const deactivate = () => {
+              setMiniLegendActive(container, scenarioName, null);
+              renderMiniChart(scenarioName, null);
+            };
+
+            row.addEventListener("mouseenter", activate);
+            row.addEventListener("focus", activate);
+            row.addEventListener("mouseleave", deactivate);
+            row.addEventListener("blur", deactivate);
+          },
+        );
+      }
+
       function renderCards() {
         const container = document.getElementById("cards");
+        renderOverall();
         const names = scenarioNames();
 
         if (!names.length) {
@@ -505,7 +816,7 @@
           const data = collectScenario(name);
           const runCount = data.runs.length;
 
-          const legend = ENGINES
+          const legend = data.engineOrder
             .map((engine) => {
               const vals = data.series[engine].filter((v) => v != null);
               const memVals = data.memorySeries[engine].filter((v) =>
@@ -527,9 +838,8 @@
               };
             })
             .filter((x) => x.has)
-            .sort((a, b) => (b.avg ?? 0) - (a.avg ?? 0))
             .map((x) => `
-        <div class="legend-row">
+        <div class="legend-row engine-link" data-scenario="${name}" data-engine="${x.engine}" tabindex="0">
           <span class="left"><i class="dot" style="background:${
               COLORS[x.engine]
             }"></i><span>${x.engine}</span></span>
@@ -564,19 +874,9 @@
         }).join("");
 
         for (const name of names) {
-          const svg = container.querySelector(
-            `svg[data-mini="${name}"]`,
-          );
-          if (!svg) continue;
-          const data = collectScenario(name);
-          drawChart(svg, data.runs, data.series, {
-            width: 420,
-            height: 142,
-            pad: { l: 10, r: 10, t: 8, b: 8 },
-            axes: false,
-            points: false,
-          });
+          renderMiniChart(name);
         }
+        bindMiniLegendInteractions(container);
 
         container.querySelectorAll("[data-expand]").forEach((el) => {
           el.addEventListener("click", (ev) => {
@@ -593,16 +893,9 @@
         document.getElementById("modalTitle").textContent =
           `${name} · ${data.metric.label}`;
 
-        const chart = document.getElementById("detailChart");
-        drawChart(chart, data.runs, data.series, {
-          width: 1120,
-          height: 360,
-          pad: { l: 56, r: 20, t: 16, b: 42 },
-          axes: true,
-          points: true,
-        });
+        renderDetailChart(name, null);
 
-        const rows = ENGINES.map((engine) => {
+        const rows = data.engineOrder.map((engine) => {
           const vals = data.series[engine].filter((v) => v != null);
           const memVals = data.memorySeries[engine].filter((v) =>
             v != null
@@ -615,7 +908,7 @@
           );
           if (!vals.length) {
             return `
-        <tr>
+        <tr class="engine-row" data-engine="${engine}" tabindex="0">
           <td><span class="left"><i class="dot" style="background:${
               COLORS[engine]
             }"></i><span>${engine}</span></span></td>
@@ -639,7 +932,7 @@
           const avgEff = average(effVals);
 
           return `
-      <tr>
+      <tr class="engine-row" data-engine="${engine}" tabindex="0">
         <td><span class="left"><i class="dot" style="background:${
             COLORS[engine]
           }"></i><span>${engine}</span></span></td>
@@ -669,8 +962,59 @@
     </thead>
     <tbody>${rows}</tbody>
   `;
+        bindDetailRowInteractions(name);
 
         document.getElementById("modal").classList.add("show");
+      }
+
+      function renderDetailChart(name, activeEngine = null) {
+        const data = collectScenario(name);
+        const chart = document.getElementById("detailChart");
+        drawChart(chart, data.runs, data.series, {
+          width: 1120,
+          height: 360,
+          pad: { l: 56, r: 20, t: 16, b: 42 },
+          axes: true,
+          points: true,
+          activeEngine,
+          engineOrder: data.engineOrder,
+        });
+      }
+
+      function setDetailRowActive(activeEngine) {
+        document.querySelectorAll("#detailTable tbody tr.engine-row")
+          .forEach(
+            (row) => {
+              row.classList.toggle(
+                "is-active",
+                !!activeEngine && row.dataset.engine === activeEngine,
+              );
+            },
+          );
+      }
+
+      function bindDetailRowInteractions(name) {
+        document.querySelectorAll("#detailTable tbody tr.engine-row")
+          .forEach(
+            (row) => {
+              const engine = row.dataset.engine;
+              if (!engine) return;
+
+              const activate = () => {
+                setDetailRowActive(engine);
+                renderDetailChart(name, engine);
+              };
+              const deactivate = () => {
+                setDetailRowActive(null);
+                renderDetailChart(name, null);
+              };
+
+              row.addEventListener("mouseenter", activate);
+              row.addEventListener("focus", activate);
+              row.addEventListener("mouseleave", deactivate);
+              row.addEventListener("blur", deactivate);
+            },
+          );
       }
 
       function closeDetail() {
