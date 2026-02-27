@@ -2,6 +2,12 @@
 
 Finance benchmark server backed by MongoDB (Go).
 
+First time (deps):
+
+```bash
+cd benchmarks/finance-mongodb-go && go mod tidy
+```
+
 Run:
 
 ```bash

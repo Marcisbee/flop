@@ -1071,6 +1071,33 @@ async function ensureSQLiteGoDeps(_engines: EngineID[]) {
   // No bootstrapping needed.
 }
 
+async function ensureMongoGoDeps(engines: EngineID[]) {
+  if (!engines.includes("mongodb-go")) return;
+
+  const modDir = `${ROOT}/benchmarks/finance-mongodb-go`;
+  const sumPath = `${modDir}/go.sum`;
+  try {
+    await Deno.stat(sumPath);
+    return;
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) throw err;
+  }
+
+  console.log("mongodb-go: bootstrapping Go deps (go mod tidy)...");
+  const tidy = await new Deno.Command("go", {
+    cwd: modDir,
+    args: ["mod", "tidy"],
+    env: { GOCACHE: "/tmp/go-build-cache" },
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+  if (!tidy.success) {
+    throw new Error(
+      "failed to bootstrap mongodb-go deps. Run manually: cd benchmarks/finance-mongodb-go && go mod tidy",
+    );
+  }
+}
+
 async function buildGoBinaries(
   engines: EngineID[],
   runId: string,
@@ -1248,6 +1275,7 @@ async function main() {
 
     await ensureDirs();
     await ensureSQLiteGoDeps(engines);
+    await ensureMongoGoDeps(engines);
 
     const now = new Date();
     const git = await gitInfo();

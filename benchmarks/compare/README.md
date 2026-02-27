@@ -29,10 +29,11 @@ deno task bench:clean
 Also clears Mongo benchmark local data dirs: `benchmarks/finance-mongodb/data`
 and `benchmarks/finance-mongodb-go/data`.
 
-If `sqlite-go` is included and dependencies are missing, bootstrap once:
+If Go engines are included and dependencies are missing, bootstrap once:
 
 ```bash
 cd go && go get modernc.org/sqlite@v1.39.1 && go mod tidy
+cd ../benchmarks/finance-mongodb-go && go mod tidy
 ```
 
 If MongoDB engines are included, make sure `mongod` is installed and available
