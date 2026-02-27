@@ -69,6 +69,13 @@ const ACCOUNTS_PER_USER = Number(getArg("accounts-per-user", "3"));
 const SETUP_CONCURRENCY = Number(getArg("setup-concurrency", "40"));
 const CONCURRENCY = Number(getArg("concurrency", "100"));
 const DURATION_SEC = Number(getArg("duration-sec", "10"));
+const WARMUP_SEC = Number(getArg("warmup-sec", "0"));
+const STRICT_SETUP = getArg("strict-setup", "1") !== "0";
+const SETUP_RETRIES = Math.max(1, Number(getArg("setup-retries", "4")));
+const SETUP_RETRY_BASE_MS = Math.max(
+  10,
+  Number(getArg("setup-retry-base-ms", "25")),
+);
 const READ_SHARE = Number(getArg("read-share", "0.6"));
 const JSON_ONLY = getArg("json-only", "0") === "1";
 
@@ -142,6 +149,57 @@ function randomItem<T>(arr: T[]): T {
 
 function randomAmount(min: number, max: number): number {
   return Math.round((min + Math.random() * (max - min)) * 100) / 100;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function setupBackoffMs(attempt: number): number {
+  const exp = Math.min(6, Math.max(0, attempt - 1));
+  const jitter = Math.floor(Math.random() * SETUP_RETRY_BASE_MS);
+  return SETUP_RETRY_BASE_MS * (2 ** exp) + jitter;
+}
+
+async function withSetupRetries<T>(fn: () => Promise<T>): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= SETUP_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= SETUP_RETRIES) break;
+      await sleep(setupBackoffMs(attempt));
+    }
+  }
+  throw lastErr ?? new Error("setup operation failed");
+}
+
+async function ensureUserToken(
+  email: string,
+  password: string,
+  name: string,
+): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= SETUP_RETRIES; attempt++) {
+    try {
+      const created = await register(email, password, name);
+      if (created?.token) return created.token;
+    } catch (err) {
+      lastErr = err;
+    }
+
+    try {
+      return await login(email, password);
+    } catch (err) {
+      lastErr = err;
+    }
+
+    if (attempt < SETUP_RETRIES) {
+      await sleep(setupBackoffMs(attempt));
+    }
+  }
+  throw lastErr ?? new Error(`failed to get token for ${email}`);
 }
 
 const FIRST_NAMES = [
@@ -240,14 +298,10 @@ async function setupData() {
 
   await runBatched(templates, SETUP_CONCURRENCY, async (u) => {
     try {
-      const r = await register(u.email, u.password, u.name);
-      users.push({ ...u, token: r.token });
+      const token = await ensureUserToken(u.email, u.password, u.name);
+      users.push({ ...u, token });
     } catch {
-      try {
-        users.push({ ...u, token: await login(u.email, u.password) });
-      } catch {
-        // ignore
-      }
+      // ignore
     }
   });
 
@@ -260,6 +314,9 @@ async function setupData() {
   };
 
   if (users.length === 0) throw new Error("setup failed: no users");
+  if (STRICT_SETUP && users.length !== USER_COUNT) {
+    throw new Error(`strict setup failed: users=${users.length}/${USER_COUNT}`);
+  }
 
   const createStart = performance.now();
   const accountTypes = ["checking", "savings", "credit"] as const;
@@ -277,11 +334,17 @@ async function setupData() {
 
   await runBatched(accountTasks, SETUP_CONCURRENCY, async (task) => {
     try {
-      const result = await reduce("create_account", {
-        name: task.name,
-        type: task.type,
-        currency: "USD",
-      }, task.user.token);
+      const result = await withSetupRetries(() =>
+        reduce(
+          "create_account",
+          {
+            name: task.name,
+            type: task.type,
+            currency: "USD",
+          },
+          task.user.token,
+        )
+      );
       if (result?.id) {
         accountRefs.push({ id: result.id, ownerToken: task.user.token });
       }
@@ -301,15 +364,26 @@ async function setupData() {
   if (accountRefs.length < 2) {
     throw new Error("setup failed: not enough accounts");
   }
+  if (STRICT_SETUP && accountRefs.length !== accountTasks.length) {
+    throw new Error(
+      `strict setup failed: accounts=${accountRefs.length}/${accountTasks.length}`,
+    );
+  }
 
   const depositStart = performance.now();
   let depositOk = 0;
   await runBatched(accountRefs, SETUP_CONCURRENCY, async (acc) => {
     try {
-      await reduce("deposit", {
-        accountId: acc.id,
-        amount: randomAmount(20000, 120000),
-      }, acc.ownerToken);
+      await withSetupRetries(() =>
+        reduce(
+          "deposit",
+          {
+            accountId: acc.id,
+            amount: randomAmount(20000, 120000),
+          },
+          acc.ownerToken,
+        )
+      );
       depositOk++;
     } catch {
       // ignore
@@ -323,6 +397,12 @@ async function setupData() {
     success: depositOk,
     ratePerSec: depositOk / (depositMs / 1000),
   };
+
+  if (STRICT_SETUP && depositOk !== accountRefs.length) {
+    throw new Error(
+      `strict setup failed: deposits=${depositOk}/${accountRefs.length}`,
+    );
+  }
 
   return {
     users,
@@ -399,7 +479,11 @@ function pickTwoDifferent<T>(arr: T[]): [T, T] {
   return [a, b];
 }
 
-async function runWorkload(mode: Mode, accountRefs: AccountRef[]) {
+async function runWorkload(
+  mode: Mode,
+  accountRefs: AccountRef[],
+  durationSec = DURATION_SEC,
+) {
   const hotAccounts = accountRefs.slice(
     0,
     Math.max(8, Math.min(120, accountRefs.length)),
@@ -471,7 +555,7 @@ async function runWorkload(mode: Mode, accountRefs: AccountRef[]) {
     return { op: "edit_topup", ok: true, class: "write" as const };
   };
 
-  const durationMs = Math.max(1, DURATION_SEC) * 1000;
+  const durationMs = Math.max(1, durationSec) * 1000;
 
   if (mode === "reads") {
     return runForDuration(durationMs, CONCURRENCY, readOp);
@@ -512,6 +596,11 @@ async function main() {
   log(
     `Setup done: users=${setup.users.length}, accounts=${setup.accountRefs.length}`,
   );
+
+  if (WARMUP_SEC > 0) {
+    log(`Warmup: ${WARMUP_SEC}s`);
+    await runWorkload(MODE, setup.accountRefs, WARMUP_SEC);
+  }
 
   const workload = await runWorkload(MODE, setup.accountRefs);
   log(

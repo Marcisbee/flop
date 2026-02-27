@@ -18,6 +18,12 @@ One command (from repository root):
 deno task bench
 ```
 
+Reset benchmark artifacts:
+
+```bash
+deno task bench:clean
+```
+
 If `sqlite-go` is included and dependencies are missing, bootstrap once:
 
 ```bash
@@ -32,6 +38,9 @@ Optional filters:
 # engine-set defaults to all engines unless overridden by --engines
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --profile=quick --engine-set=all
 
+# stronger benchmark rigor controls
+deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --repeats=3 --warmup-sec=3 --shuffle-engines=1 --strict-setup=1 --setup-retries=4
+
 # only specific engines
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --engines=flop-ts,flop-go,turso-ts,pglite-ts,turso-go
 
@@ -39,13 +48,22 @@ deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmar
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --scenarios=high-load-rw,reads,writes,edits
 
 # override size/shape without editing scenarios
-deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --scenarios=high-load-rw,reads --users=500 --duration-sec=20 --concurrency=200
+deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --scenarios=high-load-rw,reads --users=500 --accounts-per-user=3 --duration-sec=20 --concurrency=200
 ```
 
 Engine sets:
 
 - `all` (default): all available engines in the matrix
 - `core`: `flop-ts, flop-go, sqlite-ts, sqlite-go`
+
+Rigor flags:
+
+- `--repeats=N`: run each engine/scenario N times and aggregate means
+- `--warmup-sec=N`: warmup workload per run (discarded from score)
+- `--shuffle-engines=1|0`: randomize engine order each repeat
+- `--strict-setup=1|0`: fail run if setup counts differ from expected
+- `--setup-retries=N`: retry setup API calls to reduce transient failures
+- `--seed=N`: deterministic shuffle seed
 
 Default scenarios:
 
@@ -85,3 +103,15 @@ Report supports:
 - The runner resets benchmark data before each engine/scenario run.
 - `sqlite-go` requires Go to download `modernc.org/sqlite` dependency the first
   time.
+
+## Micro Preset
+
+For a faster all-engine run (flop vs others), use:
+
+```bash
+deno task bench:micro
+```
+
+This uses the same compare harness with small defaults (single scenario by
+default) and still includes all engines unless you filter with `--engines=...`.
+See `benchmarks/micro/README.md` for options.

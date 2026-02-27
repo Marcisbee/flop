@@ -95,6 +95,9 @@ type ScenarioResult = {
   metrics?: WorkloadBenchResult;
   memory?: MemoryProfile;
   error?: string;
+  repeatCount?: number;
+  successfulRepeats?: number;
+  repeats?: ScenarioResult[];
 };
 
 type MemoryProfile = {
@@ -332,6 +335,73 @@ function arg(name: string, fallback = ""): string {
   return found ? found.slice(prefix.length) : fallback;
 }
 
+function toMean(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function shuffleWithRng<T>(arr: T[], next: () => number): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+function seededRng(seed: number): () => number {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6D2B79F5;
+    let x = Math.imul(t ^ (t >>> 15), 1 | t);
+    x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function parseRepeats(profile: BenchmarkProfile): number {
+  const raw = Number(arg("repeats", "0"));
+  if (raw >= 1) return Math.floor(raw);
+  if (profile === "full") return 3;
+  if (profile === "quick") return 2;
+  return 1;
+}
+
+function parseWarmupSec(profile: BenchmarkProfile): number {
+  const raw = Number(arg("warmup-sec", "-1"));
+  if (raw >= 0) return raw;
+  if (profile === "full") return 3;
+  if (profile === "quick") return 2;
+  return 0;
+}
+
+function parseShuffleEngines(): boolean {
+  const raw = arg("shuffle-engines", "1").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "no");
+}
+
+function parseStrictSetup(): boolean {
+  const raw = arg("strict-setup", "1").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "no");
+}
+
+function parseSetupRetries(): number {
+  const raw = Number(arg("setup-retries", "4"));
+  if (!Number.isFinite(raw)) return 4;
+  return Math.max(1, Math.floor(raw));
+}
+
+function parseSeed(): number {
+  const raw = Number(arg("seed", "0"));
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  const now = Date.now() % 2147483647;
+  return now > 0 ? now : 1;
+}
+
 function parseProfile(): BenchmarkProfile {
   const raw = arg("profile", "quick").trim().toLowerCase();
   if (raw === "smoke" || raw === "full" || raw === "quick") return raw;
@@ -370,11 +440,13 @@ function parseScenarioList(profile: BenchmarkProfile): Scenario[] {
   const setupOverride = Number(arg("setup-concurrency", "0"));
   const concOverride = Number(arg("concurrency", "0"));
   const durationOverride = Number(arg("duration-sec", "0"));
+  const accountsOverride = Number(arg("accounts-per-user", "0"));
   const readShareOverride = Number(arg("read-share", "-1"));
 
   return picked.map((s) => ({
     ...s,
     ...(usersOverride > 0 ? { users: usersOverride } : {}),
+    ...(accountsOverride > 0 ? { accountsPerUser: accountsOverride } : {}),
     ...(setupOverride > 0 ? { setupConcurrency: setupOverride } : {}),
     ...(concOverride > 0 ? { concurrency: concOverride } : {}),
     ...(durationOverride > 0 ? { durationSec: durationOverride } : {}),
@@ -560,10 +632,14 @@ async function findFreePort(start: number, maxScan = 200): Promise<number> {
     const port = start + i;
     let listener: Deno.Listener | null = null;
     try {
-      listener = Deno.listen({ hostname: "0.0.0.0", port });
+      // Probe loopback only; benchmark traffic is local.
+      listener = Deno.listen({ hostname: "127.0.0.1", port });
       return port;
-    } catch {
-      // next
+    } catch (err) {
+      // Keep scanning only for true port conflicts.
+      if (err instanceof Deno.errors.AddrInUse) continue;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`cannot probe port ${port}: ${message}`);
     } finally {
       listener?.close();
     }
@@ -689,6 +765,7 @@ function startMemorySampler(pid: number) {
 async function runWorkload(
   s: Scenario,
   host: string,
+  opts: { warmupSec: number; strictSetup: boolean; setupRetries: number },
 ): Promise<WorkloadBenchResult> {
   const result = await new Deno.Command("deno", {
     cwd: ROOT,
@@ -703,6 +780,9 @@ async function runWorkload(
       `--setup-concurrency=${s.setupConcurrency}`,
       `--concurrency=${s.concurrency}`,
       `--duration-sec=${s.durationSec}`,
+      `--warmup-sec=${opts.warmupSec}`,
+      `--strict-setup=${opts.strictSetup ? "1" : "0"}`,
+      `--setup-retries=${opts.setupRetries}`,
       `--read-share=${s.readShare ?? 0.6}`,
       "--json-only=1",
     ],
@@ -719,6 +799,163 @@ async function runWorkload(
     throw new Error(`workload output missing BENCH_JSON marker: ${out}`);
   }
   return JSON.parse(marker.slice("BENCH_JSON:".length)) as WorkloadBenchResult;
+}
+
+function aggregateMemoryProfiles(samples: MemoryProfile[]): MemoryProfile {
+  if (!samples.length) return { supported: false, sampleCount: 0 };
+  const supported = samples.every((s) => s.supported);
+  const out: MemoryProfile = {
+    supported,
+    sampleCount: samples.reduce((n, s) => n + s.sampleCount, 0),
+  };
+  const avg = samples.map((s) => s.rssAvgMB).filter(isFiniteNumber);
+  const peak = samples.map((s) => s.rssPeakMB).filter(isFiniteNumber);
+  const min = samples.map((s) => s.rssMinMB).filter(isFiniteNumber);
+  const eff = samples.map((s) => s.opsPerSecPerAvgMB).filter(isFiniteNumber);
+  if (avg.length) out.rssAvgMB = round2(toMean(avg));
+  if (peak.length) out.rssPeakMB = round2(toMean(peak));
+  if (min.length) out.rssMinMB = round2(toMean(min));
+  if (eff.length) out.opsPerSecPerAvgMB = round2(toMean(eff));
+  return out;
+}
+
+function aggregateStats(
+  all: Array<Record<string, unknown> | undefined>,
+): Record<string, unknown> | undefined {
+  const rows = all.filter((x): x is Record<string, unknown> => Boolean(x));
+  if (!rows.length) return undefined;
+  const out: Record<string, unknown> = {};
+  const keys = new Set<string>();
+  for (const row of rows) {
+    for (const k of Object.keys(row)) keys.add(k);
+  }
+  for (const key of keys) {
+    const vals = rows.map((r) => r[key]).filter((v) => v !== undefined);
+    const nums = vals.filter(isFiniteNumber);
+    if (vals.length && nums.length === vals.length) {
+      out[key] = round2(toMean(nums));
+    } else if (vals.length) {
+      out[key] = vals[vals.length - 1];
+    }
+  }
+  return out;
+}
+
+function aggregateWorkloadResults(
+  samples: WorkloadBenchResult[],
+): WorkloadBenchResult {
+  if (samples.length === 1) return samples[0];
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+
+  const stats = aggregateStats(samples.map((s) => s.stats));
+
+  return {
+    kind: "workload",
+    mode: first.mode,
+    host: first.host,
+    usersRequested: first.usersRequested,
+    accountsPerUser: first.accountsPerUser,
+    setupConcurrency: first.setupConcurrency,
+    concurrency: first.concurrency,
+    durationSecRequested: first.durationSecRequested,
+    startedAt: first.startedAt,
+    finishedAt: last.finishedAt,
+    totalMs: toMean(samples.map((s) => s.totalMs)),
+    setup: {
+      register: {
+        durationMs: toMean(samples.map((s) => s.setup.register.durationMs)),
+        attempted: toMean(samples.map((s) => s.setup.register.attempted)),
+        success: toMean(samples.map((s) => s.setup.register.success)),
+        ratePerSec: toMean(samples.map((s) => s.setup.register.ratePerSec)),
+      },
+      createAccounts: {
+        durationMs: toMean(
+          samples.map((s) => s.setup.createAccounts.durationMs),
+        ),
+        attempted: toMean(samples.map((s) => s.setup.createAccounts.attempted)),
+        success: toMean(samples.map((s) => s.setup.createAccounts.success)),
+        ratePerSec: toMean(
+          samples.map((s) => s.setup.createAccounts.ratePerSec),
+        ),
+      },
+      deposit: {
+        durationMs: toMean(samples.map((s) => s.setup.deposit.durationMs)),
+        attempted: toMean(samples.map((s) => s.setup.deposit.attempted)),
+        success: toMean(samples.map((s) => s.setup.deposit.success)),
+        ratePerSec: toMean(samples.map((s) => s.setup.deposit.ratePerSec)),
+      },
+    },
+    workload: {
+      durationMs: toMean(samples.map((s) => s.workload.durationMs)),
+      attempted: toMean(samples.map((s) => s.workload.attempted)),
+      success: toMean(samples.map((s) => s.workload.success)),
+      failed: toMean(samples.map((s) => s.workload.failed)),
+      opsPerSec: toMean(samples.map((s) => s.workload.opsPerSec)),
+      readOps: toMean(samples.map((s) => s.workload.readOps)),
+      writeOps: toMean(samples.map((s) => s.workload.writeOps)),
+      readOpsPerSec: toMean(samples.map((s) => s.workload.readOpsPerSec)),
+      writeOpsPerSec: toMean(samples.map((s) => s.workload.writeOpsPerSec)),
+      transferOpsPerSec: toMean(
+        samples.map((s) => s.workload.transferOpsPerSec),
+      ),
+      byOp: {},
+    },
+    ...(stats ? { stats } : {}),
+  };
+}
+
+function aggregateByOp(samples: WorkloadBenchResult[]): Record<string, number> {
+  const allKeys = new Set<string>();
+  for (const sample of samples) {
+    for (const key of Object.keys(sample.workload.byOp)) allKeys.add(key);
+  }
+  const out: Record<string, number> = {};
+  for (const key of allKeys) {
+    out[key] = toMean(samples.map((s) => s.workload.byOp[key] ?? 0));
+  }
+  return out;
+}
+
+function summarizeRepeats(
+  engine: EngineID,
+  repeats: ScenarioResult[],
+): ScenarioResult {
+  const successes = repeats.filter((r) => r.ok && r.metrics) as Array<
+    ScenarioResult & { metrics: WorkloadBenchResult }
+  >;
+  if (successes.length === 0) {
+    const first = repeats[0];
+    return {
+      engine,
+      ok: false,
+      elapsedMs: toMean(repeats.map((r) => r.elapsedMs)),
+      error: first?.error ?? "all repeats failed",
+      repeatCount: repeats.length,
+      successfulRepeats: 0,
+      repeats,
+    };
+  }
+  const metrics = aggregateWorkloadResults(successes.map((s) => s.metrics));
+  metrics.workload.byOp = aggregateByOp(successes.map((s) => s.metrics));
+  const memory = aggregateMemoryProfiles(
+    successes.map((s) => s.memory).filter((m): m is MemoryProfile =>
+      Boolean(m)
+    ),
+  );
+  return {
+    engine,
+    ok: true,
+    elapsedMs: toMean(successes.map((r) => r.elapsedMs)),
+    metrics,
+    memory,
+    repeatCount: repeats.length,
+    successfulRepeats: successes.length,
+    ...(successes.length < repeats.length
+      ? { error: `${repeats.length - successes.length} repeats failed` }
+      : {}),
+    repeats,
+  };
 }
 
 async function runShell(cmd: string, args: string[]): Promise<string> {
@@ -878,6 +1115,13 @@ async function main() {
   try {
     const profile = parseProfile();
     const engineSet = parseEngineSet();
+    const repeats = parseRepeats(profile);
+    const warmupSec = parseWarmupSec(profile);
+    const shuffleEngines = parseShuffleEngines();
+    const strictSetup = parseStrictSetup();
+    const setupRetries = parseSetupRetries();
+    const seed = parseSeed();
+    const nextRand = seededRng(seed);
     const engines = parseEngineList(engineSet);
     const scenarios = parseScenarioList(profile);
     if (scenarios.length === 0) {
@@ -912,6 +1156,12 @@ async function main() {
     console.log(`Run ID: ${runId}`);
     console.log(`Profile: ${profile}`);
     console.log(`Engine set: ${engineSet}`);
+    console.log(`Repeats: ${repeats}`);
+    console.log(`Warmup sec: ${warmupSec}`);
+    console.log(`Shuffle engines: ${shuffleEngines}`);
+    console.log(`Strict setup: ${strictSetup}`);
+    console.log(`Setup retries: ${setupRetries}`);
+    console.log(`Seed: ${seed}`);
     console.log(`Engines: ${engines.join(", ")}`);
     console.log(
       `Scenarios: ${scenarios.map((s) => `${s.name}:${s.kind}`).join(", ")}`,
@@ -921,67 +1171,87 @@ async function main() {
       console.log(
         `\nScenario: ${scenario.name} [${scenario.kind}] (users=${scenario.users}, setup=${scenario.setupConcurrency}, conc=${scenario.concurrency}, duration=${scenario.durationSec}s)`,
       );
-      const scenarioResults: ScenarioResult[] = [];
+      const repeatResults = new Map<EngineID, ScenarioResult[]>();
+      for (const engine of engines) repeatResults.set(engine, []);
 
-      for (const engine of engines) {
-        const preferredPort = ENGINE_BASE_PORT[engine] + scenarioIndex * 20;
-        const port = await findFreePort(preferredPort);
-        const host = `http://localhost:${port}`;
-        const started = performance.now();
-        console.log(`  -> ${engine} on ${host}`);
+      for (let repeatIndex = 0; repeatIndex < repeats; repeatIndex++) {
+        const orderedEngines = shuffleEngines
+          ? shuffleWithRng(engines, nextRand)
+          : [...engines];
+        console.log(
+          `  Repeat ${repeatIndex + 1}/${repeats}: ${
+            orderedEngines.join(", ")
+          }`,
+        );
 
-        const dataPath = await prepareData(engine, runId, scenario.name);
-        const cmd = commandFor(engine, port, dataPath, goBins);
+        for (const engine of orderedEngines) {
+          const preferredPort = ENGINE_BASE_PORT[engine] + scenarioIndex * 20;
+          const port = await findFreePort(preferredPort);
+          const host = `http://localhost:${port}`;
+          const started = performance.now();
+          console.log(`  -> ${engine} on ${host}`);
 
-        const proc = new Deno.Command(cmd.cmd, {
-          args: cmd.args,
-          cwd: cmd.cwd,
-          env: cmd.env,
-          stdout: "inherit",
-          stderr: "inherit",
-        }).spawn();
-        trackProcess(proc);
-        const mem = startMemorySampler(proc.pid);
-        let memory: MemoryProfile | undefined;
+          const dataPath = await prepareData(engine, runId, scenario.name);
+          const cmd = commandFor(engine, port, dataPath, goBins);
 
-        try {
-          await waitForServer(host);
-          const metrics = await runWorkload(scenario, host);
-          const elapsedMs = performance.now() - started;
-          memory = await mem.stop(metrics.workload.opsPerSec);
-          scenarioResults.push({
-            engine,
-            ok: true,
-            elapsedMs,
-            metrics,
-            memory,
-          });
-          const memLabel = memory.sampleCount > 0
-            ? ` mem(avg/peak)=${Math.round(memory.rssAvgMB ?? 0)}/${
-              Math.round(memory.rssPeakMB ?? 0)
-            }MB eff=${Math.round(memory.opsPerSecPerAvgMB ?? 0)} ops/s/MB`
-            : "";
-          console.log(
-            `     ok: ${Math.round(metrics.workload.opsPerSec)} ops/s total=${
-              (metrics.totalMs / 1000).toFixed(2)
-            }s${memLabel}`,
-          );
-        } catch (err) {
-          const elapsedMs = performance.now() - started;
-          memory = await mem.stop();
-          scenarioResults.push({
-            engine,
-            ok: false,
-            elapsedMs,
-            memory,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          console.error(`     failed: ${err}`);
-        } finally {
-          if (!memory) await mem.stop();
-          await stopProcess(proc);
+          const proc = new Deno.Command(cmd.cmd, {
+            args: cmd.args,
+            cwd: cmd.cwd,
+            env: cmd.env,
+            stdout: "inherit",
+            stderr: "inherit",
+          }).spawn();
+          trackProcess(proc);
+          const mem = startMemorySampler(proc.pid);
+          let memory: MemoryProfile | undefined;
+
+          try {
+            await waitForServer(host);
+            const metrics = await runWorkload(scenario, host, {
+              warmupSec,
+              strictSetup,
+              setupRetries,
+            });
+            const elapsedMs = performance.now() - started;
+            memory = await mem.stop(metrics.workload.opsPerSec);
+            repeatResults.get(engine)!.push({
+              engine,
+              ok: true,
+              elapsedMs,
+              metrics,
+              memory,
+            });
+            const memLabel = memory.sampleCount > 0
+              ? ` mem(avg/peak)=${Math.round(memory.rssAvgMB ?? 0)}/${
+                Math.round(memory.rssPeakMB ?? 0)
+              }MB eff=${Math.round(memory.opsPerSecPerAvgMB ?? 0)} ops/s/MB`
+              : "";
+            console.log(
+              `     ok: ${Math.round(metrics.workload.opsPerSec)} ops/s total=${
+                (metrics.totalMs / 1000).toFixed(2)
+              }s${memLabel}`,
+            );
+          } catch (err) {
+            const elapsedMs = performance.now() - started;
+            memory = await mem.stop();
+            repeatResults.get(engine)!.push({
+              engine,
+              ok: false,
+              elapsedMs,
+              memory,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            console.error(`     failed: ${err}`);
+          } finally {
+            if (!memory) await mem.stop();
+            await stopProcess(proc);
+          }
         }
       }
+
+      const scenarioResults = engines.map((engine) =>
+        summarizeRepeats(engine, repeatResults.get(engine) ?? [])
+      );
 
       runRecord.scenarios.push({
         name: scenario.name,
