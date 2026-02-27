@@ -71,3 +71,20 @@ func TestAutocompleteRomanNumeralPrefixCrossMatch(t *testing.T) {
 		t.Fatalf("unexpected key for 2 query: %v", got2[0].Key)
 	}
 }
+
+func TestAutocompleteAmpersandAndEquivalence(t *testing.T) {
+	idx := NewAutocompleteIndex([]AutocompleteEntry{
+		{Key: "fast-and-furious", Text: "Fast & Furious"},
+		{Key: "mr-and-mrs-smith", Text: "Mr and Mrs Smith"},
+	})
+
+	gotAnd := idx.Query("fast and furious", 10)
+	if len(gotAnd) == 0 || gotAnd[0].Key != "fast-and-furious" {
+		t.Fatalf("expected 'and' query to match '&' title, got %+v", gotAnd)
+	}
+
+	gotAmp := idx.Query("mr & mrs", 10)
+	if len(gotAmp) == 0 || gotAmp[0].Key != "mr-and-mrs-smith" {
+		t.Fatalf("expected '&' query to match 'and' title, got %+v", gotAmp)
+	}
+}

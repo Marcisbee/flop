@@ -244,6 +244,15 @@ func normalizeAutocompleteRaw(s string) string {
 	b.Grow(len(s))
 	lastSpace := true
 	for _, r := range strings.ToLower(s) {
+		if r == '&' {
+			if !lastSpace {
+				b.WriteByte(' ')
+			}
+			b.WriteString("and")
+			b.WriteByte(' ')
+			lastSpace = true
+			continue
+		}
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 			lastSpace = false
