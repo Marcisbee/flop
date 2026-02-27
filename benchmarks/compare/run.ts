@@ -133,6 +133,8 @@ type HistoryFile = {
   runs: RunRecord[];
 };
 
+let STOP_REQUESTED = false;
+
 const COMPARE_DIR = fromFileUrl(new URL(".", import.meta.url));
 const ROOT = resolve(COMPARE_DIR, "..", "..");
 const RESULTS_DIR = resolve(COMPARE_DIR, "results");
@@ -416,6 +418,22 @@ function parseWarmupSec(profile: BenchmarkProfile): number {
   if (profile === "full") return 3;
   if (profile === "quick") return 2;
   return 0;
+}
+
+function parseWorkloadTimeoutSec(profile: BenchmarkProfile): number {
+  const raw = Number(arg("workload-timeout-sec", "0"));
+  if (raw > 0 && Number.isFinite(raw)) return Math.floor(raw);
+  if (profile === "full") return 600;
+  if (profile === "quick") return 240;
+  return 120;
+}
+
+function parseRequestTimeoutMs(profile: BenchmarkProfile): number {
+  const raw = Number(arg("request-timeout-ms", "0"));
+  if (raw > 0 && Number.isFinite(raw)) return Math.floor(raw);
+  if (profile === "full") return 15000;
+  if (profile === "quick") return 12000;
+  return 8000;
 }
 
 function parseShuffleEngines(): boolean {
@@ -848,9 +866,15 @@ function startMemorySampler(pid: number) {
 async function runWorkload(
   s: Scenario,
   host: string,
-  opts: { warmupSec: number; strictSetup: boolean; setupRetries: number },
+  opts: {
+    warmupSec: number;
+    strictSetup: boolean;
+    setupRetries: number;
+    workloadTimeoutSec: number;
+    requestTimeoutMs: number;
+  },
 ): Promise<WorkloadBenchResult> {
-  const result = await new Deno.Command("deno", {
+  const cmd = new Deno.Command("deno", {
     cwd: ROOT,
     args: [
       "run",
@@ -866,12 +890,44 @@ async function runWorkload(
       `--warmup-sec=${opts.warmupSec}`,
       `--strict-setup=${opts.strictSetup ? "1" : "0"}`,
       `--setup-retries=${opts.setupRetries}`,
+      `--request-timeout-ms=${opts.requestTimeoutMs}`,
       `--read-share=${s.readShare ?? 0.6}`,
       "--json-only=1",
     ],
     stdout: "piped",
     stderr: "piped",
-  }).output();
+  });
+  const proc = cmd.spawn();
+  let timer: number | undefined;
+  const timeoutMs = Math.max(1, opts.workloadTimeoutSec) * 1000;
+  const timeout = new Promise<Deno.CommandOutput>((_, reject) => {
+    timer = setTimeout(() => {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, 1000);
+      reject(
+        new Error(
+          `workload timed out after ${opts.workloadTimeoutSec}s`,
+        ),
+      );
+    }, timeoutMs);
+  });
+
+  let result: Deno.CommandOutput;
+  try {
+    result = await Promise.race([proc.output(), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 
   const out = new TextDecoder().decode(result.stdout);
   const err = new TextDecoder().decode(result.stderr);
@@ -1241,6 +1297,7 @@ async function main() {
   const onSignal = async () => {
     if ((onSignal as { _running?: boolean })._running) return;
     (onSignal as { _running?: boolean })._running = true;
+    STOP_REQUESTED = true;
     console.error("\nInterrupted, stopping benchmark subprocesses...");
     await stopAllProcesses();
     Deno.exit(130);
@@ -1258,6 +1315,8 @@ async function main() {
     const minRepeats = parseMinRepeats(profile, repeatsMax);
     const earlyStopRse = parseEarlyStopRse(profile);
     const warmupSec = parseWarmupSec(profile);
+    const workloadTimeoutSec = parseWorkloadTimeoutSec(profile);
+    const requestTimeoutMs = parseRequestTimeoutMs(profile);
     const shuffleEngines = parseShuffleEngines();
     const strictSetup = parseStrictSetup();
     const setupRetries = parseSetupRetries(profile);
@@ -1302,6 +1361,8 @@ async function main() {
     console.log(`Min repeats: ${minRepeats}`);
     console.log(`Early-stop RSE: ${earlyStopRse}`);
     console.log(`Warmup sec: ${warmupSec}`);
+    console.log(`Workload timeout sec: ${workloadTimeoutSec}`);
+    console.log(`Request timeout ms: ${requestTimeoutMs}`);
     console.log(`Shuffle engines: ${shuffleEngines}`);
     console.log(`Strict setup: ${strictSetup}`);
     console.log(`Setup retries: ${setupRetries}`);
@@ -1312,6 +1373,7 @@ async function main() {
     );
 
     for (const [scenarioIndex, scenario] of scenarios.entries()) {
+      if (STOP_REQUESTED) break;
       console.log(
         `\nScenario: ${scenario.name} [${scenario.kind}] (users=${scenario.users}, setup=${scenario.setupConcurrency}, conc=${scenario.concurrency}, duration=${scenario.durationSec}s)`,
       );
@@ -1319,6 +1381,7 @@ async function main() {
       for (const engine of engines) repeatResults.set(engine, []);
 
       for (let repeatIndex = 0; repeatIndex < repeatsMax; repeatIndex++) {
+        if (STOP_REQUESTED) break;
         const activeEngines = engines.filter((engine) =>
           !shouldEarlyStop(
             repeatResults.get(engine) ?? [],
@@ -1342,6 +1405,7 @@ async function main() {
         );
 
         for (const engine of orderedEngines) {
+          if (STOP_REQUESTED) break;
           const preferredPort = ENGINE_BASE_PORT[engine] + scenarioIndex * 20;
           const port = await findFreePort(preferredPort);
           const host = `http://localhost:${port}`;
@@ -1368,6 +1432,8 @@ async function main() {
               warmupSec,
               strictSetup,
               setupRetries,
+              workloadTimeoutSec,
+              requestTimeoutMs,
             });
             const elapsedMs = performance.now() - started;
             memory = await mem.stop(metrics.workload.opsPerSec);

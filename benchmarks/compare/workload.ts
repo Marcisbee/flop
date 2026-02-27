@@ -76,6 +76,10 @@ const SETUP_RETRY_BASE_MS = Math.max(
   10,
   Number(getArg("setup-retry-base-ms", "25")),
 );
+const REQUEST_TIMEOUT_MS = Math.max(
+  1000,
+  Number(getArg("request-timeout-ms", "12000")),
+);
 const READ_SHARE = Number(getArg("read-share", "0.6"));
 const JSON_ONLY = getArg("json-only", "0") === "1";
 
@@ -90,7 +94,7 @@ function log(msg: string) {
 }
 
 async function register(email: string, password: string, name: string) {
-  const res = await fetch(`${HOST}/api/auth/register`, {
+  const res = await fetchWithTimeout(`${HOST}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password, name }),
@@ -100,7 +104,7 @@ async function register(email: string, password: string, name: string) {
 }
 
 async function login(email: string, password: string): Promise<string> {
-  const res = await fetch(`${HOST}/api/auth/password`, {
+  const res = await fetchWithTimeout(`${HOST}/api/auth/password`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -111,7 +115,7 @@ async function login(email: string, password: string): Promise<string> {
 }
 
 async function reduce(name: string, params: Json, authToken: string) {
-  const res = await fetch(`${HOST}/api/reduce/${name}`, {
+  const res = await fetchWithTimeout(`${HOST}/api/reduce/${name}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -133,7 +137,7 @@ async function view(name: string, params: Json = {}, authToken?: string) {
   }
   const qs = search.toString();
   const url = `${HOST}/api/view/${name}${qs ? `?${qs}` : ""}`;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
   });
   if (!res.ok) {
@@ -149,6 +153,24 @@ function randomItem<T>(arr: T[]): T {
 
 function randomAmount(min: number, max: number): number {
   return Math.round((min + Math.random() * (max - min)) * 100) / 100;
+}
+
+async function fetchWithTimeout(
+  input: string | URL | Request,
+  init: RequestInit,
+): Promise<Response> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort("timeout"), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: ac.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`request timeout after ${REQUEST_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function sleep(ms: number) {

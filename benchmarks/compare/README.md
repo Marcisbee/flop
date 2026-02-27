@@ -82,6 +82,10 @@ Rigor flags:
 - `--early-stop-rse=X`: stop additional repeats for stable engines once relative
   standard error is <= X (`0` disables)
 - `--warmup-sec=N`: warmup workload per run (discarded from score)
+- `--workload-timeout-sec=N`: max time allowed for each workload subprocess
+  before it is killed
+- `--request-timeout-ms=N`: timeout for each HTTP request from workload client
+  to engine
 - `--shuffle-engines=1|0`: randomize engine order each repeat
 - `--strict-setup=1|0`: fail run if setup counts differ from expected
 - `--setup-retries=N`: retry setup API calls to reduce transient failures
