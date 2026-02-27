@@ -21,19 +21,25 @@ func main() {
 
 	specPath := filepath.Join(projectRoot, ".flop", "spec.json")
 	outDir := filepath.Join(projectRoot, "web", "src", "generated")
+	goOutDir := filepath.Join(projectRoot, "app")
 
 	if err := application.WriteSpec(specPath); err != nil {
 		fmt.Fprintf(os.Stderr, "write spec error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := gen.Generate(spec, gen.Options{OutDir: outDir}); err != nil {
+	if err := gen.Generate(spec, gen.Options{
+		OutDir:    outDir,
+		GoOutDir:  goOutDir,
+		GoPackage: "app",
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "generate error: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("generated spec: %s\n", specPath)
 	fmt.Printf("generated ts:   %s\n", outDir)
+	fmt.Printf("generated go:   %s\n", goOutDir)
 }
 
 func findModuleRoot() (string, error) {

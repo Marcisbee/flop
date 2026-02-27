@@ -2,12 +2,7 @@
 import * as v from "valibot";
 
 export const viewValidators = {
-  get_comments: v.any(),
-  get_post: v.any(),
-  list_posts: v.any(),
 } as const;
 
 export const reducerValidators = {
-  add_comment: v.any(),
-  create_post: v.any(),
 } as const;

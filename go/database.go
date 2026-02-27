@@ -157,6 +157,7 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	for name, ts := range a.tables {
 		fields := make([]schema.CompiledField, 0, len(ts.Fields))
 		isAuth := false
+		fieldByJSON := make(map[string]*fieldSpec, len(ts.Fields))
 
 		// Sort field names for deterministic order
 		fieldNames := make([]string, 0, len(ts.Fields))
@@ -169,20 +170,20 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 		for _, fn := range fieldNames {
 			fs := ts.Fields[fn]
 			cf := schema.CompiledField{
-				Name:           fs.JSONName,
-				Kind:           mapKind(fs.Kind),
-				Required:       fs.Required,
-				Unique:         fs.Unique,
-				AutoGenPattern: fs.Autogen,
-				BcryptRounds:   fs.BcryptRounds,
-				RefTableName:   fs.RefTable,
-				RefField:       fs.RefField,
-				MimeTypes:      fs.MimeTypes,
+				Name:             fs.JSONName,
+				Kind:             mapKind(fs.Kind),
+				Required:         fs.Required,
+				Unique:           fs.Unique,
+				DefaultValue:     fs.Default,
+				AutoGenPattern:   fs.Autogen,
+				BcryptRounds:     fs.BcryptRounds,
+				EnumValues:       append([]string(nil), fs.EnumValues...),
+				VectorDimensions: fs.VectorDimensions,
+				RefTableName:     fs.RefTable,
+				RefField:         fs.RefField,
+				MimeTypes:        append([]string(nil), fs.MimeTypes...),
 			}
-
-			if fs.Default != nil {
-				cf.DefaultValue = fs.Default
-			}
+			fieldByJSON[fs.JSONName] = fs
 
 			if fs.Kind == "roles" {
 				isAuth = true
@@ -207,8 +208,8 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 
 		// Put primary key first
 		sort.SliceStable(fields, func(i, j int) bool {
-			fi := a.tables[name].Fields[fieldGoName(a.tables[name], fields[i].Name)]
-			fj := a.tables[name].Fields[fieldGoName(a.tables[name], fields[j].Name)]
+			fi := fieldByJSON[fields[i].Name]
+			fj := fieldByJSON[fields[j].Name]
 			if fi != nil && fj != nil {
 				if fi.Primary && !fj.Primary {
 					return true
@@ -217,7 +218,7 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 					return false
 				}
 			}
-			return false
+			return fields[i].Name < fields[j].Name
 		})
 
 		defs[name] = &schema.TableDef{
@@ -229,16 +230,6 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	}
 
 	return defs
-}
-
-// fieldGoName finds the Go field name for a given JSON name in a tableSpec.
-func fieldGoName(ts *tableSpec, jsonName string) string {
-	for goName, fs := range ts.Fields {
-		if fs.JSONName == jsonName {
-			return goName
-		}
-	}
-	return ""
 }
 
 func mapKind(kind string) schema.FieldKind {
@@ -255,7 +246,7 @@ func mapKind(kind string) schema.FieldKind {
 		return schema.KindJson
 	case "bcrypt":
 		return schema.KindBcrypt
-	case "refSingle":
+	case "refSingle", "ref":
 		return schema.KindRef
 	case "refMulti":
 		return schema.KindRefMulti

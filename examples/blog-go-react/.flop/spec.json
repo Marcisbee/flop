@@ -1,13 +1,13 @@
 {
   "config": {
-    "dataDir": "./examples/blog-go-react/data",
+    "dataDir": "./data",
     "syncMode": "normal"
   },
   "tables": [
     {
       "name": "comments",
-      "rowType": "app.Comment",
-      "rowTs": "{ authorId: string; body: string; createdAt: number; id: string; postId: string }",
+      "rowType": "Comment",
+      "rowTs": "{ authorId: string; body: string; createdAt?: number; id?: string; postId: string }",
       "fields": [
         {
           "goName": "AuthorID",
@@ -17,7 +17,7 @@
           "required": true,
           "indexed": true,
           "refTable": "users",
-          "refField": "ID"
+          "refField": "id"
         },
         {
           "goName": "Body",
@@ -31,7 +31,6 @@
           "jsonName": "createdAt",
           "kind": "timestamp",
           "tsType": "number",
-          "required": true,
           "default": "now"
         },
         {
@@ -39,7 +38,6 @@
           "jsonName": "id",
           "kind": "string",
           "tsType": "string",
-          "required": true,
           "primary": true,
           "autogen": "[a-z0-9]{12}"
         },
@@ -51,14 +49,14 @@
           "required": true,
           "indexed": true,
           "refTable": "posts",
-          "refField": "ID"
+          "refField": "id"
         }
       ]
     },
     {
       "name": "posts",
-      "rowType": "app.Post",
-      "rowTs": "{ authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number } | null; createdAt: number; excerpt?: string; id: string; published: boolean; publishedAt: number; slug: string; title: string }",
+      "rowType": "Post",
+      "rowTs": "{ authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number }; createdAt?: number; excerpt?: string; id?: string; published?: boolean; publishedAt?: number; slug: string; title: string }",
       "fields": [
         {
           "goName": "AuthorID",
@@ -68,7 +66,7 @@
           "required": true,
           "indexed": true,
           "refTable": "users",
-          "refField": "ID"
+          "refField": "id"
         },
         {
           "goName": "Body",
@@ -81,7 +79,7 @@
           "goName": "CoverImage",
           "jsonName": "coverImage",
           "kind": "fileSingle",
-          "tsType": "{ path: string; url: string; mime: string; size: number } | null",
+          "tsType": "{ path: string; url: string; mime: string; size: number }",
           "mimeTypes": [
             "image/*"
           ]
@@ -91,7 +89,6 @@
           "jsonName": "createdAt",
           "kind": "timestamp",
           "tsType": "number",
-          "required": true,
           "default": "now"
         },
         {
@@ -105,7 +102,6 @@
           "jsonName": "id",
           "kind": "string",
           "tsType": "string",
-          "required": true,
           "primary": true,
           "autogen": "[a-z0-9]{8}"
         },
@@ -114,15 +110,13 @@
           "jsonName": "published",
           "kind": "boolean",
           "tsType": "boolean",
-          "required": true,
           "default": false
         },
         {
           "goName": "PublishedAt",
           "jsonName": "publishedAt",
           "kind": "timestamp",
-          "tsType": "number",
-          "required": true
+          "tsType": "number"
         },
         {
           "goName": "Slug",
@@ -143,8 +137,8 @@
     },
     {
       "name": "users",
-      "rowType": "app.User",
-      "rowTs": "{ email: string; id: string; name: string; password: string; roles?: (string)[] }",
+      "rowType": "User",
+      "rowTs": "{ email: string; id?: string; name: string; password: string; roles?: (string)[] }",
       "fields": [
         {
           "goName": "Email",
@@ -152,14 +146,15 @@
           "kind": "string",
           "tsType": "string",
           "required": true,
-          "unique": true
+          "unique": true,
+          "maxLen": 255,
+          "format": "email"
         },
         {
           "goName": "ID",
           "jsonName": "id",
           "kind": "string",
           "tsType": "string",
-          "required": true,
           "primary": true,
           "autogen": "[a-z0-9]{12}"
         },
@@ -168,7 +163,9 @@
           "jsonName": "name",
           "kind": "string",
           "tsType": "string",
-          "required": true
+          "required": true,
+          "minLen": 2,
+          "maxLen": 80
         },
         {
           "goName": "Password",
@@ -182,82 +179,14 @@
           "goName": "Roles",
           "jsonName": "roles",
           "kind": "roles",
-          "tsType": "(string)[]"
+          "tsType": "(string)[]",
+          "default": []
         }
       ]
     }
   ],
-  "views": [
-    {
-      "name": "get_comments",
-      "access": {
-        "type": "public"
-      },
-      "inputTs": "{ postId: string }",
-      "outputTs": "({ authorName: string; comment: { authorId: string; body: string; createdAt: number; id: string; postId: string } })[]"
-    },
-    {
-      "name": "get_post",
-      "access": {
-        "type": "public"
-      },
-      "inputTs": "{ slug: string }",
-      "outputTs": "{ authorName: string; post: { authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number } | null; createdAt: number; excerpt?: string; id: string; published: boolean; publishedAt: number; slug: string; title: string } } | null"
-    },
-    {
-      "name": "list_posts",
-      "access": {
-        "type": "public"
-      },
-      "inputTs": "{  }",
-      "outputTs": "({ authorName: string; post: { authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number } | null; createdAt: number; excerpt?: string; id: string; published: boolean; publishedAt: number; slug: string; title: string } })[]"
-    }
-  ],
-  "reducers": [
-    {
-      "name": "add_comment",
-      "access": {
-        "type": "authenticated"
-      },
-      "inputTs": "{ body: string; postId: string }",
-      "outputTs": "{ authorId: string; body: string; createdAt: number; id: string; postId: string }"
-    },
-    {
-      "name": "create_post",
-      "access": {
-        "type": "roles",
-        "roles": [
-          "admin"
-        ]
-      },
-      "inputTs": "{ body: string; coverImage: string; excerpt: string; slug: string; title: string }",
-      "outputTs": "{ authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number } | null; createdAt: number; excerpt?: string; id: string; published: boolean; publishedAt: number; slug: string; title: string }"
-    }
-  ],
-  "layouts": [
-    {
-      "path": "/",
-      "entry": "./pages/layout.tsx"
-    }
-  ],
-  "pages": [
-    {
-      "path": "/",
-      "entry": "./pages/home.tsx",
-      "paramsTs": "{  }",
-      "dataTs": "({ authorName: string; post: { authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number } | null; createdAt: number; excerpt?: string; id: string; published: boolean; publishedAt: number; slug: string; title: string } })[]"
-    },
-    {
-      "path": "/post/:slug",
-      "entry": "./pages/post.tsx",
-      "paramsTs": "{ slug: string }",
-      "dataTs": "{ authorName: string; post: { authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number } | null; createdAt: number; excerpt?: string; id: string; published: boolean; publishedAt: number; slug: string; title: string } } | null"
-    },
-    {
-      "path": "/about",
-      "entry": "./pages/about.tsx",
-      "paramsTs": "{  }",
-      "dataTs": "{  }"
-    }
-  ]
+  "views": [],
+  "reducers": [],
+  "layouts": [],
+  "pages": []
 }

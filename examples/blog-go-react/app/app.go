@@ -10,35 +10,6 @@ import (
 	"github.com/marcisbee/flop"
 )
 
-type User struct {
-	ID       string   `json:"id"`
-	Email    string   `json:"email"`
-	Password string   `json:"password"`
-	Name     string   `json:"name"`
-	Roles    []string `json:"roles"`
-}
-
-type Post struct {
-	ID          string        `json:"id"`
-	Slug        string        `json:"slug"`
-	Title       string        `json:"title"`
-	Excerpt     string        `json:"excerpt,omitempty"`
-	Body        string        `json:"body"`
-	CoverImage  *flop.FileRef `json:"coverImage,omitempty"`
-	AuthorID    string        `json:"authorId"`
-	Published   bool          `json:"published"`
-	PublishedAt int64         `json:"publishedAt"`
-	CreatedAt   int64         `json:"createdAt"`
-}
-
-type Comment struct {
-	ID        string `json:"id"`
-	PostID    string `json:"postId"`
-	AuthorID  string `json:"authorId"`
-	Body      string `json:"body"`
-	CreatedAt int64  `json:"createdAt"`
-}
-
 type HeadMeta struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
@@ -56,32 +27,33 @@ func Build() *flop.App {
 		SyncMode: "normal",
 	})
 
-	users := flop.AutoTable[User](application, "users", func(t *flop.TableBuilder[User]) {
-		t.Field("ID").Primary().Autogen(`[a-z0-9]{12}`)
-		t.Field("Email").Required().Unique()
-		t.Field("Password").Required().Bcrypt(10)
-		t.Field("Name").Required()
-		t.Field("Roles").Roles()
+	users := flop.Define(application, "users", func(s *flop.SchemaBuilder) {
+		s.String("id").Primary().Autogen(`[a-z0-9]{12}`)
+		s.String("email").Required().Unique().Email().MaxLen(255)
+		s.Bcrypt("password", 10).Required()
+		s.String("name").Required().MinLen(2).MaxLen(80)
+		s.Roles("roles")
 	})
 
-	posts := flop.AutoTable[Post](application, "posts", func(t *flop.TableBuilder[Post]) {
-		t.Field("ID").Primary().Autogen(`[a-z0-9]{8}`)
-		t.Field("Slug").Required().Unique()
-		t.Field("Title").Required()
-		t.Field("Body").Required()
-		t.Field("CoverImage").FileSingle("image/*")
-		t.Field("AuthorID").Required().Ref(users, "ID").Index()
-		t.Field("Published").Default(false)
-		t.Field("PublishedAt").Timestamp()
-		t.Field("CreatedAt").Timestamp().DefaultNow()
+	posts := flop.Define(application, "posts", func(s *flop.SchemaBuilder) {
+		s.String("id").Primary().Autogen(`[a-z0-9]{8}`)
+		s.String("slug").Required().Unique()
+		s.String("title").Required()
+		s.String("excerpt")
+		s.String("body").Required()
+		s.FileSingle("coverImage", "image/*")
+		s.Ref("authorId", users, "id").Required().Index()
+		s.Boolean("published").Default(false)
+		s.Timestamp("publishedAt")
+		s.Timestamp("createdAt").DefaultNow()
 	})
 
-	flop.AutoTable[Comment](application, "comments", func(t *flop.TableBuilder[Comment]) {
-		t.Field("ID").Primary().Autogen(`[a-z0-9]{12}`)
-		t.Field("PostID").Required().Ref(posts, "ID").Index()
-		t.Field("AuthorID").Required().Ref(users, "ID").Index()
-		t.Field("Body").Required()
-		t.Field("CreatedAt").Timestamp().DefaultNow()
+	flop.Define(application, "comments", func(s *flop.SchemaBuilder) {
+		s.String("id").Primary().Autogen(`[a-z0-9]{12}`)
+		s.Ref("postId", posts, "id").Required().Index()
+		s.Ref("authorId", users, "id").Required().Index()
+		s.String("body").Required()
+		s.Timestamp("createdAt").DefaultNow()
 	})
 
 	return application

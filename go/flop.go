@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -199,6 +200,313 @@ func (fb *FieldBuilder[T]) Virtual() *FieldBuilder[T] {
 func (fb *FieldBuilder[T]) Index() *FieldBuilder[T] {
 	fb.spec.Indexed = true
 	return fb
+}
+
+// SchemaBuilder provides a schema-first table definition API.
+type SchemaBuilder struct {
+	table *tableSpec
+}
+
+type StringFieldRules struct{ spec *fieldSpec }
+type NumberFieldRules struct{ spec *fieldSpec }
+type IntegerFieldRules struct{ spec *fieldSpec }
+type BooleanFieldRules struct{ spec *fieldSpec }
+type JSONFieldRules struct{ spec *fieldSpec }
+type TimestampFieldRules struct{ spec *fieldSpec }
+type BcryptFieldRules struct{ spec *fieldSpec }
+type RolesFieldRules struct{ spec *fieldSpec }
+type EnumFieldRules struct{ spec *fieldSpec }
+type RefFieldRules struct{ spec *fieldSpec }
+type RefMultiFieldRules struct{ spec *fieldSpec }
+type FileSingleFieldRules struct{ spec *fieldSpec }
+type FileMultiFieldRules struct{ spec *fieldSpec }
+type SetFieldRules struct{ spec *fieldSpec }
+type VectorFieldRules struct{ spec *fieldSpec }
+
+// Define creates a schema-first table with typed field builders.
+func Define(app *App, name string, configure func(*SchemaBuilder)) *Table[map[string]any] {
+	if app == nil {
+		panic("flop: app is nil")
+	}
+	if name == "" {
+		panic("flop: table name is empty")
+	}
+	if _, exists := app.tables[name]; exists {
+		panic("flop: duplicate table name: " + name)
+	}
+
+	spec := &tableSpec{
+		Name:    name,
+		RowType: defaultRowTypeName(name),
+		Fields:  make(map[string]*fieldSpec),
+	}
+	app.tables[name] = spec
+
+	t := &Table[map[string]any]{app: app, name: name, spec: spec}
+	if configure != nil {
+		configure(&SchemaBuilder{table: spec})
+	}
+	spec.RowTS = rowTSTypeFromFields(spec.Fields)
+	return t
+}
+
+func (sb *SchemaBuilder) String(name string) *StringFieldRules {
+	return &StringFieldRules{spec: sb.field(name, "string", "string")}
+}
+
+func (sb *SchemaBuilder) Number(name string) *NumberFieldRules {
+	return &NumberFieldRules{spec: sb.field(name, "number", "number")}
+}
+
+func (sb *SchemaBuilder) Integer(name string) *IntegerFieldRules {
+	return &IntegerFieldRules{spec: sb.field(name, "integer", "number")}
+}
+
+func (sb *SchemaBuilder) Boolean(name string) *BooleanFieldRules {
+	return &BooleanFieldRules{spec: sb.field(name, "boolean", "boolean")}
+}
+
+func (sb *SchemaBuilder) JSON(name string) *JSONFieldRules {
+	return &JSONFieldRules{spec: sb.field(name, "json", "any")}
+}
+
+func (sb *SchemaBuilder) Timestamp(name string) *TimestampFieldRules {
+	return &TimestampFieldRules{spec: sb.field(name, "timestamp", "number")}
+}
+
+func (sb *SchemaBuilder) Bcrypt(name string, rounds int) *BcryptFieldRules {
+	fs := sb.field(name, "bcrypt", "string")
+	fs.BcryptRounds = rounds
+	return &BcryptFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) Roles(name string) *RolesFieldRules {
+	fs := sb.field(name, "roles", "(string)[]")
+	if fs.Default == nil {
+		fs.Default = []string{}
+	}
+	return &RolesFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) Enum(name string, values ...string) *EnumFieldRules {
+	fs := sb.field(name, "enum", tsEnumType(values))
+	fs.EnumValues = append([]string(nil), values...)
+	return &EnumFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) Ref(name string, other any, field string) *RefFieldRules {
+	fs := sb.field(name, "refSingle", "string")
+	if nt, ok := other.(interface{ tableName() string }); ok {
+		fs.RefTable = nt.tableName()
+	}
+	fs.RefField = field
+	return &RefFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) RefMulti(name string, other any, field string) *RefMultiFieldRules {
+	fs := sb.field(name, "refMulti", "(string)[]")
+	if nt, ok := other.(interface{ tableName() string }); ok {
+		fs.RefTable = nt.tableName()
+	}
+	fs.RefField = field
+	if fs.Default == nil {
+		fs.Default = []string{}
+	}
+	return &RefMultiFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) FileSingle(name string, mime ...string) *FileSingleFieldRules {
+	fs := sb.field(name, "fileSingle", "{ path: string; url: string; mime: string; size: number }")
+	fs.MimeTypes = append([]string(nil), mime...)
+	return &FileSingleFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) FileMulti(name string, mime ...string) *FileMultiFieldRules {
+	fs := sb.field(name, "fileMulti", "({ path: string; url: string; mime: string; size: number })[]")
+	fs.MimeTypes = append([]string(nil), mime...)
+	return &FileMultiFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) Set(name string) *SetFieldRules {
+	fs := sb.field(name, "set", "(string)[]")
+	if fs.Default == nil {
+		fs.Default = []string{}
+	}
+	return &SetFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) Vector(name string, dimensions int) *VectorFieldRules {
+	fs := sb.field(name, "vector", "(number)[]")
+	fs.VectorDimensions = dimensions
+	return &VectorFieldRules{spec: fs}
+}
+
+func (sb *SchemaBuilder) field(name, kind, tsType string) *fieldSpec {
+	if sb == nil || sb.table == nil {
+		panic("flop: invalid schema builder")
+	}
+	if name == "" {
+		panic("flop: field name is empty")
+	}
+	fs := sb.table.findOrCreateFieldByJSON(name)
+	fs.Kind = kind
+	fs.TSType = tsType
+	return fs
+}
+
+func (b *StringFieldRules) Primary() *StringFieldRules         { b.spec.Primary = true; return b }
+func (b *StringFieldRules) Required() *StringFieldRules        { b.spec.Required = true; return b }
+func (b *StringFieldRules) Unique() *StringFieldRules          { b.spec.Unique = true; return b }
+func (b *StringFieldRules) Default(v any) *StringFieldRules    { b.spec.Default = v; return b }
+func (b *StringFieldRules) Autogen(p string) *StringFieldRules { b.spec.Autogen = p; return b }
+func (b *StringFieldRules) Index() *StringFieldRules           { b.spec.Indexed = true; return b }
+func (b *StringFieldRules) Virtual() *StringFieldRules         { b.spec.Virtual = true; return b }
+func (b *StringFieldRules) MinLen(n int) *StringFieldRules     { b.spec.MinLen = &n; return b }
+func (b *StringFieldRules) MaxLen(n int) *StringFieldRules     { b.spec.MaxLen = &n; return b }
+func (b *StringFieldRules) Pattern(expr string) *StringFieldRules {
+	b.spec.Pattern = expr
+	return b
+}
+func (b *StringFieldRules) Email() *StringFieldRules { b.spec.Format = "email"; return b }
+
+func (b *NumberFieldRules) Required() *NumberFieldRules     { b.spec.Required = true; return b }
+func (b *NumberFieldRules) Unique() *NumberFieldRules       { b.spec.Unique = true; return b }
+func (b *NumberFieldRules) Default(v any) *NumberFieldRules { b.spec.Default = v; return b }
+func (b *NumberFieldRules) Index() *NumberFieldRules        { b.spec.Indexed = true; return b }
+func (b *NumberFieldRules) Virtual() *NumberFieldRules      { b.spec.Virtual = true; return b }
+func (b *NumberFieldRules) Min(v float64) *NumberFieldRules { b.spec.Min = &v; return b }
+func (b *NumberFieldRules) Max(v float64) *NumberFieldRules { b.spec.Max = &v; return b }
+
+func (b *IntegerFieldRules) Required() *IntegerFieldRules     { b.spec.Required = true; return b }
+func (b *IntegerFieldRules) Unique() *IntegerFieldRules       { b.spec.Unique = true; return b }
+func (b *IntegerFieldRules) Default(v any) *IntegerFieldRules { b.spec.Default = v; return b }
+func (b *IntegerFieldRules) Index() *IntegerFieldRules        { b.spec.Indexed = true; return b }
+func (b *IntegerFieldRules) Virtual() *IntegerFieldRules      { b.spec.Virtual = true; return b }
+func (b *IntegerFieldRules) Min(v float64) *IntegerFieldRules { b.spec.Min = &v; return b }
+func (b *IntegerFieldRules) Max(v float64) *IntegerFieldRules { b.spec.Max = &v; return b }
+
+func (b *BooleanFieldRules) Required() *BooleanFieldRules     { b.spec.Required = true; return b }
+func (b *BooleanFieldRules) Default(v any) *BooleanFieldRules { b.spec.Default = v; return b }
+func (b *BooleanFieldRules) Index() *BooleanFieldRules        { b.spec.Indexed = true; return b }
+func (b *BooleanFieldRules) Virtual() *BooleanFieldRules      { b.spec.Virtual = true; return b }
+
+func (b *JSONFieldRules) Required() *JSONFieldRules     { b.spec.Required = true; return b }
+func (b *JSONFieldRules) Default(v any) *JSONFieldRules { b.spec.Default = v; return b }
+func (b *JSONFieldRules) Index() *JSONFieldRules        { b.spec.Indexed = true; return b }
+func (b *JSONFieldRules) Virtual() *JSONFieldRules      { b.spec.Virtual = true; return b }
+
+func (b *TimestampFieldRules) Required() *TimestampFieldRules     { b.spec.Required = true; return b }
+func (b *TimestampFieldRules) Unique() *TimestampFieldRules       { b.spec.Unique = true; return b }
+func (b *TimestampFieldRules) Default(v any) *TimestampFieldRules { b.spec.Default = v; return b }
+func (b *TimestampFieldRules) DefaultNow() *TimestampFieldRules   { b.spec.Default = "now"; return b }
+func (b *TimestampFieldRules) Index() *TimestampFieldRules        { b.spec.Indexed = true; return b }
+func (b *TimestampFieldRules) Virtual() *TimestampFieldRules      { b.spec.Virtual = true; return b }
+func (b *TimestampFieldRules) Min(v float64) *TimestampFieldRules { b.spec.Min = &v; return b }
+func (b *TimestampFieldRules) Max(v float64) *TimestampFieldRules { b.spec.Max = &v; return b }
+
+func (b *BcryptFieldRules) Required() *BcryptFieldRules { b.spec.Required = true; return b }
+func (b *BcryptFieldRules) Index() *BcryptFieldRules    { b.spec.Indexed = true; return b }
+func (b *BcryptFieldRules) Virtual() *BcryptFieldRules  { b.spec.Virtual = true; return b }
+
+func (b *RolesFieldRules) Required() *RolesFieldRules { b.spec.Required = true; return b }
+func (b *RolesFieldRules) Index() *RolesFieldRules    { b.spec.Indexed = true; return b }
+func (b *RolesFieldRules) Virtual() *RolesFieldRules  { b.spec.Virtual = true; return b }
+
+func (b *EnumFieldRules) Required() *EnumFieldRules     { b.spec.Required = true; return b }
+func (b *EnumFieldRules) Unique() *EnumFieldRules       { b.spec.Unique = true; return b }
+func (b *EnumFieldRules) Default(v any) *EnumFieldRules { b.spec.Default = v; return b }
+func (b *EnumFieldRules) Index() *EnumFieldRules        { b.spec.Indexed = true; return b }
+func (b *EnumFieldRules) Virtual() *EnumFieldRules      { b.spec.Virtual = true; return b }
+
+func (b *RefFieldRules) Primary() *RefFieldRules         { b.spec.Primary = true; return b }
+func (b *RefFieldRules) Required() *RefFieldRules        { b.spec.Required = true; return b }
+func (b *RefFieldRules) Unique() *RefFieldRules          { b.spec.Unique = true; return b }
+func (b *RefFieldRules) Default(v any) *RefFieldRules    { b.spec.Default = v; return b }
+func (b *RefFieldRules) Autogen(p string) *RefFieldRules { b.spec.Autogen = p; return b }
+func (b *RefFieldRules) Index() *RefFieldRules           { b.spec.Indexed = true; return b }
+func (b *RefFieldRules) Virtual() *RefFieldRules         { b.spec.Virtual = true; return b }
+
+func (b *RefMultiFieldRules) Required() *RefMultiFieldRules     { b.spec.Required = true; return b }
+func (b *RefMultiFieldRules) Default(v any) *RefMultiFieldRules { b.spec.Default = v; return b }
+func (b *RefMultiFieldRules) Index() *RefMultiFieldRules        { b.spec.Indexed = true; return b }
+func (b *RefMultiFieldRules) Virtual() *RefMultiFieldRules      { b.spec.Virtual = true; return b }
+
+func (b *FileSingleFieldRules) Required() *FileSingleFieldRules { b.spec.Required = true; return b }
+func (b *FileSingleFieldRules) Virtual() *FileSingleFieldRules  { b.spec.Virtual = true; return b }
+
+func (b *FileMultiFieldRules) Required() *FileMultiFieldRules { b.spec.Required = true; return b }
+func (b *FileMultiFieldRules) Virtual() *FileMultiFieldRules  { b.spec.Virtual = true; return b }
+
+func (b *SetFieldRules) Required() *SetFieldRules     { b.spec.Required = true; return b }
+func (b *SetFieldRules) Default(v any) *SetFieldRules { b.spec.Default = v; return b }
+func (b *SetFieldRules) Index() *SetFieldRules        { b.spec.Indexed = true; return b }
+func (b *SetFieldRules) Virtual() *SetFieldRules      { b.spec.Virtual = true; return b }
+
+func (b *VectorFieldRules) Required() *VectorFieldRules     { b.spec.Required = true; return b }
+func (b *VectorFieldRules) Default(v any) *VectorFieldRules { b.spec.Default = v; return b }
+func (b *VectorFieldRules) Index() *VectorFieldRules        { b.spec.Indexed = true; return b }
+func (b *VectorFieldRules) Virtual() *VectorFieldRules      { b.spec.Virtual = true; return b }
+
+func tsEnumType(values []string) string {
+	if len(values) == 0 {
+		return "string"
+	}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		out = append(out, strconv.Quote(v))
+	}
+	return strings.Join(out, " | ")
+}
+
+func defaultRowTypeName(tableName string) string {
+	name := toExportedGoName(tableName)
+	if name == "" {
+		return "Row"
+	}
+	if strings.HasSuffix(name, "s") && len(name) > 1 {
+		name = name[:len(name)-1]
+	}
+	return name
+}
+
+func rowTSTypeFromFields(fields map[string]*fieldSpec) string {
+	if len(fields) == 0 {
+		return "{ [key: string]: any }"
+	}
+	items := make([]string, 0, len(fields))
+	for _, fs := range fields {
+		key := fs.JSONName
+		if !isTSIdentifier(key) {
+			key = strconv.Quote(key)
+		}
+		opt := ""
+		if !fs.Required {
+			opt = "?"
+		}
+		tsType := fs.TSType
+		if tsType == "" {
+			tsType = "any"
+		}
+		items = append(items, key+opt+": "+tsType)
+	}
+	sort.Strings(items)
+	return "{ " + strings.Join(items, "; ") + " }"
+}
+
+func isTSIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	r := []rune(s)
+	if !(unicode.IsLetter(r[0]) || r[0] == '_' || r[0] == '$') {
+		return false
+	}
+	for _, ch := range r[1:] {
+		if !(unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$') {
+			return false
+		}
+	}
+	return true
 }
 
 type Update map[string]any
@@ -466,12 +774,20 @@ type FieldSpec struct {
 	Default       any      `json:"default,omitempty"`
 	Autogen       string   `json:"autogen,omitempty"`
 	BcryptRounds  int      `json:"bcryptRounds,omitempty"`
+	EnumValues    []string `json:"enumValues,omitempty"`
+	VectorDims    int      `json:"vectorDims,omitempty"`
 	RefTable      string   `json:"refTable,omitempty"`
 	RefField      string   `json:"refField,omitempty"`
 	Relation      string   `json:"relation,omitempty"`
 	RelationTable string   `json:"relationTable,omitempty"`
 	RelationField string   `json:"relationField,omitempty"`
 	MimeTypes     []string `json:"mimeTypes,omitempty"`
+	MinLen        *int     `json:"minLen,omitempty"`
+	MaxLen        *int     `json:"maxLen,omitempty"`
+	Min           *float64 `json:"min,omitempty"`
+	Max           *float64 `json:"max,omitempty"`
+	Pattern       string   `json:"pattern,omitempty"`
+	Format        string   `json:"format,omitempty"`
 }
 
 type EndpointSpec struct {
@@ -597,25 +913,57 @@ func (ts *tableSpec) findOrCreateField(name string) *fieldSpec {
 	return fs
 }
 
+func (ts *tableSpec) findOrCreateFieldByJSON(name string) *fieldSpec {
+	for _, fs := range ts.Fields {
+		if fs.JSONName == name {
+			if fs.GoName == "" {
+				fs.GoName = toExportedGoName(name)
+			}
+			return fs
+		}
+	}
+	goName := toExportedGoName(name)
+	if fs, ok := ts.Fields[goName]; ok {
+		fs.JSONName = name
+		return fs
+	}
+	fs := &fieldSpec{
+		GoName:   goName,
+		JSONName: name,
+		Kind:     "string",
+		TSType:   "string",
+	}
+	ts.Fields[goName] = fs
+	return fs
+}
+
 type fieldSpec struct {
-	GoName        string
-	JSONName      string
-	Kind          string
-	TSType        string
-	Required      bool
-	Unique        bool
-	Primary       bool
-	Indexed       bool
-	Virtual       bool
-	Default       any
-	Autogen       string
-	BcryptRounds  int
-	RefTable      string
-	RefField      string
-	Relation      string
-	RelationTable string
-	RelationField string
-	MimeTypes     []string
+	GoName           string
+	JSONName         string
+	Kind             string
+	TSType           string
+	Required         bool
+	Unique           bool
+	Primary          bool
+	Indexed          bool
+	Virtual          bool
+	Default          any
+	Autogen          string
+	BcryptRounds     int
+	EnumValues       []string
+	VectorDimensions int
+	RefTable         string
+	RefField         string
+	Relation         string
+	RelationTable    string
+	RelationField    string
+	MimeTypes        []string
+	MinLen           *int
+	MaxLen           *int
+	Min              *float64
+	Max              *float64
+	Pattern          string
+	Format           string
 }
 
 func (fs *fieldSpec) toPublic() FieldSpec {
@@ -632,12 +980,20 @@ func (fs *fieldSpec) toPublic() FieldSpec {
 		Default:       fs.Default,
 		Autogen:       fs.Autogen,
 		BcryptRounds:  fs.BcryptRounds,
+		EnumValues:    append([]string(nil), fs.EnumValues...),
+		VectorDims:    fs.VectorDimensions,
 		RefTable:      fs.RefTable,
 		RefField:      fs.RefField,
 		Relation:      fs.Relation,
 		RelationTable: fs.RelationTable,
 		RelationField: fs.RelationField,
 		MimeTypes:     append([]string(nil), fs.MimeTypes...),
+		MinLen:        copyIntPtr(fs.MinLen),
+		MaxLen:        copyIntPtr(fs.MaxLen),
+		Min:           copyFloatPtr(fs.Min),
+		Max:           copyFloatPtr(fs.Max),
+		Pattern:       fs.Pattern,
+		Format:        fs.Format,
 	}
 }
 
@@ -861,4 +1217,65 @@ func lowerCamel(s string) string {
 	r := []rune(s)
 	r[0] = unicode.ToLower(r[0])
 	return string(r)
+}
+
+func toExportedGoName(s string) string {
+	parts := splitIdentifier(s)
+	if len(parts) == 0 {
+		return "Field"
+	}
+	for i, p := range parts {
+		u := strings.ToUpper(p)
+		switch u {
+		case "ID", "URL", "URI", "UUID", "API", "HTTP", "HTTPS", "IP", "JSON", "JWT", "SQL", "TS":
+			parts[i] = u
+		default:
+			parts[i] = strings.ToUpper(p[:1]) + strings.ToLower(p[1:])
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func splitIdentifier(s string) []string {
+	if s == "" {
+		return nil
+	}
+	runes := []rune(s)
+	out := make([]string, 0, 4)
+	var current []rune
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		out = append(out, string(current))
+		current = current[:0]
+	}
+	for i, ch := range runes {
+		if ch == '_' || ch == '-' || ch == ' ' || ch == '.' {
+			flush()
+			continue
+		}
+		if i > 0 && unicode.IsUpper(ch) && len(current) > 0 && unicode.IsLower(current[len(current)-1]) {
+			flush()
+		}
+		current = append(current, ch)
+	}
+	flush()
+	return out
+}
+
+func copyIntPtr(v *int) *int {
+	if v == nil {
+		return nil
+	}
+	n := *v
+	return &n
+}
+
+func copyFloatPtr(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	n := *v
+	return &n
 }

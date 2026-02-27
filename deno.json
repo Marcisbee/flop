@@ -8,6 +8,12 @@
   "tasks": {
     "dev": "deno run --watch --allow-read --allow-write --allow-net --allow-env ts/cli.ts",
     "start": "deno run --allow-read --allow-write --allow-net --allow-env ts/cli.ts",
+    "example:chat": "deno task start examples/chat/app.ts",
+    "example:messages": "deno task start examples/messages/app.ts",
+    "example:editor": "deno task start examples/editor/app.ts",
+    "example:whiteboard": "deno task start examples/whiteboard/app.ts",
+    "example:blog": "deno task start examples/blog/app.ts",
+    "example:blog-go-react": "make -C examples/blog-go-react dev",
     "test": "deno test --allow-read --allow-write --allow-net --allow-env ts/tests/",
     "check": "deno check ts/mod.ts ts/client.ts ts/cli.ts",
     "bench": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts",

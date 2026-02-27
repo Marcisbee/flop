@@ -73,6 +73,19 @@ deno run --allow-all main.ts ./app.ts
 
 ## Schema Types
 
+## Run Examples
+
+```sh
+deno task example:chat
+deno task example:messages
+deno task example:editor
+deno task example:whiteboard
+deno task example:blog
+deno task example:blog-go-react
+```
+
+All Deno examples run on port `1985` by default.
+
 ```typescript
 t.string()                        // UTF-8 string
 t.number()                        // float64

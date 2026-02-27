@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -191,73 +192,140 @@ func setupHint(token string) string {
 }
 
 func buildTableDefs() map[string]*schema.TableDef {
-	users := &schema.TableDef{
-		Name: "users",
-		CompiledSchema: schema.NewCompiledSchema([]schema.CompiledField{
-			{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{15}"},
-			{Name: "email", Kind: schema.KindString, Required: true, Unique: true},
-			{Name: "password", Kind: schema.KindBcrypt, Required: true, BcryptRounds: 10},
-			{Name: "name", Kind: schema.KindString, Required: true},
-			{Name: "roles", Kind: schema.KindRoles},
-		}),
-		Auth: true,
-	}
+	app := flop.New(flop.Config{})
 
-	accounts := &schema.TableDef{
-		Name: "accounts",
-		CompiledSchema: schema.NewCompiledSchema([]schema.CompiledField{
-			{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{15}"},
-			{Name: "ownerId", Kind: schema.KindString, Required: true},
-			{Name: "name", Kind: schema.KindString, Required: true},
-			{Name: "type", Kind: schema.KindEnum, Required: true, EnumValues: []string{"checking", "savings", "credit"}},
-			{Name: "balance", Kind: schema.KindNumber, Required: true},
-			{Name: "currency", Kind: schema.KindString, Required: true},
-			{Name: "createdAt", Kind: schema.KindTimestamp, DefaultValue: "now"},
-		}),
-		Indexes: []schema.IndexDef{
-			{Fields: []string{"ownerId"}},
-		},
-	}
+	users := flop.Define(app, "users", func(s *flop.SchemaBuilder) {
+		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
+		s.String("email").Required().Unique().Email().MaxLen(255)
+		s.Bcrypt("password", 10).Required()
+		s.String("name").Required().MinLen(2).MaxLen(120)
+		s.Roles("roles")
+	})
 
-	transactions := &schema.TableDef{
-		Name: "transactions",
-		CompiledSchema: schema.NewCompiledSchema([]schema.CompiledField{
-			{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{15}"},
-			{Name: "fromAccountId", Kind: schema.KindString, Required: true},
-			{Name: "toAccountId", Kind: schema.KindString, Required: true},
-			{Name: "amount", Kind: schema.KindNumber, Required: true},
-			{Name: "currency", Kind: schema.KindString, Required: true},
-			{Name: "status", Kind: schema.KindEnum, Required: true, EnumValues: []string{"pending", "completed", "failed"}},
-			{Name: "description", Kind: schema.KindString},
-			{Name: "createdAt", Kind: schema.KindTimestamp, DefaultValue: "now"},
-		}),
-		Indexes: []schema.IndexDef{
-			{Fields: []string{"fromAccountId"}},
-			{Fields: []string{"toAccountId"}},
-		},
-	}
+	accounts := flop.Define(app, "accounts", func(s *flop.SchemaBuilder) {
+		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
+		s.Ref("ownerId", users, "id").Required().Index()
+		s.String("name").Required().MaxLen(120)
+		s.Enum("type", "checking", "savings", "credit").Required()
+		s.Number("balance").Required()
+		s.String("currency").Required().MaxLen(8)
+		s.Timestamp("createdAt").DefaultNow()
+	})
 
-	ledger := &schema.TableDef{
-		Name: "ledger",
-		CompiledSchema: schema.NewCompiledSchema([]schema.CompiledField{
-			{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{15}"},
-			{Name: "accountId", Kind: schema.KindString, Required: true},
-			{Name: "transactionId", Kind: schema.KindString, Required: true},
-			{Name: "amount", Kind: schema.KindNumber, Required: true},
-			{Name: "balanceAfter", Kind: schema.KindNumber, Required: true},
-			{Name: "type", Kind: schema.KindEnum, Required: true, EnumValues: []string{"debit", "credit"}},
-			{Name: "createdAt", Kind: schema.KindTimestamp, DefaultValue: "now"},
-		}),
-		Indexes: []schema.IndexDef{
-			{Fields: []string{"accountId"}},
-		},
-	}
+	transactions := flop.Define(app, "transactions", func(s *flop.SchemaBuilder) {
+		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
+		s.Ref("fromAccountId", accounts, "id").Required().Index()
+		s.Ref("toAccountId", accounts, "id").Required().Index()
+		s.Number("amount").Required()
+		s.String("currency").Required().MaxLen(8)
+		s.Enum("status", "pending", "completed", "failed").Required()
+		s.String("description")
+		s.Timestamp("createdAt").DefaultNow()
+	})
 
-	return map[string]*schema.TableDef{
-		"users":        users,
-		"accounts":     accounts,
-		"transactions": transactions,
-		"ledger":       ledger,
+	flop.Define(app, "ledger", func(s *flop.SchemaBuilder) {
+		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
+		s.Ref("accountId", accounts, "id").Required().Index()
+		s.Ref("transactionId", transactions, "id").Required()
+		s.Number("amount").Required()
+		s.Number("balanceAfter").Required()
+		s.Enum("type", "debit", "credit").Required()
+		s.Timestamp("createdAt").DefaultNow()
+	})
+
+	return compileTableDefs(app.Spec())
+}
+
+func compileTableDefs(spec flop.AppSpec) map[string]*schema.TableDef {
+	defs := make(map[string]*schema.TableDef, len(spec.Tables))
+	for _, t := range spec.Tables {
+		fields := make([]schema.CompiledField, 0, len(t.Fields))
+		fieldByJSON := make(map[string]flop.FieldSpec, len(t.Fields))
+		indexes := make([]schema.IndexDef, 0)
+		isAuth := false
+
+		for _, f := range t.Fields {
+			cf := schema.CompiledField{
+				Name:             f.JSONName,
+				Kind:             compileKind(f.Kind),
+				Required:         f.Required,
+				Unique:           f.Unique,
+				DefaultValue:     f.Default,
+				AutoGenPattern:   f.Autogen,
+				BcryptRounds:     f.BcryptRounds,
+				RefTableName:     f.RefTable,
+				RefField:         f.RefField,
+				MimeTypes:        append([]string(nil), f.MimeTypes...),
+				EnumValues:       append([]string(nil), f.EnumValues...),
+				VectorDimensions: f.VectorDims,
+			}
+			fields = append(fields, cf)
+			fieldByJSON[f.JSONName] = f
+
+			if f.Kind == "roles" {
+				isAuth = true
+			}
+			if f.Unique && !f.Primary {
+				indexes = append(indexes, schema.IndexDef{Fields: []string{f.JSONName}, Unique: true})
+			}
+			if f.Indexed && !f.Unique {
+				indexes = append(indexes, schema.IndexDef{Fields: []string{f.JSONName}, Unique: false})
+			}
+		}
+
+		sort.SliceStable(fields, func(i, j int) bool {
+			fi, iok := fieldByJSON[fields[i].Name]
+			fj, jok := fieldByJSON[fields[j].Name]
+			if iok && jok && fi.Primary != fj.Primary {
+				return fi.Primary
+			}
+			return fields[i].Name < fields[j].Name
+		})
+
+		defs[t.Name] = &schema.TableDef{
+			Name:           t.Name,
+			CompiledSchema: schema.NewCompiledSchema(fields),
+			Indexes:        indexes,
+			Auth:           isAuth,
+		}
+	}
+	return defs
+}
+
+func compileKind(kind string) schema.FieldKind {
+	switch kind {
+	case "string":
+		return schema.KindString
+	case "number":
+		return schema.KindNumber
+	case "integer":
+		return schema.KindInteger
+	case "boolean":
+		return schema.KindBoolean
+	case "json":
+		return schema.KindJson
+	case "bcrypt":
+		return schema.KindBcrypt
+	case "refSingle", "ref":
+		return schema.KindRef
+	case "refMulti":
+		return schema.KindRefMulti
+	case "fileSingle":
+		return schema.KindFileSingle
+	case "fileMulti":
+		return schema.KindFileMulti
+	case "roles":
+		return schema.KindRoles
+	case "timestamp":
+		return schema.KindTimestamp
+	case "vector":
+		return schema.KindVector
+	case "set":
+		return schema.KindSet
+	case "enum":
+		return schema.KindEnum
+	default:
+		return schema.KindString
 	}
 }
 

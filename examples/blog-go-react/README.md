@@ -24,6 +24,8 @@ Available pages:
 `make gen` writes:
 
 - `examples/blog-go-react/.flop/spec.json`
+- `examples/blog-go-react/app/flop.models.gen.go`
+- `examples/blog-go-react/app/flop.tables.gen.go`
 - `examples/blog-go-react/web/src/generated/flop.gen.ts`
 - `examples/blog-go-react/web/src/generated/flop.valibot.gen.ts`
 - `examples/blog-go-react/web/src/generated/routes.gen.ts`
