@@ -33,13 +33,72 @@ const PORT = Number(
 const DB_PATH = `${import.meta.dirname}/data/finance.db`;
 const DB_URL = `file:${DB_PATH}`;
 const JWT_SECRET = "turso-bench-secret";
+const WRITE_TX_RETRIES = 6;
+const WRITE_RETRY_BASE_MS = 15;
 
 await Deno.mkdir(`${import.meta.dirname}/data`, { recursive: true });
 
 const db = createClient({ url: DB_URL });
+const writeDb = createClient({ url: DB_URL });
+let writeLane: Promise<void> = Promise.resolve();
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function writeBackoffMs(attempt: number): number {
+  const exp = Math.min(6, Math.max(0, attempt - 1));
+  const jitter = Math.floor(Math.random() * WRITE_RETRY_BASE_MS);
+  return WRITE_RETRY_BASE_MS * (2 ** exp) + jitter;
+}
+
+function isRetryableWriteError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err))
+    .toLowerCase();
+  return message.includes("sqlite_busy") ||
+    message.includes("database is locked") ||
+    message.includes("cannot start a transaction within a transaction") ||
+    message.includes("busy");
+}
+
+async function withWriteLane<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = writeLane;
+  let release: () => void = () => {};
+  writeLane = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+async function withWriteRetries<T>(fn: () => Promise<T>): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= WRITE_TX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableWriteError(err) || attempt >= WRITE_TX_RETRIES) break;
+      await sleep(writeBackoffMs(attempt));
+    }
+  }
+  throw lastErr ?? new Error("write failed");
+}
 
 async function run(sql: string, args: SQLArg[] = []): Promise<void> {
   await db.execute({ sql, args });
+}
+
+async function runWrite(sql: string, args: SQLArg[] = []): Promise<void> {
+  await withWriteRetries(async () => {
+    await withWriteLane(async () => {
+      await writeDb.execute({ sql, args });
+    });
+  });
 }
 
 async function one<T>(sql: string, args: SQLArg[] = []): Promise<T | null> {
@@ -75,30 +134,24 @@ function makeQueryCtx(client: ReturnType<typeof createClient>): QueryCtx {
 }
 
 async function withTx<T>(fn: (q: QueryCtx) => Promise<T>): Promise<T> {
-  // Use a dedicated client per transaction to avoid overlapping BEGIN/COMMIT
-  // on a shared connection under concurrent benchmark load.
-  const txDb = createClient({ url: DB_URL });
-  const tx = makeQueryCtx(txDb);
-  await tx.run("PRAGMA busy_timeout = 5000");
-  await tx.run("BEGIN IMMEDIATE");
-  try {
-    const out = await fn(tx);
-    await tx.run("COMMIT");
-    return out;
-  } catch (err) {
-    try {
-      await tx.run("ROLLBACK");
-    } catch {
-      // ignore rollback failure
-    }
-    throw err;
-  } finally {
-    try {
-      (txDb as { close?: () => void }).close?.();
-    } catch {
-      // ignore close failure
-    }
-  }
+  return await withWriteRetries(async () => {
+    return await withWriteLane(async () => {
+      const tx = makeQueryCtx(writeDb);
+      await tx.run("BEGIN IMMEDIATE");
+      try {
+        const out = await fn(tx);
+        await tx.run("COMMIT");
+        return out;
+      } catch (err) {
+        try {
+          await tx.run("ROLLBACK");
+        } catch {
+          // ignore rollback failure
+        }
+        throw err;
+      }
+    });
+  });
 }
 
 function asNumber(value: unknown): number {
@@ -194,6 +247,10 @@ await run("PRAGMA journal_mode = WAL");
 await run("PRAGMA synchronous = NORMAL");
 await run("PRAGMA cache_size = -64000");
 await run("PRAGMA busy_timeout = 5000");
+await runWrite("PRAGMA journal_mode = WAL");
+await runWrite("PRAGMA synchronous = NORMAL");
+await runWrite("PRAGMA cache_size = -64000");
+await runWrite("PRAGMA busy_timeout = 5000");
 
 await run(`
   CREATE TABLE IF NOT EXISTS users (
@@ -305,7 +362,7 @@ async function createAccount(
   currency: string,
 ) {
   const id = genId();
-  await run(
+  await runWrite(
     "INSERT INTO accounts (id, owner_id, name, type, balance, currency) VALUES (?, ?, ?, ?, ?, ?)",
     [id, userId, name, type, 0, currency || "USD"],
   );
@@ -485,7 +542,7 @@ async function handler(req: Request): Promise<Response> {
 
       const id = genId();
       const hash = hashPassword(password);
-      await run(
+      await runWrite(
         "INSERT INTO users (id, email, password, name, roles) VALUES (?, ?, ?, ?, ?)",
         [id, email, hash, name, "[]"],
       );
@@ -685,6 +742,11 @@ console.log(`\n[Turso Benchmark] http://localhost:${PORT} (${DB_URL})`);
 const shutdown = () => {
   try {
     (db as { close?: () => void }).close?.();
+  } catch {
+    // ignore
+  }
+  try {
+    (writeDb as { close?: () => void }).close?.();
   } catch {
     // ignore
   }
