@@ -661,12 +661,11 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 		}
 		email, _ := body["email"].(string)
 		password, _ := body["password"].(string)
-		name, _ := body["name"].(string)
 		if email == "" || password == "" {
 			jsonError(w, "Email and password required", 400)
 			return
 		}
-		_, _, err := h.authService.RegisterSuperadmin(email, password, name)
+		_, _, err := h.authService.RegisterSuperadmin(email, password, nil)
 		if err != nil {
 			jsonError(w, err.Error(), 400)
 			return

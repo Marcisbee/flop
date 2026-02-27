@@ -29,3 +29,5 @@ benchmarks/finance-turso-go/finance-turso-go
 /benchmarks/.tools
 /examples/movies-go-react/data
 /go/.quickbench
+/examples/twitter-go-react/data
+/examples/twitter-go-react/node_modules

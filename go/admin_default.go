@@ -51,7 +51,21 @@ type AdminAuthProvider interface {
 type AdminSetupProvider interface {
 	AdminAuthProvider
 	AdminHasSuperadmin() bool
-	AdminRegisterSuperadmin(email, password, name string) error
+	AdminRegisterSuperadmin(email, password string, extraFields map[string]any) error
+}
+
+// SetupField describes an extra field required by the auth table during setup.
+type SetupField struct {
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	Required   bool     `json:"required"`
+	EnumValues []string `json:"enumValues,omitempty"`
+}
+
+// AdminSetupSchemaProvider exposes the auth table's extra required fields
+// so the setup form can render them dynamically.
+type AdminSetupSchemaProvider interface {
+	AdminSetupExtraFields() []SetupField
 }
 
 // AdminSSEProvider enables server-sent events for real-time admin updates.
@@ -209,6 +223,26 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			return
 		}
 
+		// Setup schema API — returns extra required fields for the setup form
+		if path == "/_/api/setup-schema" && r.Method == http.MethodGet {
+			setupMu.Lock()
+			tok := cfg.SetupToken
+			setupMu.Unlock()
+			if !setupCapable || tok == "" {
+				adminJSONError(w, "setup not available", http.StatusBadRequest)
+				return
+			}
+			var fields []SetupField
+			if sp, ok := provider.(AdminSetupSchemaProvider); ok {
+				fields = sp.AdminSetupExtraFields()
+			}
+			if fields == nil {
+				fields = []SetupField{}
+			}
+			adminJSONResp(w, http.StatusOK, map[string]any{"fields": fields})
+			return
+		}
+
 		// Setup API
 		if path == "/_/api/setup" && r.Method == http.MethodPost {
 			setupMu.Lock()
@@ -218,17 +252,15 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				adminJSONError(w, "setup not available", http.StatusBadRequest)
 				return
 			}
-			var body struct {
-				Token    string `json:"token"`
-				Email    string `json:"email"`
-				Password string `json:"password"`
-				Name     string `json:"name"`
-			}
+			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				adminJSONError(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			if body.Token != tok {
+			bodyToken, _ := body["token"].(string)
+			email, _ := body["email"].(string)
+			password, _ := body["password"].(string)
+			if bodyToken != tok {
 				adminJSONError(w, "invalid setup token", http.StatusForbidden)
 				return
 			}
@@ -239,11 +271,21 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				adminJSONError(w, "superadmin already exists", http.StatusBadRequest)
 				return
 			}
-			if body.Email == "" || body.Password == "" {
+			if email == "" || password == "" {
 				adminJSONError(w, "email and password required", http.StatusBadRequest)
 				return
 			}
-			if err := setupProvider.AdminRegisterSuperadmin(body.Email, body.Password, body.Name); err != nil {
+			// Collect extra fields (everything except the standard ones)
+			extraFields := make(map[string]any)
+			for k, v := range body {
+				switch k {
+				case "token", "email", "password":
+					continue
+				default:
+					extraFields[k] = v
+				}
+			}
+			if err := setupProvider.AdminRegisterSuperadmin(email, password, extraFields); err != nil {
 				adminJSONError(w, err.Error(), http.StatusBadRequest)
 				return
 			}

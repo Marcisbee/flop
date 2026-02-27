@@ -77,6 +77,7 @@ type CompiledField struct {
 	MimeTypes        []string
 	EnumValues       []string
 	VectorDimensions int
+	Cached           bool // engine-managed computed field
 }
 
 // CompiledSchema is the in-memory representation of a table schema.

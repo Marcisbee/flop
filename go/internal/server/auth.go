@@ -280,7 +280,8 @@ func (as *AuthService) HasSuperadmin() bool {
 }
 
 // RegisterSuperadmin creates a superadmin account.
-func (as *AuthService) RegisterSuperadmin(email, password, name string) (string, *schema.AuthContext, error) {
+// extraFields are merged into the insert data for app-specific required fields.
+func (as *AuthService) RegisterSuperadmin(email, password string, extraFields map[string]interface{}) (string, *schema.AuthContext, error) {
 	existing := as.findByEmail(email)
 	if existing != nil {
 		return "", nil, fmt.Errorf("email already registered")
@@ -291,18 +292,23 @@ func (as *AuthService) RegisterSuperadmin(email, password, name string) (string,
 		return "", nil, err
 	}
 
-	row, err := as.authTable.Insert(map[string]interface{}{
+	data := map[string]interface{}{
 		"email":    email,
 		"password": hashedPassword,
-		"name":     name,
 		"roles":    []interface{}{"superadmin"},
 		"verified": true,
-	}, nil)
+	}
+	for k, v := range extraFields {
+		data[k] = v
+	}
+
+	row, err := as.authTable.Insert(data, nil)
 	if err != nil {
 		return "", nil, err
 	}
 
 	pk := as.getPK(row)
+	name := toString(row["name"])
 	roles := toStringSlice(row["roles"])
 	tok := as.issueToken(pk, email, name, roles)
 	return tok, &schema.AuthContext{ID: pk, Email: email, Roles: roles}, nil
@@ -316,6 +322,12 @@ func (as *AuthService) SetRoles(userID string, roles []string) error {
 	}
 	_, err := as.authTable.Update(userID, map[string]interface{}{"roles": iRoles}, nil)
 	return err
+}
+
+// AuthSchemaFields returns the compiled fields for the auth table.
+func (as *AuthService) AuthSchemaFields() []schema.CompiledField {
+	def := as.authTable.GetDef()
+	return def.CompiledSchema.Fields
 }
 
 func (as *AuthService) findByEmail(email string) map[string]interface{} {

@@ -62,7 +62,72 @@ func (a *App) Open() (*Database, error) {
 		d.authService = server.NewAuthService(authTable, secret)
 	}
 
+	// Wire up cached field triggers
+	a.wireCachedFields(d)
+
 	return d, nil
+}
+
+// wireCachedFields registers PubSub subscribers for cached field triggers
+// and hydrates initial cached values for all existing rows.
+func (a *App) wireCachedFields(d *Database) {
+	type trigger struct {
+		targetTable string
+		fieldName   string
+		sourceTable string
+		foreignKey  string
+		compute     func(Row, *Database) any
+	}
+
+	var triggers []trigger
+	for name, ts := range a.tables {
+		for _, cd := range ts.CachedDefs {
+			for _, t := range cd.Triggers {
+				triggers = append(triggers, trigger{
+					targetTable: name,
+					fieldName:   cd.FieldName,
+					sourceTable: t.SourceTable,
+					foreignKey:  t.ForeignKey,
+					compute:     cd.Compute,
+				})
+			}
+		}
+	}
+
+	if len(triggers) == 0 {
+		return
+	}
+
+	// Register PubSub subscribers for each trigger
+	for _, trig := range triggers {
+		trig := trig // capture for closure
+		d.db.GetPubSub().Subscribe([]string{trig.sourceTable}, func(event engine.ChangeEvent) {
+			if event.Data == nil {
+				return
+			}
+			fkValue := toString(event.Data[trig.foreignKey])
+			if fkValue == "" {
+				return
+			}
+			targetTI := d.db.GetTable(trig.targetTable)
+			if targetTI == nil {
+				return
+			}
+			targetRow, err := targetTI.Get(fkValue)
+			if err != nil || targetRow == nil {
+				return
+			}
+			pkField := targetTI.GetDef().CompiledSchema.Fields[0].Name
+			pk := toString(targetRow[pkField])
+			if pk == "" {
+				return
+			}
+			row := Row{data: targetRow, pk: pk}
+			newVal := trig.compute(row, d)
+			targetTI.UpdateSilent(pk, map[string]interface{}{trig.fieldName: newVal})
+		})
+	}
+
 }
 
 // SetJWTSecret sets the JWT secret used for auth tokens.
@@ -170,6 +235,25 @@ func (ti *TableInstance) FindByUniqueIndex(field string, value any) (map[string]
 	return row, true
 }
 
+// CountByIndex returns the number of rows matching a non-unique index value.
+func (ti *TableInstance) CountByIndex(field string, value any) int {
+	return len(ti.ti.FindAllByIndex([]string{field}, value))
+}
+
+// FindByIndex returns all rows matching a non-unique index value.
+func (ti *TableInstance) FindByIndex(field string, value any) ([]map[string]any, error) {
+	ptrs := ti.ti.FindAllByIndex([]string{field}, value)
+	rows := make([]map[string]any, 0, len(ptrs))
+	for _, ptr := range ptrs {
+		row, err := ti.ti.GetByPointer(ptr)
+		if err != nil || row == nil {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
 // SearchFullText searches a configured full-text index on the selected fields.
 func (ti *TableInstance) SearchFullText(fields []string, query string, limit int) ([]map[string]any, error) {
 	return ti.ti.SearchFullText(fields, query, limit)
@@ -242,6 +326,7 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 				RefTableName:     fs.RefTable,
 				RefField:         fs.RefField,
 				MimeTypes:        append([]string(nil), fs.MimeTypes...),
+				Cached:           fs.Cached,
 			}
 			fieldByJSON[fs.JSONName] = fs
 
@@ -377,6 +462,9 @@ func marshalOrderedSchema(cs *schema.CompiledSchema) (json.RawMessage, error) {
 			"type":     string(f.Kind),
 			"required": f.Required,
 			"unique":   f.Unique,
+		}
+		if f.Cached {
+			entry["cached"] = true
 		}
 		if f.RefTableName != "" {
 			entry["refTable"] = f.RefTableName
@@ -523,12 +611,54 @@ func (p *EngineAdminProvider) AdminHasSuperadmin() bool {
 	return p.DB.authService.HasSuperadmin()
 }
 
-func (p *EngineAdminProvider) AdminRegisterSuperadmin(email, password, name string) error {
+func (p *EngineAdminProvider) AdminRegisterSuperadmin(email, password string, extraFields map[string]any) error {
 	if p.DB.authService == nil {
 		return fmt.Errorf("auth not configured")
 	}
-	_, _, err := p.DB.authService.RegisterSuperadmin(email, password, name)
+	extra := make(map[string]interface{}, len(extraFields))
+	for k, v := range extraFields {
+		extra[k] = v
+	}
+	_, _, err := p.DB.authService.RegisterSuperadmin(email, password, extra)
 	return err
+}
+
+func (p *EngineAdminProvider) AdminSetupExtraFields() []SetupField {
+	authTable := p.DB.db.GetAuthTable()
+	if authTable == nil {
+		return nil
+	}
+	def := authTable.GetDef()
+	// Fields already handled by the standard setup form
+	skip := map[string]bool{
+		"email": true, "password": true,
+		"roles": true, "verified": true,
+	}
+	var fields []SetupField
+	for _, f := range def.CompiledSchema.Fields {
+		if skip[f.Name] {
+			continue
+		}
+		// Skip auto-generated fields (primary key, timestamps with defaults)
+		if f.AutoGenPattern != "" {
+			continue
+		}
+		// Skip bcrypt fields (password is already handled)
+		if f.Kind == schema.KindBcrypt {
+			continue
+		}
+		// Skip non-required fields — the form only needs to show required ones
+		if !f.Required {
+			continue
+		}
+		fields = append(fields, SetupField{
+			Name:       f.Name,
+			Type:       string(f.Kind),
+			Required:   f.Required,
+			EnumValues: f.EnumValues,
+		})
+	}
+	return fields
 }
 
 func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {

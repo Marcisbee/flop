@@ -23,6 +23,27 @@ type Config struct {
 	AsyncSecondaryIndexes bool   `json:"asyncSecondaryIndexes,omitempty"`
 }
 
+// CachedTypeHint identifies the storage type for a cached field.
+type CachedTypeHint int
+
+const (
+	Int    CachedTypeHint = iota // maps to KindInteger
+	Number                       // maps to KindNumber
+	Str                          // maps to KindString
+)
+
+// Row provides read-only access to a row during cached field computation.
+type Row struct {
+	data map[string]any
+	pk   string
+}
+
+// ID returns the primary key of the row.
+func (r Row) ID() string { return r.pk }
+
+// Get returns the value of a field.
+func (r Row) Get(field string) any { return r.data[field] }
+
 // App is the top-level runtime registry.
 // In this phase, it stores typed metadata used for generation and future runtime wiring.
 type App struct {
@@ -228,6 +249,11 @@ type FileSingleFieldRules struct{ spec *fieldSpec }
 type FileMultiFieldRules struct{ spec *fieldSpec }
 type SetFieldRules struct{ spec *fieldSpec }
 type VectorFieldRules struct{ spec *fieldSpec }
+type CachedFieldRules struct {
+	spec     *fieldSpec
+	ts       *tableSpec
+	triggers []cachedTriggerDef
+}
 
 // Define creates a schema-first table with typed field builders.
 func Define(app *App, name string, configure func(*SchemaBuilder)) *Table[map[string]any] {
@@ -347,6 +373,32 @@ func (sb *SchemaBuilder) Vector(name string, dimensions int) *VectorFieldRules {
 	return &VectorFieldRules{spec: fs}
 }
 
+// Cached creates an engine-managed computed field.
+// The value is automatically recomputed when a source table changes.
+func (sb *SchemaBuilder) Cached(name string, hint CachedTypeHint) *CachedFieldRules {
+	var kind, tsType string
+	var def any
+	switch hint {
+	case Number:
+		kind = "number"
+		tsType = "number"
+		def = float64(0)
+	case Str:
+		kind = "string"
+		tsType = "string"
+		def = ""
+	default: // Int
+		kind = "integer"
+		tsType = "number"
+		def = float64(0)
+	}
+	fs := sb.field(name, kind, tsType)
+	fs.Cached = true
+	fs.Required = false
+	fs.Default = def
+	return &CachedFieldRules{spec: fs, ts: sb.table}
+}
+
 func (sb *SchemaBuilder) field(name, kind, tsType string) *fieldSpec {
 	if sb == nil || sb.table == nil {
 		panic("flop: invalid schema builder")
@@ -453,6 +505,27 @@ func (b *VectorFieldRules) Required() *VectorFieldRules     { b.spec.Required = 
 func (b *VectorFieldRules) Default(v any) *VectorFieldRules { b.spec.Default = v; return b }
 func (b *VectorFieldRules) Index() *VectorFieldRules        { b.spec.Indexed = true; return b }
 func (b *VectorFieldRules) Virtual() *VectorFieldRules      { b.spec.Virtual = true; return b }
+
+// OnChange registers a source table trigger for this cached field.
+// When a row in sourceTable is inserted/updated/deleted, the foreignKey
+// field on that row identifies the target row to recompute.
+func (c *CachedFieldRules) OnChange(sourceTable, foreignKey string) *CachedFieldRules {
+	c.triggers = append(c.triggers, cachedTriggerDef{
+		SourceTable: sourceTable,
+		ForeignKey:  foreignKey,
+	})
+	return c
+}
+
+// Compute sets the function that calculates the cached value.
+func (c *CachedFieldRules) Compute(fn func(row Row, db *Database) any) *CachedFieldRules {
+	c.ts.CachedDefs = append(c.ts.CachedDefs, cachedFieldRuntime{
+		FieldName: c.spec.JSONName,
+		Triggers:  append([]cachedTriggerDef(nil), c.triggers...),
+		Compute:   fn,
+	})
+	return c
+}
 
 func tsEnumType(values []string) string {
 	if len(values) == 0 {
@@ -779,6 +852,7 @@ type FieldSpec struct {
 	Indexed       bool     `json:"indexed,omitempty"`
 	FullText      bool     `json:"fullText,omitempty"`
 	Virtual       bool     `json:"virtual,omitempty"`
+	Cached        bool     `json:"cached,omitempty"`
 	Default       any      `json:"default,omitempty"`
 	Autogen       string   `json:"autogen,omitempty"`
 	BcryptRounds  int      `json:"bcryptRounds,omitempty"`
@@ -896,10 +970,24 @@ func (a *App) WriteSpec(path string) error {
 }
 
 type tableSpec struct {
-	Name    string
-	RowType string
-	RowTS   string
-	Fields  map[string]*fieldSpec
+	Name       string
+	RowType    string
+	RowTS      string
+	Fields     map[string]*fieldSpec
+	CachedDefs []cachedFieldRuntime
+}
+
+// cachedFieldRuntime stores the compute function + triggers for a cached field.
+type cachedFieldRuntime struct {
+	FieldName string
+	Triggers  []cachedTriggerDef
+	Compute   func(row Row, db *Database) any
+}
+
+// cachedTriggerDef identifies a source table + foreign key that triggers recomputation.
+type cachedTriggerDef struct {
+	SourceTable string
+	ForeignKey  string
 }
 
 func (ts *tableSpec) findOrCreateField(name string) *fieldSpec {
@@ -956,6 +1044,7 @@ type fieldSpec struct {
 	Indexed          bool
 	FullText         bool
 	Virtual          bool
+	Cached           bool
 	Default          any
 	Autogen          string
 	BcryptRounds     int
@@ -987,6 +1076,7 @@ func (fs *fieldSpec) toPublic() FieldSpec {
 		Indexed:       fs.Indexed,
 		FullText:      fs.FullText,
 		Virtual:       fs.Virtual,
+		Cached:        fs.Cached,
 		Default:       fs.Default,
 		Autogen:       fs.Autogen,
 		BcryptRounds:  fs.BcryptRounds,

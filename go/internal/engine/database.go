@@ -676,6 +676,13 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 
 	row := copyRow(data)
 
+	// Strip cached fields — engine manages these values
+	for _, field := range ti.def.CompiledSchema.Fields {
+		if field.Cached {
+			delete(row, field.Name)
+		}
+	}
+
 	// Apply autogenerate, defaults, and validation
 	for _, field := range ti.def.CompiledSchema.Fields {
 		val := row[field.Name]
@@ -890,10 +897,19 @@ func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 	return row, nil
 }
 
-// Update modifies an existing row.
 // Update modifies an existing row. If txBuf is non-nil, WAL records are buffered
 // into it for batch commit later (transaction mode). Otherwise commits immediately.
 func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry) (map[string]interface{}, error) {
+	return ti.update(key, updates, txBuf, false)
+}
+
+// UpdateSilent modifies an existing row without publishing a PubSub event.
+// Used by the cached field system to avoid cascading recomputation.
+func (ti *TableInstance) UpdateSilent(key string, updates map[string]interface{}) (map[string]interface{}, error) {
+	return ti.update(key, updates, nil, true)
+}
+
+func (ti *TableInstance) update(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry, silent bool) (map[string]interface{}, error) {
 	// Fast path: allow concurrent in-place updates on different rows/pages.
 	// Complex updates that require row relocation fall back to the locked path.
 	ti.mu.RLock()
@@ -969,7 +985,7 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 		rowLock.Unlock()
 		ti.mu.RUnlock()
 		locked = false
-		return ti.updateSlowLocked(key, updates, txBuf)
+		return ti.updateSlowLocked(key, updates, txBuf, silent)
 	}
 
 	if !page.UpdateRow(int(pointer.SlotIndex), serialized) {
@@ -977,7 +993,7 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 		rowLock.Unlock()
 		ti.mu.RUnlock()
 		locked = false
-		return ti.updateSlowLocked(key, updates, txBuf)
+		return ti.updateSlowLocked(key, updates, txBuf, silent)
 	}
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	pageLock.Unlock()
@@ -1006,19 +1022,21 @@ func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBu
 	rowLock.Unlock()
 	ti.mu.RUnlock()
 	locked = false
-	ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow})
+	if !silent {
+		ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow})
+	}
 
 	return newRow, nil
 }
 
 // updateSlowLocked performs the original update flow under the table write lock.
 // Used as a fallback when an in-place concurrent update cannot be applied.
-func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry) (map[string]interface{}, error) {
+func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry, silent bool) (map[string]interface{}, error) {
 	ti.mu.Lock()
 	var change *ChangeEvent
 	defer func() {
 		ti.mu.Unlock()
-		if change != nil {
+		if change != nil && !silent {
 			ti.pubsub.Publish(*change)
 		}
 	}()

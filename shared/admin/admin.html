@@ -316,7 +316,7 @@ function isAutoField(schema, col) {
 }
 function isReadOnly(schema, col) {
   if (!schema || !schema[col]) return false;
-  return schema[col].type === 'bcrypt';
+  return schema[col].type === 'bcrypt' || schema[col].cached === true;
 }
 function truncate(s, n = 60) {
   if (s == null) return '';
@@ -576,8 +576,9 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     const pendingFiles = {};
     for (const col of Object.keys(schema)) {
       if (isAutoField(schema, col)) continue;
-      const val = formRef.current[col];
       const f = schema[col];
+      if (f && f.cached) continue;
+      const val = formRef.current[col];
       // Collect file fields separately
       if ((f.type === 'fileSingle' || f.type === 'fileMulti') && val instanceof File) {
         pendingFiles[col] = val;
@@ -640,7 +641,7 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
             <tr>
               ${cols.map(c => {
                 const f = schema ? schema[c] : null;
-                const typeStr = f ? f.type + (f.refTable ? ' -> ' + f.refTable : '') : '';
+                const typeStr = f ? f.type + (f.refTable ? ' -> ' + f.refTable : '') + (f.cached ? ' (cached)' : '') : '';
                 return html`<th key=${c}>
                   <span class="th-name">${c}</span>
                   ${typeStr && html`<span class="th-type">${typeStr}</span>`}
@@ -719,7 +720,7 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
 }
 
 function CreateForm({ schema, cols, formRef, onSubmit, onCancel, error }) {
-  const fields = cols.filter(c => !isAutoField(schema, c));
+  const fields = cols.filter(c => !isAutoField(schema, c) && !(schema[c] && schema[c].cached));
   return html`
     <div class="create-panel">
       <div class="create-header">
