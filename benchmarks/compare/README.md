@@ -9,6 +9,8 @@ Compare these engines with identical benchmark scenarios:
 - `turso-ts` (`benchmarks/finance-turso/app.ts`)
 - `pglite-ts` (`benchmarks/finance-pglite/app.ts`)
 - `turso-go` (`benchmarks/finance-turso-go`, SQLite-compatible Go baseline)
+- `mongodb-ts` (`benchmarks/finance-mongodb/app.ts`)
+- `mongodb-go` (`benchmarks/finance-mongodb-go`)
 
 ## Run Benchmarks
 
@@ -24,11 +26,27 @@ Reset benchmark artifacts:
 deno task bench:clean
 ```
 
+Also clears Mongo benchmark local data dirs: `benchmarks/finance-mongodb/data`
+and `benchmarks/finance-mongodb-go/data`.
+
 If `sqlite-go` is included and dependencies are missing, bootstrap once:
 
 ```bash
 cd go && go get modernc.org/sqlite@v1.39.1 && go mod tidy
 ```
+
+If MongoDB engines are included, make sure `mongod` is installed and available
+in your `PATH` (or pass `--mongod-bin` via engine app flags when running those
+apps directly).
+
+Quick local binary (downloaded into gitignored repo path):
+
+```bash
+./benchmarks/finance-mongodb/download-mongod.sh
+```
+
+After that, benchmarks auto-detect `benchmarks/.tools/mongodb/mongod`. Set
+`MONGOD_BIN` only if you want to override that path.
 
 Optional filters:
 
@@ -42,7 +60,7 @@ deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmar
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --repeats=3 --min-repeats=2 --early-stop-rse=0.05 --warmup-sec=3 --shuffle-engines=1 --strict-setup=1 --setup-retries=8
 
 # only specific engines
-deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --engines=flop-ts,flop-go,turso-ts,pglite-ts,turso-go
+deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --engines=flop-ts,flop-go,turso-ts,pglite-ts,turso-go,mongodb-ts,mongodb-go
 
 # only specific scenarios
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --scenarios=high-load-rw,reads,writes,edits

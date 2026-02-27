@@ -7,6 +7,8 @@
  * - turso-ts
  * - pglite-ts
  * - turso-go
+ * - mongodb-ts
+ * - mongodb-go
  *
  * Scenarios are workload-only:
  * - high-load-rw
@@ -24,7 +26,9 @@ type EngineID =
   | "sqlite-go"
   | "turso-ts"
   | "pglite-ts"
-  | "turso-go";
+  | "turso-go"
+  | "mongodb-ts"
+  | "mongodb-go";
 type BenchmarkProfile = "smoke" | "quick" | "full";
 type EngineSet = "core" | "all";
 type ScenarioKind = "reads" | "writes" | "edits" | "mixed";
@@ -313,6 +317,8 @@ const ENGINE_ORDER: EngineID[] = [
   "turso-ts",
   "pglite-ts",
   "turso-go",
+  "mongodb-ts",
+  "mongodb-go",
 ];
 const ENGINE_BASE_PORT: Record<EngineID, number> = {
   "flop-ts": 41085,
@@ -322,6 +328,8 @@ const ENGINE_BASE_PORT: Record<EngineID, number> = {
   "turso-ts": 41089,
   "pglite-ts": 41090,
   "turso-go": 41091,
+  "mongodb-ts": 41092,
+  "mongodb-go": 41093,
 };
 const ENGINES_BY_SET: Record<EngineSet, EngineID[]> = {
   core: ["flop-ts", "flop-go", "sqlite-ts", "sqlite-go"],
@@ -538,6 +546,12 @@ async function prepareData(
     await Deno.mkdir(dir, { recursive: true });
     return null;
   }
+  if (engine === "mongodb-ts") {
+    const dir = `${ROOT}/benchmarks/finance-mongodb/data`;
+    await safeRemove(dir);
+    await Deno.mkdir(dir, { recursive: true });
+    return null;
+  }
   if (engine === "flop-go") {
     const dir =
       `${ROOT}/benchmarks/compare/results/tmp/${runId}/${scenario}/flop-go`;
@@ -551,6 +565,12 @@ async function prepareData(
     await safeRemove(dir);
     await Deno.mkdir(dir, { recursive: true });
     return `${dir}/finance.db`;
+  }
+  if (engine === "mongodb-go") {
+    const dir = `${ROOT}/benchmarks/finance-mongodb-go/data`;
+    await safeRemove(dir);
+    await Deno.mkdir(dir, { recursive: true });
+    return dir;
   }
   const dir =
     `${ROOT}/benchmarks/compare/results/tmp/${runId}/${scenario}/turso-go`;
@@ -621,6 +641,19 @@ function commandFor(
     };
   }
 
+  if (engine === "mongodb-ts") {
+    return {
+      cmd: "deno",
+      args: [
+        "run",
+        "--allow-all",
+        "benchmarks/finance-mongodb/app.ts",
+        `--port=${port}`,
+      ],
+      cwd: ROOT,
+    };
+  }
+
   if (engine === "flop-go") {
     const bin = goBins["flop-go"];
     if (!bin) throw new Error("missing built binary for flop-go");
@@ -637,6 +670,19 @@ function commandFor(
     return {
       cmd: bin,
       args: [`--port=${port}`, ...(dataPath ? [`--data=${dataPath}`] : [])],
+      cwd: `${ROOT}/go`,
+    };
+  }
+
+  if (engine === "mongodb-go") {
+    const bin = goBins["mongodb-go"];
+    if (!bin) throw new Error("missing built binary for mongodb-go");
+    return {
+      cmd: bin,
+      args: [
+        `--port=${port}`,
+        ...(dataPath ? [`--mongo-dir=${dataPath}`] : []),
+      ],
       cwd: `${ROOT}/go`,
     };
   }
@@ -1033,7 +1079,8 @@ async function buildGoBinaries(
   const needFlopGo = engines.includes("flop-go");
   const needSQLiteGo = engines.includes("sqlite-go");
   const needTursoGo = engines.includes("turso-go");
-  if (!needFlopGo && !needSQLiteGo && !needTursoGo) return out;
+  const needMongoGo = engines.includes("mongodb-go");
+  if (!needFlopGo && !needSQLiteGo && !needTursoGo && !needMongoGo) return out;
 
   const binDir = `${RESULTS_DIR}/tmp/${runId}/bin`;
   await Deno.mkdir(binDir, { recursive: true });
@@ -1085,6 +1132,19 @@ async function buildGoBinaries(
     }).output();
     if (!build.success) throw new Error("failed to build turso-go binary");
     out["turso-go"] = binPath;
+  }
+
+  if (needMongoGo) {
+    const binPath = `${binDir}/mongo-finance`;
+    const build = await new Deno.Command("go", {
+      cwd: `${ROOT}/benchmarks/finance-mongodb-go`,
+      args: ["build", "-o", binPath, "."],
+      env: { GOCACHE: "/tmp/go-build-cache" },
+      stdout: "inherit",
+      stderr: "inherit",
+    }).output();
+    if (!build.success) throw new Error("failed to build mongodb-go binary");
+    out["mongodb-go"] = binPath;
   }
 
   return out;

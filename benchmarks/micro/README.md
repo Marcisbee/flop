@@ -12,6 +12,8 @@ Default engines:
 - `turso-ts`
 - `pglite-ts`
 - `turso-go`
+- `mongodb-ts`
+- `mongodb-go`
 
 Run:
 

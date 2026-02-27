@@ -9,6 +9,10 @@ const TARGETS = [
   "runs",
   "tmp",
 ] as const;
+const EXTRA_DATA_DIRS = [
+  resolve(ROOT, "benchmarks", "finance-mongodb", "data"),
+  resolve(ROOT, "benchmarks", "finance-mongodb-go", "data"),
+] as const;
 
 async function safeRemove(path: string) {
   try {
@@ -23,6 +27,9 @@ async function safeRemove(path: string) {
 async function main() {
   for (const target of TARGETS) {
     await safeRemove(resolve(RESULTS_DIR, target));
+  }
+  for (const dir of EXTRA_DATA_DIRS) {
+    await safeRemove(dir);
   }
 
   await Deno.mkdir(resolve(RESULTS_DIR, "runs"), { recursive: true });

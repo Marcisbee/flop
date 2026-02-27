@@ -17,7 +17,9 @@ type EngineID =
   | "sqlite-go"
   | "turso-ts"
   | "pglite-ts"
-  | "turso-go";
+  | "turso-go"
+  | "mongodb-ts"
+  | "mongodb-go";
 
 type ScenarioName = "high-load-rw" | "reads" | "writes" | "edits";
 
@@ -105,6 +107,8 @@ const ENGINE_ORDER: EngineID[] = [
   "turso-ts",
   "pglite-ts",
   "turso-go",
+  "mongodb-ts",
+  "mongodb-go",
 ];
 const SCENARIO_ORDER: ScenarioName[] = [
   "high-load-rw",
