@@ -49,13 +49,13 @@ func BuildWithDataDir(dataDir string) *flop.App {
 	flop.Define(application, "movies", func(s *flop.SchemaBuilder) {
 		s.String("id").Primary().Autogen(`[a-z0-9]{12}`)
 		s.String("slug").Required().Unique()
-		s.String("title").Required().FullText()
-		s.Integer("year").Required().Index()
+		s.String("title").Required()
+		s.Integer("year").Required()
 		s.Integer("runtimeMinutes")
 		s.Number("rating")
 		s.Integer("votes")
 		s.Set("genres")
-		s.String("overview").FullText()
+		s.String("overview")
 		s.Timestamp("createdAt").DefaultNow()
 	})
 

@@ -99,6 +99,12 @@ func (ti *TableInstance) Insert(data map[string]any) (map[string]any, error) {
 	return ti.ti.Insert(data, nil)
 }
 
+// InsertMany inserts rows in buffered batches for higher import throughput.
+// Returns the number of inserted rows.
+func (ti *TableInstance) InsertMany(rows []map[string]any, flushEvery int) (int, error) {
+	return ti.ti.BulkInsert(rows, flushEvery)
+}
+
 // Get retrieves a row by primary key.
 func (ti *TableInstance) Get(pk string) (map[string]any, error) {
 	return ti.ti.Get(pk)

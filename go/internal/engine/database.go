@@ -768,6 +768,48 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	return row, nil
 }
 
+// BulkInsert inserts many rows using buffered WAL flushes for higher throughput.
+// Returns how many rows were successfully inserted.
+func (ti *TableInstance) BulkInsert(rows []map[string]interface{}, flushEvery int) (int, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	if flushEvery <= 0 {
+		flushEvery = 2000
+	}
+
+	txBuf := make(map[string]*walBufEntry)
+	inserted := 0
+
+	flush := func() error {
+		if len(txBuf) == 0 {
+			return nil
+		}
+		if err := ti.db.EnqueueCommit(txBuf); err != nil {
+			return err
+		}
+		txBuf = make(map[string]*walBufEntry)
+		return nil
+	}
+
+	for _, row := range rows {
+		if _, err := ti.Insert(row, txBuf); err != nil {
+			return inserted, err
+		}
+		inserted++
+		if inserted%flushEvery == 0 {
+			if err := flush(); err != nil {
+				return inserted, err
+			}
+		}
+	}
+
+	if err := flush(); err != nil {
+		return inserted, err
+	}
+	return inserted, nil
+}
+
 // Get retrieves a row by primary key.
 func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 	pointer, ok := ti.primaryIndex.Get(key)

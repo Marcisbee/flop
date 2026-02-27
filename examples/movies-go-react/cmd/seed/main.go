@@ -1,8 +1,8 @@
 package main
 
 import (
+	"bufio"
 	"compress/gzip"
-	"encoding/csv"
 	"flag"
 	"fmt"
 	"io"
@@ -35,11 +35,13 @@ func main() {
 		limit      int
 		download   bool
 		timeoutSec int
+		batchSize  int
 	)
 	flag.BoolVar(&force, "force", false, "remove existing data directory before import")
 	flag.IntVar(&limit, "limit", 0, "optional max number of movie rows to import (0 = all)")
 	flag.BoolVar(&download, "download", true, "download IMDb files before import")
 	flag.IntVar(&timeoutSec, "timeout", 900, "http timeout in seconds for dataset downloads")
+	flag.IntVar(&batchSize, "batch", 2000, "number of rows per buffered write flush")
 	flag.Parse()
 
 	projectRoot, err := findModuleRoot()
@@ -99,7 +101,7 @@ func main() {
 	log.Printf("seed: loaded %d rating rows", len(ratings))
 
 	log.Printf("seed: importing movies from %s", basicsPath)
-	imported, err := importMovies(movies, basicsPath, ratings, limit)
+	imported, err := importMovies(movies, basicsPath, ratings, limit, batchSize)
 	if err != nil {
 		log.Fatalf("seed: import movies: %v", err)
 	}
@@ -164,16 +166,15 @@ func parseRatings(path string) (map[string]ratingInfo, error) {
 	}
 	defer gz.Close()
 
-	reader := csv.NewReader(gz)
-	reader.Comma = '\t'
-	reader.FieldsPerRecord = -1
-	reader.ReuseRecord = true
-	reader.LazyQuotes = true
-
-	header, err := reader.Read()
-	if err != nil {
-		return nil, err
+	scanner := bufio.NewScanner(gz)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("ratings file is empty")
 	}
+	header := strings.Split(strings.TrimRight(scanner.Text(), "\r"), "\t")
 
 	index := fieldIndexMap(header)
 	iTconst := index["tconst"]
@@ -184,14 +185,8 @@ func parseRatings(path string) (map[string]ratingInfo, error) {
 	}
 
 	out := make(map[string]ratingInfo, 1_000_000)
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
+	for scanner.Scan() {
+		record := strings.Split(strings.TrimRight(scanner.Text(), "\r"), "\t")
 
 		if iTconst >= len(record) {
 			continue
@@ -213,11 +208,14 @@ func parseRatings(path string) (map[string]ratingInfo, error) {
 
 		out[tconst] = ratingInfo{avg: avg, votes: votes}
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 
 	return out, nil
 }
 
-func importMovies(table *flop.TableInstance, basicsPath string, ratings map[string]ratingInfo, limit int) (int, error) {
+func importMovies(table *flop.TableInstance, basicsPath string, ratings map[string]ratingInfo, limit int, batchSize int) (int, error) {
 	file, err := os.Open(basicsPath)
 	if err != nil {
 		return 0, err
@@ -230,16 +228,15 @@ func importMovies(table *flop.TableInstance, basicsPath string, ratings map[stri
 	}
 	defer gz.Close()
 
-	reader := csv.NewReader(gz)
-	reader.Comma = '\t'
-	reader.FieldsPerRecord = -1
-	reader.ReuseRecord = true
-	reader.LazyQuotes = true
-
-	header, err := reader.Read()
-	if err != nil {
-		return 0, err
+	scanner := bufio.NewScanner(gz)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return 0, err
+		}
+		return 0, fmt.Errorf("basics file is empty")
 	}
+	header := strings.Split(strings.TrimRight(scanner.Text(), "\r"), "\t")
 
 	index := fieldIndexMap(header)
 	iTconst := index["tconst"]
@@ -255,15 +252,32 @@ func importMovies(table *flop.TableInstance, basicsPath string, ratings map[stri
 	imported := 0
 	seen := 0
 	started := time.Now()
+	nextLog := 5000
+	if batchSize <= 0 {
+		batchSize = 2000
+	}
+	batch := make([]map[string]any, 0, batchSize)
 
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
+	flushBatch := func() error {
+		if len(batch) == 0 {
+			return nil
 		}
+		n, err := table.InsertMany(batch, len(batch))
+		imported += n
+		batch = batch[:0]
 		if err != nil {
-			return imported, err
+			return err
 		}
+		for imported >= nextLog {
+			elapsed := time.Since(started)
+			log.Printf("seed: imported %d movies (seen %d rows, elapsed %s)", nextLog, seen, elapsed.Round(time.Second))
+			nextLog += 5000
+		}
+		return nil
+	}
+
+	for scanner.Scan() {
+		record := strings.Split(strings.TrimRight(scanner.Text(), "\r"), "\t")
 		seen++
 
 		if iType >= len(record) || record[iType] != "movie" {
@@ -323,18 +337,25 @@ func importMovies(table *flop.TableInstance, basicsPath string, ratings map[stri
 			}
 		}
 
-		if _, err := table.Insert(row); err != nil {
-			return imported, err
+		batch = append(batch, row)
+		if len(batch) >= batchSize {
+			if err := flushBatch(); err != nil {
+				return imported, err
+			}
 		}
-		imported++
-
-		if imported%5000 == 0 {
-			elapsed := time.Since(started)
-			log.Printf("seed: imported %d movies (seen %d rows, elapsed %s)", imported, seen, elapsed.Round(time.Second))
-		}
-		if limit > 0 && imported >= limit {
+		if limit > 0 && imported+len(batch) >= limit {
+			if limit-imported < len(batch) {
+				batch = batch[:limit-imported]
+			}
 			break
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return imported, err
+	}
+
+	if err := flushBatch(); err != nil {
+		return imported, err
 	}
 
 	return imported, nil

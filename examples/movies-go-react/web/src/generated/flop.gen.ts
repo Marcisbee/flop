@@ -50,8 +50,7 @@ export const FLOP_SPEC = {
           "goName": "Overview",
           "jsonName": "overview",
           "kind": "string",
-          "tsType": "string",
-          "fullText": true
+          "tsType": "string"
         },
         {
           "goName": "Rating",
@@ -78,8 +77,7 @@ export const FLOP_SPEC = {
           "jsonName": "title",
           "kind": "string",
           "tsType": "string",
-          "required": true,
-          "fullText": true
+          "required": true
         },
         {
           "goName": "Votes",
@@ -92,8 +90,7 @@ export const FLOP_SPEC = {
           "jsonName": "year",
           "kind": "integer",
           "tsType": "number",
-          "required": true,
-          "indexed": true
+          "required": true
         }
       ]
     }

@@ -20,6 +20,11 @@ make -C examples/movies-go-react dev
 
 Open `http://localhost:1985`.
 
+Notes:
+- `dev` starts server directly (fast path).
+- `dev-gen` regenerates spec/artifacts before starting server.
+- `build` + `run-bin` gives fastest repeat startup (no `go run` compile on each boot).
+
 ## Seed With IMDb Data
 
 IMDb non-commercial datasets can be imported into the demo:
@@ -42,6 +47,9 @@ GOCACHE=/tmp/go-build-cache go run ./cmd/seed -force -limit 100000
 
 # skip download and use existing files in data/_datasets/imdb
 GOCACHE=/tmp/go-build-cache go run ./cmd/seed -force -download=false
+
+# tune buffered write batch size for your machine
+GOCACHE=/tmp/go-build-cache go run ./cmd/seed -force -batch 5000
 ```
 
 Dataset terms and source:

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"hash/crc32"
 	"html/template"
 	"log"
@@ -33,6 +32,16 @@ type autocompleteIndex struct {
 	mu     sync.RWMutex
 	items  []autocompleteItem
 	bySlug map[string]autocompleteItem
+}
+
+type indexBuildState struct {
+	mu         sync.RWMutex
+	building   bool
+	ready      bool
+	total      int
+	lastError  string
+	startedAt  time.Time
+	finishedAt time.Time
 }
 
 func newAutocompleteIndex(entries []movies.MovieIndexEntry) *autocompleteIndex {
@@ -129,7 +138,10 @@ func (a *autocompleteIndex) query(prefix string, limit int) []map[string]any {
 	// 2) allow word-prefix match ("runner" => "Blade Runner 2049")
 	if len(out) < limit {
 		for _, item := range a.items {
-			if strings.HasPrefix(item.NormNoArticle, norm) || hasWordPrefix(item.Norm, norm) || strings.Contains(item.Norm, norm) {
+			if strings.HasPrefix(item.NormNoArticle, norm) ||
+				hasWordPrefix(item.Norm, norm) ||
+				strings.Contains(item.Norm, norm) ||
+				hasOrderedTokenPrefixMatch(item.Norm, norm) {
 				appendMatch(item)
 				if len(out) >= limit {
 					break
@@ -162,11 +174,27 @@ func main() {
 		log.Printf("movies-go-react: loaded %d movies from %s", table.Count(), dataDir)
 	}
 
-	indexEntries, err := movies.AllMovieIndexEntries(db)
-	if err != nil {
-		log.Fatalf("failed to build autocomplete index: %v", err)
+	autocomplete := newAutocompleteIndex(nil)
+	indexState := &indexBuildState{
+		building:  true,
+		startedAt: time.Now(),
 	}
-	autocomplete := newAutocompleteIndex(indexEntries)
+	go func() {
+		entries, err := movies.AllMovieIndexEntries(db)
+		indexState.mu.Lock()
+		defer indexState.mu.Unlock()
+		indexState.building = false
+		indexState.finishedAt = time.Now()
+		if err != nil {
+			indexState.lastError = err.Error()
+			log.Printf("movies-go-react: autocomplete index build failed: %v", err)
+			return
+		}
+		autocomplete.add(entries)
+		indexState.ready = true
+		indexState.total = len(entries)
+		log.Printf("movies-go-react: autocomplete index ready with %d entries in %s", len(entries), time.Since(indexState.startedAt).Round(time.Millisecond))
+	}()
 
 	mux := http.NewServeMux()
 
@@ -182,10 +210,30 @@ func main() {
 			adminJSONError(w, "movies table not found", http.StatusInternalServerError)
 			return
 		}
+		indexState.mu.RLock()
+		building := indexState.building
+		ready := indexState.ready
+		total := indexState.total
+		lastErr := indexState.lastError
+		var buildMs int64
+		if !indexState.startedAt.IsZero() {
+			end := time.Now()
+			if !indexState.finishedAt.IsZero() {
+				end = indexState.finishedAt
+			}
+			buildMs = end.Sub(indexState.startedAt).Milliseconds()
+		}
+		indexState.mu.RUnlock()
+
 		writeJSON(w, map[string]any{
 			"ok": true,
 			"data": map[string]any{
-				"movies": moviesTable.Count(),
+				"movies":            moviesTable.Count(),
+				"autocompleteReady": ready,
+				"autocompleteBuild": building,
+				"autocompleteItems": total,
+				"autocompleteMs":    buildMs,
+				"autocompleteError": lastErr,
 			},
 		})
 	})
@@ -212,15 +260,7 @@ func main() {
 		}
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 		limit := clampInt(queryInt(r, "limit", 10), 1, 20)
-		results := autocomplete.query(q, limit)
-		if len(results) == 0 && q != "" {
-			if table := db.Table("movies"); table != nil {
-				if rows, err := table.SearchFullText([]string{"title"}, q, limit); err == nil {
-					results = toAutocompleteRows(rows, limit)
-				}
-			}
-		}
-		writeJSON(w, map[string]any{"ok": true, "data": results})
+		writeJSON(w, map[string]any{"ok": true, "data": autocomplete.query(q, limit)})
 	})
 
 	mux.HandleFunc("/api/movies/slug/", func(w http.ResponseWriter, r *http.Request) {
@@ -241,38 +281,6 @@ func main() {
 			return
 		}
 		writeJSON(w, map[string]any{"ok": true, "data": movie})
-	})
-
-	mux.HandleFunc("/api/import/movies", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-
-		count := clampInt(queryInt(r, "count", 50000), 1, 300000)
-		started := time.Now()
-
-		imported, err := movies.ImportGeneratedMovies(db, count)
-		if err != nil {
-			adminJSONError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		autocomplete.add(imported)
-
-		table := db.Table("movies")
-		total := 0
-		if table != nil {
-			total = table.Count()
-		}
-
-		writeJSON(w, map[string]any{
-			"ok": true,
-			"data": map[string]any{
-				"inserted":   len(imported),
-				"total":      total,
-				"durationMs": time.Since(started).Milliseconds(),
-			},
-		})
 	})
 
 	mux.HandleFunc("/api/head", func(w http.ResponseWriter, r *http.Request) {
@@ -547,44 +555,33 @@ func hasWordPrefix(text, query string) bool {
 	return false
 }
 
-func toAutocompleteRows(rows []map[string]any, limit int) []map[string]any {
-	if len(rows) == 0 {
-		return []map[string]any{}
+func hasOrderedTokenPrefixMatch(text, query string) bool {
+	if text == "" || query == "" {
+		return false
 	}
-	out := make([]map[string]any, 0, min(limit, len(rows)))
-	for _, row := range rows {
-		title := strings.TrimSpace(fmt.Sprintf("%v", row["title"]))
-		slug := strings.TrimSpace(fmt.Sprintf("%v", row["slug"]))
-		if title == "" || slug == "" || title == "<nil>" || slug == "<nil>" {
-			continue
-		}
-		out = append(out, map[string]any{
-			"slug":  slug,
-			"title": title,
-			"year":  toIntAny(row["year"]),
-		})
-		if len(out) >= limit {
-			break
-		}
-	}
-	return out
-}
 
-func toIntAny(v any) int {
-	switch val := v.(type) {
-	case int:
-		return val
-	case int32:
-		return int(val)
-	case int64:
-		return int(val)
-	case float64:
-		return int(val)
-	case float32:
-		return int(val)
-	default:
-		return 0
+	titleTokens := strings.Fields(text)
+	queryTokens := strings.Fields(query)
+	if len(titleTokens) == 0 || len(queryTokens) == 0 {
+		return false
 	}
+
+	ti := 0
+	for _, q := range queryTokens {
+		found := false
+		for ti < len(titleTokens) {
+			if strings.HasPrefix(titleTokens[ti], q) {
+				found = true
+				ti++
+				break
+			}
+			ti++
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func computeAssetVersion(webDir string) string {

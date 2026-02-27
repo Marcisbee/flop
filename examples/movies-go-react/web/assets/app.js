@@ -71,7 +71,7 @@ function renderShell() {
     <header class="masthead">
       <p class="kicker">Flop Demo</p>
       <h1>Movie Atlas</h1>
-      <p class="lede">Import a massive catalog, search instantly, open any movie page.</p>
+      <p class="lede">Search the movie catalog instantly and open any movie page.</p>
       <div class="top-links">
         <a href="/" data-flop-link="1">Catalog</a>
         <a href="/_">Admin</a>
@@ -83,26 +83,8 @@ function renderShell() {
         <label for="searchInput">Search title</label>
         <input id="searchInput" type="search" autocomplete="off" placeholder="Type: blade, parasite, memory..." />
         <div id="suggestions" class="suggestions" aria-live="polite"></div>
-        <p class="hint">Autocomplete is prefix-indexed and optimized for large datasets.</p>
-      </section>
-
-      <section class="import-panel">
-        <h2>Bulk Import</h2>
-        <p>Generate synthetic movie records with rich metadata and full-text fields.</p>
-        <form id="importForm" class="import-form" novalidate>
-          <input
-            id="importCount"
-            type="text"
-            inputmode="numeric"
-            autocomplete="off"
-            spellcheck="false"
-            value="50000"
-            placeholder="50000"
-          />
-          <button id="importButton" type="submit">Import Movies</button>
-        </form>
-        <p id="importMessage" class="muted">Ready.</p>
         <p id="stats" class="stats"></p>
+        <p class="hint">Autocomplete is prefix-indexed and optimized for large datasets.</p>
       </section>
 
       <section id="routeContent" class="content-panel"></section>
@@ -158,21 +140,15 @@ async function fetchMovies(limit = 36, offset = 0) {
 function setStatsLine(stats) {
   const el = $("stats");
   const total = Number(stats?.movies || 0).toLocaleString();
-  el.textContent = `${total} movies indexed`;
-}
-
-function setImportMessage(text, isError = false) {
-  const el = $("importMessage");
-  el.textContent = text;
-  el.className = isError ? "error" : "muted";
-}
-
-function parseImportCount(raw, fallback = 50000) {
-  const digits = String(raw ?? "").replace(/\D+/g, "");
-  if (!digits) return fallback;
-  const value = Number.parseInt(digits, 10);
-  if (!Number.isFinite(value)) return fallback;
-  return value;
+  if (stats?.autocompleteReady) {
+    el.textContent = `${total} movies indexed`;
+    return;
+  }
+  if (stats?.autocompleteBuild) {
+    el.textContent = `${total} movies loaded, search index warming up...`;
+    return;
+  }
+  el.textContent = `${total} movies loaded`;
 }
 
 async function refreshHome() {
@@ -239,10 +215,21 @@ async function updateSuggestions(query) {
   }
 
   try {
+    if (!statsCache) {
+      try {
+        await fetchStats();
+      } catch {
+        // Ignore stats errors for search path.
+      }
+    }
     const json = await getJSON(`/api/movies/autocomplete?q=${encodeURIComponent(value)}&limit=10`);
     const items = json.data || [];
     if (items.length === 0) {
-      box.innerHTML = `<p class="muted">No matches</p>`;
+      if (statsCache && statsCache.autocompleteReady === false) {
+        box.innerHTML = `<p class="muted">Search index is still warming up...</p>`;
+      } else {
+        box.innerHTML = `<p class="muted">No matches</p>`;
+      }
       return;
     }
 
@@ -269,39 +256,6 @@ function bindInteractions() {
     if (!first) return;
     event.preventDefault();
     navigate(new URL(first.href).pathname, false, false);
-  });
-
-  const form = $("importForm");
-  const button = $("importButton");
-  const countInput = $("importCount");
-
-  countInput.addEventListener("blur", () => {
-    const normalized = parseImportCount(countInput.value, 50000);
-    const safe = Math.max(1, Math.min(300000, normalized));
-    countInput.value = String(safe);
-  });
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const parsedCount = parseImportCount(countInput.value, 50000);
-    const safeCount = Math.max(1, Math.min(300000, parsedCount));
-    countInput.value = String(safeCount);
-
-    button.disabled = true;
-    setImportMessage(`Importing ${safeCount.toLocaleString()} movies...`);
-
-    try {
-      const json = await getJSON(`/api/import/movies?count=${safeCount}`, { method: "POST" });
-      const d = json.data || {};
-      setImportMessage(`Imported ${Number(d.inserted || 0).toLocaleString()} movies in ${d.durationMs || 0}ms.`);
-      statsCache = null;
-      moviesCache = null;
-      await refreshHome();
-    } catch (err) {
-      setImportMessage(err.message || "Import failed", true);
-    } finally {
-      button.disabled = false;
-    }
   });
 }
 

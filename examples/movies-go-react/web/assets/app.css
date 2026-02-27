@@ -98,14 +98,13 @@ body {
 .layout {
   display: grid;
   gap: 18px;
-  grid-template-columns: 1.2fr 1fr;
+  grid-template-columns: 1fr;
   grid-template-areas:
-    "search import"
-    "content content";
+    "search"
+    "content";
 }
 
 .search-panel,
-.import-panel,
 .content-panel {
   background: linear-gradient(160deg, var(--card), var(--card-alt));
   color: var(--text-dark);
@@ -180,64 +179,8 @@ body {
   font-size: 13px;
 }
 
-.import-panel {
-  grid-area: import;
-  padding: 16px;
-}
-
-.import-panel h2 {
-  margin: 0;
-  font-family: "Bebas Neue", Impact, sans-serif;
-  letter-spacing: 0.06em;
-  font-size: 32px;
-}
-
-.import-panel p {
-  margin: 8px 0 0;
-  color: var(--text-muted);
-}
-
-.import-form {
-  margin-top: 14px;
-  display: flex;
-  gap: 10px;
-}
-
-.import-form input,
-.import-form button {
-  font: inherit;
-}
-
-.import-form input {
-  flex: 1;
-  border: 2px solid #1f1b2d;
-  padding: 10px;
-  background: #fffcf7;
-}
-
-.import-form button {
-  border: 0;
-  padding: 10px 14px;
-  font-family: "Bebas Neue", Impact, sans-serif;
-  letter-spacing: 0.06em;
-  background: linear-gradient(120deg, var(--accent), #ff8442);
-  color: #fff;
-  cursor: pointer;
-  transition: transform 120ms ease;
-}
-
-.import-form button:hover {
-  transform: translateY(-1px);
-}
-
-.import-form button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  transform: none;
-}
-
 .stats {
-  margin-top: 10px;
+  margin: 10px 0 0;
   font-size: 18px;
   font-weight: 600;
   color: #171322;
@@ -365,7 +308,6 @@ body {
     grid-template-columns: 1fr;
     grid-template-areas:
       "search"
-      "import"
       "content";
   }
 

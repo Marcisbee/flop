@@ -35,8 +35,7 @@
           "goName": "Overview",
           "jsonName": "overview",
           "kind": "string",
-          "tsType": "string",
-          "fullText": true
+          "tsType": "string"
         },
         {
           "goName": "Rating",
@@ -63,8 +62,7 @@
           "jsonName": "title",
           "kind": "string",
           "tsType": "string",
-          "required": true,
-          "fullText": true
+          "required": true
         },
         {
           "goName": "Votes",
@@ -77,8 +75,7 @@
           "jsonName": "year",
           "kind": "integer",
           "tsType": "number",
-          "required": true,
-          "indexed": true
+          "required": true
         }
       ]
     }
