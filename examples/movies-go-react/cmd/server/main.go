@@ -95,6 +95,9 @@ func (a *autocompleteIndex) query(prefix string, limit int) []map[string]any {
 	if norm == "" {
 		return []map[string]any{}
 	}
+	queryTokens := strings.Fields(norm)
+	multiTokenQuery := len(queryTokens) > 1
+	useOrderedTokenFallback := shouldUseOrderedTokenFallback(queryTokens)
 
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -136,12 +139,17 @@ func (a *autocompleteIndex) query(prefix string, limit int) []map[string]any {
 	// Fallback for intuitive search:
 	// 1) ignore leading articles ("the", "a", "an")
 	// 2) allow word-prefix match ("runner" => "Blade Runner 2049")
+	// 3) ordered token-prefix match for natural multi-word queries
 	if len(out) < limit {
 		for _, item := range a.items {
-			if strings.HasPrefix(item.NormNoArticle, norm) ||
-				hasWordPrefix(item.Norm, norm) ||
-				strings.Contains(item.Norm, norm) ||
-				hasOrderedTokenPrefixMatch(item.Norm, norm) {
+			match := strings.HasPrefix(item.NormNoArticle, norm) || strings.Contains(item.Norm, norm)
+			if !match && !multiTokenQuery {
+				match = hasWordPrefix(item.Norm, norm)
+			}
+			if !match && useOrderedTokenFallback {
+				match = hasOrderedTokenPrefixMatchTokens(item.Norm, queryTokens)
+			}
+			if match {
 				appendMatch(item)
 				if len(out) >= limit {
 					break
@@ -614,12 +622,15 @@ func hasWordPrefix(text, query string) bool {
 }
 
 func hasOrderedTokenPrefixMatch(text, query string) bool {
-	if text == "" || query == "" {
+	return hasOrderedTokenPrefixMatchTokens(text, strings.Fields(query))
+}
+
+func hasOrderedTokenPrefixMatchTokens(text string, queryTokens []string) bool {
+	if text == "" {
 		return false
 	}
 
 	titleTokens := strings.Fields(text)
-	queryTokens := strings.Fields(query)
 	if len(titleTokens) == 0 || len(queryTokens) == 0 {
 		return false
 	}
@@ -638,6 +649,27 @@ func hasOrderedTokenPrefixMatch(text, query string) bool {
 		if !found {
 			return false
 		}
+	}
+	return true
+}
+
+func shouldUseOrderedTokenFallback(queryTokens []string) bool {
+	if len(queryTokens) < 2 || len(queryTokens) > 7 {
+		return false
+	}
+	shortTokens := 0
+	for _, token := range queryTokens {
+		if len(token) <= 1 {
+			shortTokens++
+		}
+	}
+	// Queries like "a b c d e" are too ambiguous and expensive to run
+	// through ordered token matching across the full catalog.
+	if shortTokens == len(queryTokens) {
+		return false
+	}
+	if shortTokens*2 > len(queryTokens) {
+		return false
 	}
 	return true
 }

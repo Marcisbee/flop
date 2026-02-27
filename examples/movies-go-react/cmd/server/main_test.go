@@ -23,3 +23,30 @@ func TestNormalizeSearchRomanNumerals(t *testing.T) {
 		}
 	}
 }
+
+func TestShouldUseOrderedTokenFallback(t *testing.T) {
+	cases := []struct {
+		name   string
+		tokens []string
+		want   bool
+	}{
+		{name: "single token", tokens: []string{"sherlock"}, want: false},
+		{name: "natural phrase", tokens: []string{"sherlock", "holmes", "game", "shadow"}, want: true},
+		{name: "all one-char noise", tokens: []string{"a", "b", "c", "d", "e"}, want: false},
+		{name: "too many one-char tokens", tokens: []string{"ab", "c", "d"}, want: false},
+	}
+	for _, tc := range cases {
+		got := shouldUseOrderedTokenFallback(tc.tokens)
+		if got != tc.want {
+			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestOrderedTokenPrefixMatchStillWorks(t *testing.T) {
+	title := normalizeSearch("Sherlock Holmes: A Game of Shadows")
+	queryTokens := []string{"sherlock", "holmes", "game", "shadow"}
+	if !hasOrderedTokenPrefixMatchTokens(title, queryTokens) {
+		t.Fatalf("expected ordered token prefix match for %q and %+v", title, queryTokens)
+	}
+}
