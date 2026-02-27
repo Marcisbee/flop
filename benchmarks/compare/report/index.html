@@ -5,63 +5,106 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Flop Benchmark Report</title>
     <style>
+      @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+
       :root {
-        --bg: #eceff4;
-        --panel: #f7f8fb;
-        --panel-solid: #ffffff;
-        --line: #d8dde7;
-        --text: #1f2633;
-        --muted: #697386;
+        --bg: #f4f1e8;
+        --surface: #fffdf8;
+        --surface-strong: #ffffff;
+        --line: #d8d1c2;
+        --line-strong: #b4aa94;
+        --ink: #1f2430;
+        --muted: #6b6f79;
+        --accent: #1f4db8;
+        --shadow: 0 14px 34px rgba(42, 38, 29, 0.08);
       }
       * {
         box-sizing: border-box;
       }
+      html,
+      body {
+        min-height: 100%;
+      }
       body {
         margin: 0;
         background:
-          radial-gradient(circle at 10% -10%, #dde6fb 0, transparent 48%),
+          radial-gradient(
+            circle at 10% -20%,
+            #ffffff 0%,
+            transparent 46%
+          ),
+          radial-gradient(circle at 90% -15%, #e8efff 0%, transparent 42%),
+          repeating-linear-gradient(
+          90deg,
+          transparent 0 18px,
+          rgba(49, 63, 92, 0.025) 18px 19px
+        ),
           var(--bg);
-        color: var(--text);
-        font-family: "Manrope", "Inter", system-ui, -apple-system, sans-serif;
+        color: var(--ink);
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
       }
       .wrap {
-        max-width: 1260px;
+        max-width: 1280px;
         margin: 0 auto;
-        padding: 24px;
+        padding: 28px 22px 38px;
       }
       h1 {
         margin: 0;
-        font-size: 26px;
-        letter-spacing: -0.015em;
+        font-size: clamp(1.8rem, 2.5vw, 2.5rem);
+        letter-spacing: -0.03em;
+        line-height: 1;
+        font-family: "Fraunces", "Georgia", serif;
+        font-weight: 700;
       }
       .sub {
-        margin: 8px 0 16px;
+        margin: 10px 0 18px;
         color: var(--muted);
         font-size: 14px;
+        max-width: 760px;
       }
       .bar {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 9px;
         flex-wrap: wrap;
         margin-bottom: 16px;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 10px;
+        box-shadow: var(--shadow);
       }
       .bar button,
       .bar input[type="file"] {
         border: 1px solid var(--line);
-        border-radius: 10px;
-        background: var(--panel-solid);
-        color: var(--text);
-        font-size: 13px;
+        border-radius: 11px;
+        background: var(--surface-strong);
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
         padding: 9px 12px;
       }
       .bar button {
         cursor: pointer;
-        font-weight: 600;
+        transition: transform 120ms ease, box-shadow 120ms ease;
+      }
+      .bar button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 5px 14px rgba(31, 77, 184, 0.16);
       }
       .status {
         color: var(--muted);
         font-size: 12px;
+        font-family: "IBM Plex Mono", monospace;
+      }
+      code {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.92em;
+        background: #f2efe7;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 1px 5px;
       }
 
       .grid {
@@ -73,35 +116,57 @@
         margin-bottom: 14px;
       }
       .card {
-        background: var(--panel);
+        position: relative;
+        background: linear-gradient(180deg, #fffefb, #fdfaf1);
         border: 1px solid var(--line);
-        border-radius: 14px;
+        border-radius: 16px;
         padding: 14px;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        animation: rise-in 280ms ease both;
+      }
+      .card::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        background: linear-gradient(180deg, #1f4db8, #5a89ed);
+        opacity: 0.8;
       }
       .card-head {
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
         gap: 10px;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
       }
       .title {
         margin: 0;
-        font-size: 22px;
-        letter-spacing: -0.01em;
+        font-size: clamp(1.1rem, 2vw, 1.5rem);
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+        font-family: "Fraunces", "Georgia", serif;
+        font-weight: 700;
       }
       .meta {
         color: var(--muted);
         font-size: 12px;
         margin-top: 2px;
+        font-family: "IBM Plex Mono", monospace;
       }
       .expand {
-        border: 1px solid var(--line);
+        border: 1px solid var(--line-strong);
         border-radius: 8px;
-        background: var(--panel-solid);
-        padding: 6px 10px;
+        background: #f8f3e7;
+        padding: 6px 11px;
         font-size: 12px;
         cursor: pointer;
+        font-weight: 600;
+        transition: background 130ms ease, transform 130ms ease;
+      }
+      .expand:hover {
+        background: #efe6d2;
+        transform: translateY(-1px);
       }
       .mini-chart {
         width: 100%;
@@ -109,7 +174,7 @@
         display: block;
         border: 1px solid var(--line);
         border-radius: 10px;
-        background: linear-gradient(180deg, #ffffff, #f9fbff);
+        background: linear-gradient(180deg, #ffffff, #f2f6ff);
       }
       .legend {
         margin-top: 10px;
@@ -121,20 +186,22 @@
         justify-content: space-between;
         align-items: center;
         gap: 8px;
-        font-size: 13px;
+        font-size: 12px;
         border-radius: 8px;
-        padding: 4px 6px;
+        padding: 5px 7px;
+        border: 1px solid transparent;
       }
       .legend-row.engine-link {
         cursor: pointer;
-        transition: background 120ms ease;
+        transition: background 120ms ease, border-color 120ms ease;
       }
       .legend-row.engine-link:hover {
         background: #eef3ff;
+        border-color: #d3dcf5;
       }
       .legend-row.engine-link.is-active {
-        background: #e7efff;
-        outline: 1px solid #c9d7f6;
+        background: #e4edff;
+        border-color: #bbcef8;
       }
       .left {
         display: inline-flex;
@@ -148,81 +215,41 @@
         text-overflow: ellipsis;
       }
       .value {
-        color: #343d4e;
+        color: #2d3650;
         font-variant-numeric: tabular-nums;
+        font-family: "IBM Plex Mono", monospace;
+        white-space: nowrap;
       }
       .dot {
         width: 10px;
         height: 10px;
         border-radius: 99px;
         flex-shrink: 0;
+        border: 1px solid rgba(12, 18, 32, 0.22);
       }
       .empty {
         border: 1px dashed var(--line);
         border-radius: 10px;
         padding: 14px;
         color: var(--muted);
-        background: #f8fbff;
+        background: #faf6eb;
       }
       .overall-chart {
         margin-top: 8px;
+        overflow-x: auto;
       }
-      .overall-bars {
-        display: grid;
-        gap: 8px;
-      }
-      .overall-col {
-        display: grid;
-        grid-template-columns:
-          minmax(90px, 120px) minmax(160px, 1fr)
-          minmax(58px, 72px) minmax(52px, 66px);
-        align-items: center;
-        gap: 8px;
-        padding: 2px 0;
-      }
-      .overall-value {
-        font-size: 12px;
-        font-variant-numeric: tabular-nums;
-        color: #2a3344;
-        font-weight: 600;
-        text-align: right;
-      }
-      .overall-track {
+      .overall-svg {
+        display: block;
         width: 100%;
-        height: 18px;
+        min-width: 920px;
+        border-radius: 11px;
         border: 1px solid var(--line);
-        border-radius: 9px;
-        background: linear-gradient(180deg, #ffffff, #f5f8ff);
-        display: flex;
-        align-items: center;
-        overflow: hidden;
-      }
-      .overall-fill {
-        height: 100%;
-        min-width: 2px;
-        transition: width 180ms ease;
-      }
-      .overall-engine {
-        font-size: 12px;
-        font-weight: 600;
-        text-align: left;
-        line-height: 1.1;
-        white-space: nowrap;
-      }
-      .overall-sub {
-        font-size: 11px;
-        color: var(--muted);
-        font-variant-numeric: tabular-nums;
-        text-align: right;
+        background: linear-gradient(180deg, #ffffff, #f6f8fc);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
       }
       @media (max-width: 760px) {
-        .overall-col {
-          grid-template-columns:
-            minmax(72px, 98px) minmax(120px, 1fr)
-            minmax(52px, 64px);
-        }
-        .overall-sub {
-          display: none;
+        .overall-svg {
+          min-width: 780px;
         }
       }
 
@@ -234,7 +261,8 @@
         align-items: center;
         justify-content: center;
         padding: 20px;
-        background: rgba(20, 26, 40, 0.45);
+        background: rgba(26, 27, 33, 0.48);
+        backdrop-filter: blur(2px);
       }
       .modal.show {
         display: flex;
@@ -243,10 +271,11 @@
         width: min(1120px, 100%);
         max-height: 92vh;
         overflow: auto;
-        background: var(--panel-solid);
+        background: #fffefb;
         border: 1px solid var(--line);
-        border-radius: 14px;
+        border-radius: 16px;
         padding: 14px;
+        box-shadow: 0 28px 58px rgba(15, 15, 19, 0.22);
       }
       .modal-top {
         display: flex;
@@ -257,12 +286,13 @@
       }
       .modal-title {
         margin: 0;
-        font-size: 20px;
+        font-size: clamp(1.1rem, 2.2vw, 1.45rem);
+        font-family: "Fraunces", "Georgia", serif;
       }
       .close {
-        border: 1px solid var(--line);
+        border: 1px solid var(--line-strong);
         border-radius: 9px;
-        background: #fff;
+        background: #f8f3e7;
         padding: 8px 10px;
         cursor: pointer;
         font-weight: 600;
@@ -273,26 +303,29 @@
         display: block;
         border: 1px solid var(--line);
         border-radius: 10px;
-        background: linear-gradient(180deg, #fff, #f9fbff);
+        background: linear-gradient(180deg, #fff, #f2f6ff);
       }
       table {
         width: 100%;
         border-collapse: collapse;
         margin-top: 12px;
         border: 1px solid var(--line);
-        border-radius: 10px;
+        border-radius: 12px;
         overflow: hidden;
+        background: #fffefb;
       }
-      th, td {
+      th,
+      td {
         padding: 10px;
         border-bottom: 1px solid var(--line);
-        font-size: 14px;
+        font-size: 13px;
         text-align: left;
       }
       th {
         color: var(--muted);
         font-weight: 600;
-        background: #f8f9fc;
+        background: #f4efe3;
+        font-family: "IBM Plex Mono", monospace;
       }
       tr:last-child td {
         border-bottom: none;
@@ -301,14 +334,48 @@
         transition: background 120ms ease;
       }
       tr.engine-row:hover {
-        background: #f4f8ff;
+        background: #f2f6ff;
       }
       tr.engine-row.is-active {
-        background: #e7efff;
+        background: #e1ecff;
       }
-      th.num, td.num {
+      th.num,
+      td.num {
         text-align: right;
         font-variant-numeric: tabular-nums;
+        font-family: "IBM Plex Mono", monospace;
+      }
+
+      @keyframes rise-in {
+        from {
+          transform: translateY(6px);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0);
+          opacity: 1;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .wrap {
+          padding: 20px 14px 26px;
+        }
+        .bar {
+          padding: 8px;
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .card {
+          padding: 12px;
+        }
+        .mini-chart {
+          height: 130px;
+        }
+        .detail-chart {
+          height: 300px;
+        }
       }
     </style>
   </head>
@@ -585,6 +652,72 @@
         };
       }
 
+      function overallChartSvg(rows, scenarioCount) {
+        const width = 1080;
+        const rowHeight = 34;
+        const pad = { l: 210, r: 140, t: 16, b: 32 };
+        const chartWidth = width - pad.l - pad.r;
+        const height = pad.t + pad.b + rows.length * rowHeight;
+        const x = (value) =>
+          pad.l +
+          (Math.max(0, Math.min(100, value)) / 100) * chartWidth;
+        const ticks = [0, 25, 50, 75, 100];
+
+        let svg = "";
+
+        for (const t of ticks) {
+          const xx = x(t);
+          svg += `<line x1="${xx}" y1="${pad.t}" x2="${xx}" y2="${
+            height - pad.b
+          }" stroke="${
+            t === 0 ? "#9aa6bf" : "#d8dee8"
+          }" stroke-width="1" stroke-dasharray="${
+            t === 0 ? "0" : "3 5"
+          }"/>`;
+          svg += `<text x="${xx}" y="${
+            height - 10
+          }" text-anchor="middle" fill="#6b7280" font-size="10" font-family="'IBM Plex Mono', monospace">${t}</text>`;
+        }
+
+        rows.forEach((row, index) => {
+          const yc = pad.t + index * rowHeight + rowHeight / 2;
+          const barY = yc - 8;
+          const barWidth = Math.max(2, x(row.score) - x(0));
+          const rank = index + 1;
+          const coverage = `${row.coverage}/${scenarioCount}`;
+
+          svg += `<rect x="${
+            x(0)
+          }" y="${barY}" width="${chartWidth}" height="16" fill="#edf2f8"/>`;
+          svg += `<rect x="${
+            x(0)
+          }" y="${barY}" width="${barWidth}" height="16" fill="${
+            COLORS[row.engine]
+          }" />`;
+
+          svg += `<text x="40" y="${
+            yc + 4
+          }" text-anchor="end" fill="#7a8294" font-size="11" font-family="'IBM Plex Mono', monospace">#${rank}</text>`;
+          svg += `<circle cx="54" cy="${yc}" r="5" fill="${
+            COLORS[row.engine]
+          }" stroke="rgba(12,18,32,0.2)" stroke-width="1"/>`;
+          svg += `<text x="66" y="${
+            yc + 4
+          }" fill="#1f2430" font-size="12" font-weight="600" font-family="'IBM Plex Mono', monospace">${row.engine}</text>`;
+
+          svg += `<text x="${width - 88}" y="${
+            yc + 4
+          }" text-anchor="end" fill="#1f2430" font-size="12" font-family="'IBM Plex Mono', monospace">${
+            row.score.toFixed(1)
+          }</text>`;
+          svg += `<text x="${width - 12}" y="${
+            yc + 4
+          }" text-anchor="end" fill="#7a8294" font-size="11" font-family="'IBM Plex Mono', monospace">${coverage}</text>`;
+        });
+
+        return `<svg class="overall-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMinYMin meet">${svg}</svg>`;
+      }
+
       function renderOverall() {
         const container = document.getElementById("overallCard");
         const data = collectLatestOverall();
@@ -602,25 +735,8 @@
           return;
         }
 
-        const maxScore = Math.max(...data.rows.map((x) => x.score), 1);
         const created = new Date(data.run.createdAt).toLocaleString();
-        const bars = data.rows.map((row) => {
-          const w = Math.max(2, (row.score / maxScore) * 100);
-          return `
-            <div class="overall-col" title="${row.engine}: ${
-            row.score.toFixed(1)
-          } / 100">
-              <div class="overall-engine">${row.engine}</div>
-              <div class="overall-track">
-                <div class="overall-fill" style="width:${w}%; background:${
-            COLORS[row.engine]
-          }"></div>
-              </div>
-              <div class="overall-value">${row.score.toFixed(1)}</div>
-              <div class="overall-sub">${row.coverage}/${data.scenarioCount}</div>
-            </div>
-          `;
-        }).join("");
+        const chart = overallChartSvg(data.rows, data.scenarioCount);
 
         container.innerHTML = `
           <div class="card-head">
@@ -630,10 +746,10 @@
             </div>
           </div>
           <div class="overall-chart">
-            <div class="overall-bars">${bars}</div>
+            ${chart}
           </div>
           <div class="meta">
-            Score = average of (engine scenario score / best scenario score) × 100, across latest-run scenarios. Higher is better.
+            Score = average of (engine scenario score / best scenario score) × 100. Axis is normalized 0-100, higher is better.
           </div>
         `;
       }
