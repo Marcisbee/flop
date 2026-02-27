@@ -340,6 +340,20 @@ function toMean(values: number[]): number {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
+function relativeStdErr(values: number[]): number | null {
+  if (values.length < 2) return null;
+  const mean = toMean(values);
+  if (!Number.isFinite(mean) || mean <= 0) return null;
+  let sumSq = 0;
+  for (const value of values) {
+    const diff = value - mean;
+    sumSq += diff * diff;
+  }
+  const variance = sumSq / (values.length - 1);
+  const stddev = Math.sqrt(Math.max(0, variance));
+  return stddev / mean / Math.sqrt(values.length);
+}
+
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
@@ -371,6 +385,23 @@ function parseRepeats(profile: BenchmarkProfile): number {
   return 1;
 }
 
+function parseMinRepeats(
+  profile: BenchmarkProfile,
+  repeatsMax: number,
+): number {
+  const raw = Number(arg("min-repeats", "0"));
+  if (raw >= 1) return Math.min(Math.floor(raw), repeatsMax);
+  if (profile === "full" && repeatsMax >= 2) return 2;
+  return Math.min(1, repeatsMax);
+}
+
+function parseEarlyStopRse(profile: BenchmarkProfile): number {
+  const raw = Number(arg("early-stop-rse", "-1"));
+  if (Number.isFinite(raw) && raw >= 0) return raw;
+  if (profile === "full") return 0.05;
+  return 0;
+}
+
 function parseWarmupSec(profile: BenchmarkProfile): number {
   const raw = Number(arg("warmup-sec", "-1"));
   if (raw >= 0) return raw;
@@ -389,10 +420,16 @@ function parseStrictSetup(): boolean {
   return !(raw === "0" || raw === "false" || raw === "no");
 }
 
-function parseSetupRetries(): number {
-  const raw = Number(arg("setup-retries", "4"));
-  if (!Number.isFinite(raw)) return 4;
-  return Math.max(1, Math.floor(raw));
+function parseSetupRetries(profile: BenchmarkProfile): number {
+  const rawArg = arg("setup-retries", "");
+  if (rawArg.trim() !== "") {
+    const raw = Number(rawArg);
+    if (!Number.isFinite(raw)) return 4;
+    return Math.max(1, Math.floor(raw));
+  }
+  if (profile === "full") return 8;
+  if (profile === "quick") return 6;
+  return 4;
 }
 
 function parseSeed(): number {
@@ -958,6 +995,21 @@ function summarizeRepeats(
   };
 }
 
+function shouldEarlyStop(
+  repeats: ScenarioResult[],
+  minRepeats: number,
+  targetRse: number,
+): boolean {
+  if (targetRse <= 0) return false;
+  if (repeats.length < minRepeats) return false;
+  if (repeats.some((r) => !r.ok || !r.metrics)) return false;
+  const ops = repeats.map((r) => r.metrics?.workload.opsPerSec).filter(
+    (v): v is number => typeof v === "number" && Number.isFinite(v),
+  );
+  const rse = relativeStdErr(ops);
+  return rse != null && rse <= targetRse;
+}
+
 async function runShell(cmd: string, args: string[]): Promise<string> {
   const result = await new Deno.Command(cmd, {
     args,
@@ -1115,11 +1167,13 @@ async function main() {
   try {
     const profile = parseProfile();
     const engineSet = parseEngineSet();
-    const repeats = parseRepeats(profile);
+    const repeatsMax = parseRepeats(profile);
+    const minRepeats = parseMinRepeats(profile, repeatsMax);
+    const earlyStopRse = parseEarlyStopRse(profile);
     const warmupSec = parseWarmupSec(profile);
     const shuffleEngines = parseShuffleEngines();
     const strictSetup = parseStrictSetup();
-    const setupRetries = parseSetupRetries();
+    const setupRetries = parseSetupRetries(profile);
     const seed = parseSeed();
     const nextRand = seededRng(seed);
     const engines = parseEngineList(engineSet);
@@ -1156,7 +1210,9 @@ async function main() {
     console.log(`Run ID: ${runId}`);
     console.log(`Profile: ${profile}`);
     console.log(`Engine set: ${engineSet}`);
-    console.log(`Repeats: ${repeats}`);
+    console.log(`Repeats max: ${repeatsMax}`);
+    console.log(`Min repeats: ${minRepeats}`);
+    console.log(`Early-stop RSE: ${earlyStopRse}`);
     console.log(`Warmup sec: ${warmupSec}`);
     console.log(`Shuffle engines: ${shuffleEngines}`);
     console.log(`Strict setup: ${strictSetup}`);
@@ -1174,12 +1230,25 @@ async function main() {
       const repeatResults = new Map<EngineID, ScenarioResult[]>();
       for (const engine of engines) repeatResults.set(engine, []);
 
-      for (let repeatIndex = 0; repeatIndex < repeats; repeatIndex++) {
+      for (let repeatIndex = 0; repeatIndex < repeatsMax; repeatIndex++) {
+        const activeEngines = engines.filter((engine) =>
+          !shouldEarlyStop(
+            repeatResults.get(engine) ?? [],
+            minRepeats,
+            earlyStopRse,
+          )
+        );
+        if (activeEngines.length === 0) {
+          console.log(
+            `  Early stop: all engines reached stability target after ${repeatIndex} repeats`,
+          );
+          break;
+        }
         const orderedEngines = shuffleEngines
-          ? shuffleWithRng(engines, nextRand)
-          : [...engines];
+          ? shuffleWithRng(activeEngines, nextRand)
+          : [...activeEngines];
         console.log(
-          `  Repeat ${repeatIndex + 1}/${repeats}: ${
+          `  Repeat ${repeatIndex + 1}/${repeatsMax}: ${
             orderedEngines.join(", ")
           }`,
         );

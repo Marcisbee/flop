@@ -39,7 +39,7 @@ Optional filters:
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --profile=quick --engine-set=all
 
 # stronger benchmark rigor controls
-deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --repeats=3 --warmup-sec=3 --shuffle-engines=1 --strict-setup=1 --setup-retries=4
+deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --repeats=3 --min-repeats=2 --early-stop-rse=0.05 --warmup-sec=3 --shuffle-engines=1 --strict-setup=1 --setup-retries=8
 
 # only specific engines
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --engines=flop-ts,flop-go,turso-ts,pglite-ts,turso-go
@@ -59,11 +59,20 @@ Engine sets:
 Rigor flags:
 
 - `--repeats=N`: run each engine/scenario N times and aggregate means
+- `--min-repeats=N`: minimum repeats before early-stop is allowed
+- `--early-stop-rse=X`: stop additional repeats for stable engines once relative
+  standard error is <= X (`0` disables)
 - `--warmup-sec=N`: warmup workload per run (discarded from score)
 - `--shuffle-engines=1|0`: randomize engine order each repeat
 - `--strict-setup=1|0`: fail run if setup counts differ from expected
 - `--setup-retries=N`: retry setup API calls to reduce transient failures
 - `--seed=N`: deterministic shuffle seed
+
+Defaults:
+
+- `full`: `repeats=3`, `min-repeats=2`, `early-stop-rse=0.05`, `setup-retries=8`
+- `quick`: `repeats=2`, `setup-retries=6`
+- `smoke`: `repeats=1`, `setup-retries=4`
 
 Default scenarios:
 

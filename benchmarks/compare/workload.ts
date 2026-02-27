@@ -161,6 +161,23 @@ function setupBackoffMs(attempt: number): number {
   return SETUP_RETRY_BASE_MS * (2 ** exp) + jitter;
 }
 
+function normalizeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/\s+/g, " ").trim().slice(0, 220);
+}
+
+function recordError(counts: Map<string, number>, err: unknown) {
+  const key = normalizeError(err) || "unknown";
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function formatErrorSummary(counts: Map<string, number>, limit = 3): string {
+  if (counts.size === 0) return "";
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit)
+    .map(([msg, count]) => `${count}x ${msg}`).join(" | ");
+  return ` (top errors: ${top})`;
+}
+
 async function withSetupRetries<T>(fn: () => Promise<T>): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= SETUP_RETRIES; attempt++) {
@@ -283,6 +300,9 @@ async function runBatched<T>(
 async function setupData() {
   const users: UserInfo[] = [];
   const accountRefs: AccountRef[] = [];
+  const registerErrors = new Map<string, number>();
+  const createErrors = new Map<string, number>();
+  const depositErrors = new Map<string, number>();
 
   const registerStart = performance.now();
   const templates = Array.from({ length: USER_COUNT }, (_, i) => {
@@ -300,8 +320,8 @@ async function setupData() {
     try {
       const token = await ensureUserToken(u.email, u.password, u.name);
       users.push({ ...u, token });
-    } catch {
-      // ignore
+    } catch (err) {
+      recordError(registerErrors, err);
     }
   });
 
@@ -315,7 +335,11 @@ async function setupData() {
 
   if (users.length === 0) throw new Error("setup failed: no users");
   if (STRICT_SETUP && users.length !== USER_COUNT) {
-    throw new Error(`strict setup failed: users=${users.length}/${USER_COUNT}`);
+    throw new Error(
+      `strict setup failed: users=${users.length}/${USER_COUNT}${
+        formatErrorSummary(registerErrors)
+      }`,
+    );
   }
 
   const createStart = performance.now();
@@ -348,8 +372,8 @@ async function setupData() {
       if (result?.id) {
         accountRefs.push({ id: result.id, ownerToken: task.user.token });
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      recordError(createErrors, err);
     }
   });
 
@@ -366,7 +390,9 @@ async function setupData() {
   }
   if (STRICT_SETUP && accountRefs.length !== accountTasks.length) {
     throw new Error(
-      `strict setup failed: accounts=${accountRefs.length}/${accountTasks.length}`,
+      `strict setup failed: accounts=${accountRefs.length}/${accountTasks.length}${
+        formatErrorSummary(createErrors)
+      }`,
     );
   }
 
@@ -385,8 +411,8 @@ async function setupData() {
         )
       );
       depositOk++;
-    } catch {
-      // ignore
+    } catch (err) {
+      recordError(depositErrors, err);
     }
   });
 
@@ -400,7 +426,9 @@ async function setupData() {
 
   if (STRICT_SETUP && depositOk !== accountRefs.length) {
     throw new Error(
-      `strict setup failed: deposits=${depositOk}/${accountRefs.length}`,
+      `strict setup failed: deposits=${depositOk}/${accountRefs.length}${
+        formatErrorSummary(depositErrors)
+      }`,
     );
   }
 

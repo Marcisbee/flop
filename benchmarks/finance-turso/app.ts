@@ -52,19 +52,52 @@ async function all<T>(sql: string, args: SQLArg[] = []): Promise<T[]> {
   return (result.rows ?? []) as T[];
 }
 
-async function withTx<T>(fn: () => Promise<T>): Promise<T> {
-  await run("BEGIN IMMEDIATE");
+type QueryCtx = {
+  run: (sql: string, args?: SQLArg[]) => Promise<void>;
+  one: <T>(sql: string, args?: SQLArg[]) => Promise<T | null>;
+  all: <T>(sql: string, args?: SQLArg[]) => Promise<T[]>;
+};
+
+function makeQueryCtx(client: ReturnType<typeof createClient>): QueryCtx {
+  return {
+    async run(sql: string, args: SQLArg[] = []) {
+      await client.execute({ sql, args });
+    },
+    async one<T>(sql: string, args: SQLArg[] = []): Promise<T | null> {
+      const result = await client.execute({ sql, args });
+      return (result.rows[0] ?? null) as T | null;
+    },
+    async all<T>(sql: string, args: SQLArg[] = []): Promise<T[]> {
+      const result = await client.execute({ sql, args });
+      return (result.rows ?? []) as T[];
+    },
+  };
+}
+
+async function withTx<T>(fn: (q: QueryCtx) => Promise<T>): Promise<T> {
+  // Use a dedicated client per transaction to avoid overlapping BEGIN/COMMIT
+  // on a shared connection under concurrent benchmark load.
+  const txDb = createClient({ url: DB_URL });
+  const tx = makeQueryCtx(txDb);
+  await tx.run("PRAGMA busy_timeout = 5000");
+  await tx.run("BEGIN IMMEDIATE");
   try {
-    const out = await fn();
-    await run("COMMIT");
+    const out = await fn(tx);
+    await tx.run("COMMIT");
     return out;
   } catch (err) {
     try {
-      await run("ROLLBACK");
+      await tx.run("ROLLBACK");
     } catch {
       // ignore rollback failure
     }
     throw err;
+  } finally {
+    try {
+      (txDb as { close?: () => void }).close?.();
+    } catch {
+      // ignore close failure
+    }
   }
 }
 
@@ -287,21 +320,21 @@ async function createAccount(
 async function deposit(accountId: string, amount: number) {
   if (amount <= 0) throw new Error("Amount must be positive");
 
-  return await withTx(async () => {
-    const account = await one<AccountRow>(
+  return await withTx(async (q) => {
+    const account = await q.one<AccountRow>(
       "SELECT * FROM accounts WHERE id = ?",
       [accountId],
     );
     if (!account) throw new Error("Account not found");
 
     const newBalance = asNumber(account.balance) + amount;
-    await run("UPDATE accounts SET balance = ? WHERE id = ?", [
+    await q.run("UPDATE accounts SET balance = ? WHERE id = ?", [
       newBalance,
       accountId,
     ]);
 
     const txId = genId();
-    await run(
+    await q.run(
       "INSERT INTO transactions (id, from_account_id, to_account_id, amount, currency, status, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [
         txId,
@@ -315,7 +348,7 @@ async function deposit(accountId: string, amount: number) {
     );
 
     const ledgerId = genId();
-    await run(
+    await q.run(
       "INSERT INTO ledger (id, account_id, transaction_id, amount, balance_after, type) VALUES (?, ?, ?, ?, ?, ?)",
       [ledgerId, accountId, txId, amount, newBalance, "credit"],
     );
@@ -335,14 +368,14 @@ async function transfer(
     throw new Error("Cannot transfer to same account");
   }
 
-  return await withTx(async () => {
-    const fromAccount = await one<AccountRow>(
+  return await withTx(async (q) => {
+    const fromAccount = await q.one<AccountRow>(
       "SELECT id, balance, currency FROM accounts WHERE id = ?",
       [fromAccountId],
     );
     if (!fromAccount) throw new Error("Source account not found");
 
-    const toAccount = await one<AccountRow>(
+    const toAccount = await q.one<AccountRow>(
       "SELECT id, balance, currency FROM accounts WHERE id = ?",
       [toAccountId],
     );
@@ -351,7 +384,7 @@ async function transfer(
     const txId = genId();
 
     if (asNumber(fromAccount.balance) < amount) {
-      await run(
+      await q.run(
         "INSERT INTO transactions (id, from_account_id, to_account_id, amount, currency, status, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
           txId,
@@ -373,16 +406,16 @@ async function transfer(
     const newFromBalance = asNumber(fromAccount.balance) - amount;
     const newToBalance = asNumber(toAccount.balance) + amount;
 
-    await run("UPDATE accounts SET balance = ? WHERE id = ?", [
+    await q.run("UPDATE accounts SET balance = ? WHERE id = ?", [
       newFromBalance,
       fromAccountId,
     ]);
-    await run("UPDATE accounts SET balance = ? WHERE id = ?", [
+    await q.run("UPDATE accounts SET balance = ? WHERE id = ?", [
       newToBalance,
       toAccountId,
     ]);
 
-    await run(
+    await q.run(
       "INSERT INTO transactions (id, from_account_id, to_account_id, amount, currency, status, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [
         txId,
@@ -395,11 +428,11 @@ async function transfer(
       ],
     );
 
-    await run(
+    await q.run(
       "INSERT INTO ledger (id, account_id, transaction_id, amount, balance_after, type) VALUES (?, ?, ?, ?, ?, ?)",
       [genId(), fromAccountId, txId, -amount, newFromBalance, "debit"],
     );
-    await run(
+    await q.run(
       "INSERT INTO ledger (id, account_id, transaction_id, amount, balance_after, type) VALUES (?, ?, ?, ?, ?, ?)",
       [genId(), toAccountId, txId, amount, newToBalance, "credit"],
     );
