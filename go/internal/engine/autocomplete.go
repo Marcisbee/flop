@@ -112,6 +112,9 @@ func (a *AutocompleteIndex) Query(prefix string, limit int) []AutocompleteEntry 
 	seen := make(map[string]struct{}, limit*2)
 	out := make([]AutocompleteEntry, 0, limit)
 	appendMatch := func(item autocompleteItem) {
+		if len(out) >= limit {
+			return
+		}
 		key := item.entry.Key
 		if _, exists := seen[key]; exists {
 			return
@@ -132,21 +135,38 @@ func (a *AutocompleteIndex) Query(prefix string, limit int) []AutocompleteEntry 
 		appendMatch(item)
 	}
 
-	if len(out) < limit {
-		for _, item := range a.items {
-			match := strings.HasPrefix(removeLeadingArticle(item.norm), norm) || strings.Contains(item.norm, norm)
-			if !match {
-				match = strings.HasPrefix(removeLeadingArticle(item.raw), rawNorm) || strings.Contains(item.raw, rawNorm)
+	if len(out) < limit && len(queryTokens) > 0 {
+		// Fast path for natural autocomplete phrases: anchor on the first token
+		// and scan only the contiguous range of titles that start with it.
+		lead := queryTokens[0]
+		leadScanned := 0
+		startLead := sort.Search(len(a.items), func(i int) bool {
+			return a.items[i].norm >= lead
+		})
+		for i := startLead; i < len(a.items); i++ {
+			item := a.items[i]
+			if !strings.HasPrefix(item.norm, lead) {
+				break
 			}
-			if !match && !multiTokenQuery {
-				match = hasWordPrefix(item.norm, norm) || hasWordPrefix(item.raw, rawNorm)
-			}
-			if !match && useOrderedTokenFallback {
-				match = hasOrderedTokenPrefixMatchTokens(item.norm, queryTokens)
-				if !match {
-					match = hasOrderedTokenPrefixMatchTokens(item.raw, rawQueryTokens)
+			leadScanned++
+			if matchesAutocompleteItem(item, norm, rawNorm, multiTokenQuery, useOrderedTokenFallback, queryTokens, rawQueryTokens) {
+				appendMatch(item)
+				if len(out) >= limit {
+					break
 				}
 			}
+		}
+
+		// For multi-token phrases, once we've checked all titles starting with
+		// the leading token, avoid scanning the full catalog.
+		if multiTokenQuery && leadScanned > 0 {
+			return out
+		}
+	}
+
+	if len(out) < limit {
+		for _, item := range a.items {
+			match := matchesAutocompleteItem(item, norm, rawNorm, multiTokenQuery, useOrderedTokenFallback, queryTokens, rawQueryTokens)
 			if match {
 				appendMatch(item)
 				if len(out) >= limit {
@@ -157,6 +177,31 @@ func (a *AutocompleteIndex) Query(prefix string, limit int) []AutocompleteEntry 
 	}
 
 	return out
+}
+
+func matchesAutocompleteItem(
+	item autocompleteItem,
+	norm string,
+	rawNorm string,
+	multiTokenQuery bool,
+	useOrderedTokenFallback bool,
+	queryTokens []string,
+	rawQueryTokens []string,
+) bool {
+	match := strings.HasPrefix(removeLeadingArticle(item.norm), norm) || strings.Contains(item.norm, norm)
+	if !match {
+		match = strings.HasPrefix(removeLeadingArticle(item.raw), rawNorm) || strings.Contains(item.raw, rawNorm)
+	}
+	if !match && !multiTokenQuery {
+		match = hasWordPrefix(item.norm, norm) || hasWordPrefix(item.raw, rawNorm)
+	}
+	if !match && useOrderedTokenFallback {
+		match = hasOrderedTokenPrefixMatchTokens(item.norm, queryTokens)
+		if !match {
+			match = hasOrderedTokenPrefixMatchTokens(item.raw, rawQueryTokens)
+		}
+	}
+	return match
 }
 
 func cloneAutocompleteData(in interface{}) interface{} {
