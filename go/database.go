@@ -26,6 +26,14 @@ type TableInstance struct {
 	ti *engine.TableInstance
 }
 
+// AutocompleteEntry represents one row in an autocomplete index.
+type AutocompleteEntry = engine.AutocompleteEntry
+
+// AutocompleteIndex provides reusable in-memory autocomplete search.
+type AutocompleteIndex struct {
+	idx *engine.AutocompleteIndex
+}
+
 // Open initializes the database from the App schema definitions.
 func (a *App) Open() (*Database, error) {
 	if a == nil {
@@ -167,6 +175,78 @@ func (ti *TableInstance) SearchFullText(fields []string, query string, limit int
 	return ti.ti.SearchFullText(fields, query, limit)
 }
 
+// NewAutocompleteIndex creates a reusable autocomplete index.
+func NewAutocompleteIndex(entries []AutocompleteEntry) *AutocompleteIndex {
+	return &AutocompleteIndex{idx: engine.NewAutocompleteIndex(entries)}
+}
+
+// Add inserts or updates autocomplete entries.
+func (a *AutocompleteIndex) Add(entries []AutocompleteEntry) {
+	if a == nil || a.idx == nil {
+		return
+	}
+	a.idx.Add(entries)
+}
+
+// Query returns up to limit matching autocomplete entries.
+func (a *AutocompleteIndex) Query(prefix string, limit int) []AutocompleteEntry {
+	if a == nil || a.idx == nil {
+		return []AutocompleteEntry{}
+	}
+	return a.idx.Query(prefix, limit)
+}
+
+// BuildAutocompleteEntries scans this table and builds entries for reuse
+// in NewAutocompleteIndex.
+func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, payloadFields ...string) ([]AutocompleteEntry, error) {
+	if ti == nil || ti.ti == nil {
+		return nil, fmt.Errorf("table is nil")
+	}
+	keyField = strings.TrimSpace(keyField)
+	textField = strings.TrimSpace(textField)
+	if keyField == "" || textField == "" {
+		return nil, fmt.Errorf("keyField and textField are required")
+	}
+
+	count := ti.ti.Count()
+	if count == 0 {
+		return []AutocompleteEntry{}, nil
+	}
+	rows, err := ti.ti.Scan(count, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]AutocompleteEntry, 0, len(rows))
+	for _, row := range rows {
+		key := toStringAny(row[keyField])
+		text := toStringAny(row[textField])
+		if key == "" || text == "" {
+			continue
+		}
+		var data map[string]interface{}
+		if len(payloadFields) > 0 {
+			data = make(map[string]interface{}, len(payloadFields))
+			for _, field := range payloadFields {
+				field = strings.TrimSpace(field)
+				if field == "" {
+					continue
+				}
+				data[field] = row[field]
+			}
+			if len(data) == 0 {
+				data = nil
+			}
+		}
+		out = append(out, AutocompleteEntry{
+			Key:  key,
+			Text: text,
+			Data: data,
+		})
+	}
+	return out, nil
+}
+
 // BuildEngineTableDefs compiles this App schema to internal engine table defs.
 func (a *App) BuildEngineTableDefs() map[string]*schema.TableDef {
 	return a.buildTableDefs()
@@ -297,6 +377,20 @@ func mapKind(kind string) schema.FieldKind {
 		return schema.KindEnum
 	default:
 		return schema.KindString
+	}
+}
+
+func toStringAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", v)
 	}
 }
 

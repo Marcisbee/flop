@@ -72,10 +72,6 @@ function renderShell() {
       <p class="kicker">Flop Demo</p>
       <h1>Movie Atlas</h1>
       <p class="lede">Search the movie catalog instantly and open any movie page.</p>
-      <div class="top-links">
-        <a href="/" data-flop-link="1">Catalog</a>
-        <a href="/_">Admin</a>
-      </div>
     </header>
 
     <main class="layout">

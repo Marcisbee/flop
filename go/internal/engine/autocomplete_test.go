@@ -1,12 +1,8 @@
-package main
+package engine
 
-import (
-	"testing"
+import "testing"
 
-	movies "github.com/marcisbee/flop/examples/movies-go-react/app"
-)
-
-func TestNormalizeSearchRomanNumerals(t *testing.T) {
+func TestNormalizeAutocompleteRomanNumerals(t *testing.T) {
 	tests := []struct {
 		in   string
 		want string
@@ -19,11 +15,10 @@ func TestNormalizeSearchRomanNumerals(t *testing.T) {
 		// Keep single-letter pronoun/title token untouched.
 		{in: "I, Robot", want: "i robot"},
 	}
-
 	for _, tc := range tests {
-		got := normalizeSearch(tc.in)
+		got := normalizeAutocomplete(tc.in)
 		if got != tc.want {
-			t.Fatalf("normalizeSearch(%q)=%q want %q", tc.in, got, tc.want)
+			t.Fatalf("normalizeAutocomplete(%q)=%q want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -48,7 +43,7 @@ func TestShouldUseOrderedTokenFallback(t *testing.T) {
 }
 
 func TestOrderedTokenPrefixMatchStillWorks(t *testing.T) {
-	title := normalizeSearch("Sherlock Holmes: A Game of Shadows")
+	title := normalizeAutocomplete("Sherlock Holmes: A Game of Shadows")
 	queryTokens := []string{"sherlock", "holmes", "game", "shadow"}
 	if !hasOrderedTokenPrefixMatchTokens(title, queryTokens) {
 		t.Fatalf("expected ordered token prefix match for %q and %+v", title, queryTokens)
@@ -56,23 +51,23 @@ func TestOrderedTokenPrefixMatchStillWorks(t *testing.T) {
 }
 
 func TestAutocompleteRomanNumeralPrefixCrossMatch(t *testing.T) {
-	idx := newAutocompleteIndex([]movies.MovieIndexEntry{
-		{Slug: "mortal-kombat-ii", Title: "Mortal Kombat II", Year: 1993},
+	idx := NewAutocompleteIndex([]AutocompleteEntry{
+		{Key: "mortal-kombat-ii", Text: "Mortal Kombat II", Data: map[string]interface{}{"year": 1993}},
 	})
 
-	gotI := idx.query("mortal kombat i", 10)
+	gotI := idx.Query("mortal kombat i", 10)
 	if len(gotI) == 0 {
 		t.Fatalf("expected query with I to match II title")
 	}
-	if gotI[0]["slug"] != "mortal-kombat-ii" {
-		t.Fatalf("unexpected slug for I query: %v", gotI[0]["slug"])
+	if gotI[0].Key != "mortal-kombat-ii" {
+		t.Fatalf("unexpected key for I query: %v", gotI[0].Key)
 	}
 
-	got2 := idx.query("mortal kombat 2", 10)
+	got2 := idx.Query("mortal kombat 2", 10)
 	if len(got2) == 0 {
 		t.Fatalf("expected query with 2 to match II title")
 	}
-	if got2[0]["slug"] != "mortal-kombat-ii" {
-		t.Fatalf("unexpected slug for 2 query: %v", got2[0]["slug"])
+	if got2[0].Key != "mortal-kombat-ii" {
+		t.Fatalf("unexpected key for 2 query: %v", got2[0].Key)
 	}
 }

@@ -9,32 +9,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	flop "github.com/marcisbee/flop"
 	movies "github.com/marcisbee/flop/examples/movies-go-react/app"
 )
-
-type autocompleteItem struct {
-	Norm          string
-	NormNoArticle string
-	Raw           string
-	RawNoArticle  string
-	Slug          string
-	Title         string
-	Year          int
-}
-
-type autocompleteIndex struct {
-	mu     sync.RWMutex
-	items  []autocompleteItem
-	bySlug map[string]autocompleteItem
-}
 
 type indexBuildState struct {
 	mu         sync.RWMutex
@@ -44,138 +26,6 @@ type indexBuildState struct {
 	lastError  string
 	startedAt  time.Time
 	finishedAt time.Time
-}
-
-func newAutocompleteIndex(entries []movies.MovieIndexEntry) *autocompleteIndex {
-	idx := &autocompleteIndex{bySlug: make(map[string]autocompleteItem, len(entries))}
-	idx.add(entries)
-	return idx
-}
-
-func (a *autocompleteIndex) add(entries []movies.MovieIndexEntry) {
-	if len(entries) == 0 {
-		return
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.bySlug == nil {
-		a.bySlug = make(map[string]autocompleteItem, len(entries))
-	}
-
-	for _, entry := range entries {
-		if entry.Slug == "" || entry.Title == "" {
-			continue
-		}
-		raw := normalizeSearchRaw(entry.Title)
-		norm := normalizeSearch(entry.Title)
-		item := autocompleteItem{
-			Norm:          norm,
-			NormNoArticle: removeLeadingArticle(norm),
-			Raw:           raw,
-			RawNoArticle:  removeLeadingArticle(raw),
-			Slug:          entry.Slug,
-			Title:         entry.Title,
-			Year:          entry.Year,
-		}
-		a.bySlug[item.Slug] = item
-	}
-
-	a.items = a.items[:0]
-	a.items = make([]autocompleteItem, 0, len(a.bySlug))
-	for _, item := range a.bySlug {
-		a.items = append(a.items, item)
-	}
-
-	sort.Slice(a.items, func(i, j int) bool {
-		if a.items[i].Norm == a.items[j].Norm {
-			return a.items[i].Slug < a.items[j].Slug
-		}
-		return a.items[i].Norm < a.items[j].Norm
-	})
-}
-
-func (a *autocompleteIndex) query(prefix string, limit int) []map[string]any {
-	norm := normalizeSearch(prefix)
-	if norm == "" {
-		return []map[string]any{}
-	}
-	rawNorm := normalizeSearchRaw(prefix)
-	if rawNorm == "" {
-		rawNorm = norm
-	}
-	queryTokens := strings.Fields(norm)
-	rawQueryTokens := strings.Fields(rawNorm)
-	multiTokenQuery := len(queryTokens) > 1
-	useOrderedTokenFallback := shouldUseOrderedTokenFallback(queryTokens)
-
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	if len(a.items) == 0 {
-		return []map[string]any{}
-	}
-
-	if limit <= 0 {
-		limit = 10
-	}
-
-	start := sort.Search(len(a.items), func(i int) bool {
-		return a.items[i].Norm >= norm
-	})
-
-	seen := make(map[string]struct{}, limit*2)
-	out := make([]map[string]any, 0, limit)
-	appendMatch := func(item autocompleteItem) {
-		if _, exists := seen[item.Slug]; exists {
-			return
-		}
-		seen[item.Slug] = struct{}{}
-		out = append(out, map[string]any{
-			"slug":  item.Slug,
-			"title": item.Title,
-			"year":  item.Year,
-		})
-	}
-
-	for i := start; i < len(a.items) && len(out) < limit; i++ {
-		item := a.items[i]
-		if !strings.HasPrefix(item.Norm, norm) {
-			break
-		}
-		appendMatch(item)
-	}
-
-	// Fallback for intuitive search:
-	// 1) ignore leading articles ("the", "a", "an")
-	// 2) allow word-prefix match ("runner" => "Blade Runner 2049")
-	// 3) ordered token-prefix match for natural multi-word queries
-	if len(out) < limit {
-		for _, item := range a.items {
-			match := strings.HasPrefix(item.NormNoArticle, norm) || strings.Contains(item.Norm, norm)
-			if !match {
-				match = strings.HasPrefix(item.RawNoArticle, rawNorm) || strings.Contains(item.Raw, rawNorm)
-			}
-			if !match && !multiTokenQuery {
-				match = hasWordPrefix(item.Norm, norm) || hasWordPrefix(item.Raw, rawNorm)
-			}
-			if !match && useOrderedTokenFallback {
-				match = hasOrderedTokenPrefixMatchTokens(item.Norm, queryTokens)
-				if !match {
-					match = hasOrderedTokenPrefixMatchTokens(item.Raw, rawQueryTokens)
-				}
-			}
-			if match {
-				appendMatch(item)
-				if len(out) >= limit {
-					break
-				}
-			}
-		}
-	}
-
-	return out
 }
 
 func main() {
@@ -194,18 +44,27 @@ func main() {
 		log.Fatalf("failed to open database: %v", err)
 	}
 
-	movies.Seed(db)
 	if table := db.Table("movies"); table != nil {
 		log.Printf("movies-go-react: loaded %d movies from %s", table.Count(), dataDir)
 	}
 
-	autocomplete := newAutocompleteIndex(nil)
+	autocomplete := flop.NewAutocompleteIndex(nil)
 	indexState := &indexBuildState{
 		building:  true,
 		startedAt: time.Now(),
 	}
 	go func() {
-		entries, err := movies.AllMovieIndexEntries(db)
+		table := db.Table("movies")
+		if table == nil {
+			indexState.mu.Lock()
+			indexState.building = false
+			indexState.finishedAt = time.Now()
+			indexState.lastError = "movies table not found"
+			indexState.mu.Unlock()
+			return
+		}
+
+		entries, err := table.BuildAutocompleteEntries("slug", "title", "year")
 		indexState.mu.Lock()
 		defer indexState.mu.Unlock()
 		indexState.building = false
@@ -215,7 +74,7 @@ func main() {
 			log.Printf("movies-go-react: autocomplete index build failed: %v", err)
 			return
 		}
-		autocomplete.add(entries)
+		autocomplete.Add(entries)
 		indexState.ready = true
 		indexState.total = len(entries)
 		log.Printf("movies-go-react: autocomplete index ready with %d entries in %s", len(entries), time.Since(indexState.startedAt).Round(time.Millisecond))
@@ -285,7 +144,20 @@ func main() {
 		}
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 		limit := clampInt(queryInt(r, "limit", 10), 1, 20)
-		writeJSON(w, map[string]any{"ok": true, "data": autocomplete.query(q, limit)})
+		rows := autocomplete.Query(q, limit)
+		out := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			year := 0
+			if row.Data != nil {
+				year = toInt(row.Data["year"])
+			}
+			out = append(out, map[string]any{
+				"slug":  row.Key,
+				"title": row.Text,
+				"year":  year,
+			})
+		}
+		writeJSON(w, map[string]any{"ok": true, "data": out})
 	})
 
 	mux.HandleFunc("/api/movies/slug/", func(w http.ResponseWriter, r *http.Request) {
@@ -511,86 +383,6 @@ func writeJSON(w http.ResponseWriter, payload map[string]any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func normalizeSearch(s string) string {
-	norm := normalizeSearchRaw(s)
-	if norm == "" {
-		return ""
-	}
-
-	// Canonicalize Roman sequel numerals to Arabic numbers so:
-	// "Mortal Kombat II" and "Mortal Kombat 2" normalize identically.
-	tokens := strings.Fields(norm)
-	for i := range tokens {
-		if arabic, ok := romanNumeralArabic(tokens[i]); ok {
-			tokens[i] = arabic
-		}
-	}
-	return strings.Join(tokens, " ")
-}
-
-func normalizeSearchRaw(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	lastSpace := true
-	for _, r := range strings.ToLower(s) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-			lastSpace = false
-			continue
-		}
-		if !lastSpace {
-			b.WriteByte(' ')
-			lastSpace = true
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func romanNumeralArabic(token string) (string, bool) {
-	switch token {
-	case "ii":
-		return "2", true
-	case "iii":
-		return "3", true
-	case "iv":
-		return "4", true
-	case "v":
-		return "5", true
-	case "vi":
-		return "6", true
-	case "vii":
-		return "7", true
-	case "viii":
-		return "8", true
-	case "ix":
-		return "9", true
-	case "x":
-		return "10", true
-	case "xi":
-		return "11", true
-	case "xii":
-		return "12", true
-	case "xiii":
-		return "13", true
-	case "xiv":
-		return "14", true
-	case "xv":
-		return "15", true
-	case "xvi":
-		return "16", true
-	case "xvii":
-		return "17", true
-	case "xviii":
-		return "18", true
-	case "xix":
-		return "19", true
-	case "xx":
-		return "20", true
-	default:
-		return "", false
-	}
-}
-
 func queryInt(r *http.Request, key string, fallback int) int {
 	value := strings.TrimSpace(r.URL.Query().Get(key))
 	if value == "" {
@@ -620,81 +412,6 @@ func max(a, b int) int {
 	return b
 }
 
-func removeLeadingArticle(s string) string {
-	s = strings.TrimSpace(s)
-	for _, prefix := range []string{"the ", "a ", "an "} {
-		if strings.HasPrefix(s, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(s, prefix))
-		}
-	}
-	return s
-}
-
-func hasWordPrefix(text, query string) bool {
-	if text == "" || query == "" {
-		return false
-	}
-	for _, word := range strings.Fields(text) {
-		if strings.HasPrefix(word, query) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasOrderedTokenPrefixMatch(text, query string) bool {
-	return hasOrderedTokenPrefixMatchTokens(text, strings.Fields(query))
-}
-
-func hasOrderedTokenPrefixMatchTokens(text string, queryTokens []string) bool {
-	if text == "" {
-		return false
-	}
-
-	titleTokens := strings.Fields(text)
-	if len(titleTokens) == 0 || len(queryTokens) == 0 {
-		return false
-	}
-
-	ti := 0
-	for _, q := range queryTokens {
-		found := false
-		for ti < len(titleTokens) {
-			if strings.HasPrefix(titleTokens[ti], q) {
-				found = true
-				ti++
-				break
-			}
-			ti++
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-func shouldUseOrderedTokenFallback(queryTokens []string) bool {
-	if len(queryTokens) < 2 || len(queryTokens) > 7 {
-		return false
-	}
-	shortTokens := 0
-	for _, token := range queryTokens {
-		if len(token) <= 1 {
-			shortTokens++
-		}
-	}
-	// Queries like "a b c d e" are too ambiguous and expensive to run
-	// through ordered token matching across the full catalog.
-	if shortTokens == len(queryTokens) {
-		return false
-	}
-	if shortTokens*2 > len(queryTokens) {
-		return false
-	}
-	return true
-}
-
 func computeAssetVersion(webDir string) string {
 	assets := []string{"app.js", "app.css", "favicon.svg"}
 	var b strings.Builder
@@ -715,4 +432,21 @@ func computeAssetVersion(webDir string) string {
 		return strconv.FormatInt(time.Now().Unix(), 36)
 	}
 	return strconv.FormatUint(uint64(crc32.ChecksumIEEE([]byte(b.String()))), 36)
+}
+
+func toInt(v any) int {
+	switch val := v.(type) {
+	case int:
+		return val
+	case int32:
+		return int(val)
+	case int64:
+		return int(val)
+	case float64:
+		return int(val)
+	case float32:
+		return int(val)
+	default:
+		return 0
+	}
 }
