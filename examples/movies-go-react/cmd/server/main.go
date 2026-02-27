@@ -501,7 +501,65 @@ func normalizeSearch(s string) string {
 			lastSpace = true
 		}
 	}
-	return strings.TrimSpace(b.String())
+	norm := strings.TrimSpace(b.String())
+	if norm == "" {
+		return ""
+	}
+
+	// Canonicalize Roman sequel numerals to Arabic numbers so:
+	// "Mortal Kombat II" and "Mortal Kombat 2" normalize identically.
+	tokens := strings.Fields(norm)
+	for i := range tokens {
+		if arabic, ok := romanNumeralArabic(tokens[i]); ok {
+			tokens[i] = arabic
+		}
+	}
+	return strings.Join(tokens, " ")
+}
+
+func romanNumeralArabic(token string) (string, bool) {
+	switch token {
+	case "ii":
+		return "2", true
+	case "iii":
+		return "3", true
+	case "iv":
+		return "4", true
+	case "v":
+		return "5", true
+	case "vi":
+		return "6", true
+	case "vii":
+		return "7", true
+	case "viii":
+		return "8", true
+	case "ix":
+		return "9", true
+	case "x":
+		return "10", true
+	case "xi":
+		return "11", true
+	case "xii":
+		return "12", true
+	case "xiii":
+		return "13", true
+	case "xiv":
+		return "14", true
+	case "xv":
+		return "15", true
+	case "xvi":
+		return "16", true
+	case "xvii":
+		return "17", true
+	case "xviii":
+		return "18", true
+	case "xix":
+		return "19", true
+	case "xx":
+		return "20", true
+	default:
+		return "", false
+	}
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

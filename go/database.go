@@ -131,6 +131,11 @@ func (ti *TableInstance) Count() int {
 	return ti.ti.Count()
 }
 
+// SecondaryIndexesReady reports whether non-primary indexes are fully built.
+func (ti *TableInstance) SecondaryIndexesReady() bool {
+	return ti.ti.SecondaryIndexesReady()
+}
+
 // FindByEmail finds a row by the "email" unique index.
 func (ti *TableInstance) FindByEmail(email string) (map[string]any, bool) {
 	ptr, ok := ti.ti.FindByIndex([]string{"email"}, email)
