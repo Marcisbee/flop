@@ -33,3 +33,6 @@ deno run --allow-net benchmarks/go-finance/seed.ts --host=http://localhost:1985
 - Data directory defaults to `benchmarks/go-finance/data`.
 - Auth endpoints, reducers, views, and SSE routes are compatible with the existing finance seed script.
 - This benchmark is intended for TypeScript vs pure-Go runtime comparison.
+- Schema is defined in `appschema/` and generated models/tables live in `appschema/gen/`.
+- Regenerate artifacts with:
+  - `GOCACHE=/tmp/go-build-cache go run ./cmd/gen`

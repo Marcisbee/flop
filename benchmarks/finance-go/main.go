@@ -19,6 +19,8 @@ import (
 	"time"
 
 	flop "github.com/marcisbee/flop"
+	financeapp "github.com/marcisbee/flop/benchmarks/finance-go/appschema"
+	fgen "github.com/marcisbee/flop/benchmarks/finance-go/appschema/gen"
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/server"
@@ -31,17 +33,21 @@ type appServer struct {
 	benchDir string
 	admin    http.Handler
 
-	users        *engine.TableInstance
-	accounts     *engine.TableInstance
-	transactions *engine.TableInstance
-	ledger       *engine.TableInstance
+	users         *engine.TableInstance
+	accounts      *engine.TableInstance
+	transactions  *engine.TableInstance
+	ledger        *engine.TableInstance
+	usersT        typedEngineTable[fgen.User]
+	accountsT     typedEngineTable[fgen.Account]
+	transactionsT typedEngineTable[fgen.Transaction]
+	ledgerT       typedEngineTable[fgen.Ledger]
 
 	accountLocks [1024]sync.Mutex
 
 	stats statsCache
 
 	recentTxMu    sync.RWMutex
-	recentTxRing  []map[string]any
+	recentTxRing  []fgen.Transaction
 	recentTxHead  int
 	recentTxSize  int
 	recentTxLimit int
@@ -76,6 +82,91 @@ var viewTableDeps = map[string][]string{
 	"get_recent_transactions": {"transactions"},
 	"get_transactions":        {"transactions"},
 	"get_ledger":              {"ledger"},
+}
+
+type typedEngineTable[T any] struct {
+	raw *engine.TableInstance
+}
+
+func newTypedEngineTable[T any](raw *engine.TableInstance) typedEngineTable[T] {
+	return typedEngineTable[T]{raw: raw}
+}
+
+func (t typedEngineTable[T]) Insert(row T) (T, error) {
+	m, err := structToMap(row)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	if def := t.raw.GetDef(); def != nil && def.CompiledSchema != nil {
+		for _, f := range def.CompiledSchema.Fields {
+			if f.AutoGenPattern == "" {
+				continue
+			}
+			v, ok := m[f.Name]
+			if !ok {
+				continue
+			}
+			if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+				delete(m, f.Name)
+			}
+		}
+	}
+	out, err := t.raw.Insert(m, nil)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return mapToStruct[T](out)
+}
+
+func (t typedEngineTable[T]) Get(id string) (*T, error) {
+	m, err := t.raw.Get(id)
+	if err != nil || m == nil {
+		return nil, err
+	}
+	v, err := mapToStruct[T](m)
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
+}
+
+func (t typedEngineTable[T]) Update(id string, fields map[string]any) (T, error) {
+	out, err := t.raw.Update(id, fields, nil)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return mapToStruct[T](out)
+}
+
+func (t typedEngineTable[T]) Scan(limit, offset int) ([]T, error) {
+	rows, err := t.raw.Scan(limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return mapsToStructs[T](rows)
+}
+
+func (t typedEngineTable[T]) FindAllByIndex(field string, value any) ([]T, error) {
+	ptrs := t.raw.FindAllByIndex([]string{field}, value)
+	out := make([]T, 0, len(ptrs))
+	for _, p := range ptrs {
+		row, err := t.raw.GetByPointer(p)
+		if err != nil {
+			return nil, err
+		}
+		if row == nil {
+			continue
+		}
+		v, err := mapToStruct[T](row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 func main() {
@@ -123,15 +214,19 @@ func main() {
 		auth:         server.NewAuthService(authTable, secret),
 		secret:       secret,
 		benchDir:     benchDir,
-		users:        db.GetTable("users"),
-		accounts:     db.GetTable("accounts"),
-		transactions: db.GetTable("transactions"),
-		ledger:       db.GetTable("ledger"),
+		users:        db.GetTable(fgen.TableUsers),
+		accounts:     db.GetTable(fgen.TableAccounts),
+		transactions: db.GetTable(fgen.TableTransactions),
+		ledger:       db.GetTable(fgen.TableLedger),
 
 		recentTxLimit: *recentTxLimit,
 		sseBatchSize:  maxInt(*sseBatchSize, 16),
 		sseFlushEvery: time.Duration(maxInt(*sseFlushMS, 5)) * time.Millisecond,
 	}
+	srv.usersT = newTypedEngineTable[fgen.User](srv.users)
+	srv.accountsT = newTypedEngineTable[fgen.Account](srv.accounts)
+	srv.transactionsT = newTypedEngineTable[fgen.Transaction](srv.transactions)
+	srv.ledgerT = newTypedEngineTable[fgen.Ledger](srv.ledger)
 	setupToken := ""
 	if !srv.auth.HasSuperadmin() {
 		setupToken = generateToken(32)
@@ -191,48 +286,7 @@ func setupHint(token string) string {
 }
 
 func buildTableDefs() map[string]*schema.TableDef {
-	app := flop.New(flop.Config{})
-
-	users := flop.Define(app, "users", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
-		s.String("email").Required().Unique().Email().MaxLen(255)
-		s.Bcrypt("password", 10).Required()
-		s.String("name").Required().MinLen(2).MaxLen(120)
-		s.Roles("roles")
-	})
-
-	accounts := flop.Define(app, "accounts", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
-		s.Ref("ownerId", users, "id").Required().Index()
-		s.String("name").Required().MaxLen(120)
-		s.Enum("type", "checking", "savings", "credit").Required()
-		s.Number("balance").Required()
-		s.String("currency").Required().MaxLen(8)
-		s.Timestamp("createdAt").DefaultNow()
-	})
-
-	transactions := flop.Define(app, "transactions", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
-		s.Ref("fromAccountId", accounts, "id").Required().Index()
-		s.Ref("toAccountId", accounts, "id").Required().Index()
-		s.Number("amount").Required()
-		s.String("currency").Required().MaxLen(8)
-		s.Enum("status", "pending", "completed", "failed").Required()
-		s.String("description")
-		s.Timestamp("createdAt").DefaultNow()
-	})
-
-	flop.Define(app, "ledger", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
-		s.Ref("accountId", accounts, "id").Required().Index()
-		s.Ref("transactionId", transactions, "id").Required()
-		s.Number("amount").Required()
-		s.Number("balanceAfter").Required()
-		s.Enum("type", "debit", "credit").Required()
-		s.Timestamp("createdAt").DefaultNow()
-	})
-
-	return app.BuildEngineTableDefs()
+	return financeapp.BuildTableDefs()
 }
 
 func (s *appServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -415,32 +469,30 @@ func (s *appServer) execView(name string, params map[string]string, auth *schema
 	case "get_stats":
 		return s.statsSnapshot(), http.StatusOK, nil
 	case "get_all_accounts":
-		rows, err := s.accounts.Scan(10000, 0)
+		rows, err := s.accountsT.Scan(10000, 0)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
-		return nonNilRows(rows), http.StatusOK, nil
+		return rows, http.StatusOK, nil
 	case "get_accounts":
 		if auth == nil {
 			return nil, http.StatusUnauthorized, errors.New("authentication required")
 		}
-		ptrs := s.accounts.FindAllByIndex([]string{"ownerId"}, auth.ID)
-		rows, err := rowsByPointers(s.accounts, ptrs)
+		rows, err := s.accountsT.FindAllByIndex("ownerId", auth.ID)
 		if err == nil {
-			return nonNilRows(rows), http.StatusOK, nil
+			return rows, http.StatusOK, nil
 		}
-		// Fallback for old data/index states.
-		allRows, scanErr := s.accounts.Scan(10000, 0)
+		allRows, scanErr := s.accountsT.Scan(10000, 0)
 		if scanErr != nil {
 			return nil, http.StatusBadRequest, scanErr
 		}
-		filtered := make([]map[string]any, 0, len(allRows))
+		filtered := make([]fgen.Account, 0, len(allRows))
 		for _, row := range allRows {
-			if toString(row["ownerId"]) == auth.ID {
+			if row.OwnerID == auth.ID {
 				filtered = append(filtered, row)
 			}
 		}
-		return nonNilRows(filtered), http.StatusOK, nil
+		return filtered, http.StatusOK, nil
 	case "get_recent_transactions":
 		limit := atoiOr(params["limit"], 100)
 		if limit <= 0 {
@@ -452,45 +504,42 @@ func (s *appServer) execView(name string, params map[string]string, auth *schema
 			return nil, http.StatusUnauthorized, errors.New("authentication required")
 		}
 		accountID := params["accountId"]
-		fromPtrs := s.transactions.FindAllByIndex([]string{"fromAccountId"}, accountID)
-		toPtrs := s.transactions.FindAllByIndex([]string{"toAccountId"}, accountID)
-		rows, err := rowsByPointers(s.transactions, append(fromPtrs, toPtrs...))
-		if err == nil {
-			return nonNilRows(deduplicateRowsByID(rows)), http.StatusOK, nil
+		fromRows, fromErr := s.transactionsT.FindAllByIndex("fromAccountId", accountID)
+		toRows, toErr := s.transactionsT.FindAllByIndex("toAccountId", accountID)
+		if fromErr == nil && toErr == nil {
+			return deduplicateTransactionsByID(append(fromRows, toRows...)), http.StatusOK, nil
 		}
-		// Fallback for old data/index states.
-		allRows, scanErr := s.transactions.Scan(10000, 0)
+		allRows, scanErr := s.transactionsT.Scan(10000, 0)
 		if scanErr != nil {
 			return nil, http.StatusBadRequest, scanErr
 		}
-		filtered := make([]map[string]any, 0, len(allRows))
+		filtered := make([]fgen.Transaction, 0, len(allRows))
 		for _, row := range allRows {
-			if toString(row["fromAccountId"]) == accountID || toString(row["toAccountId"]) == accountID {
+			if row.FromAccountID == accountID || row.ToAccountID == accountID {
 				filtered = append(filtered, row)
 			}
 		}
-		return nonNilRows(filtered), http.StatusOK, nil
+		return filtered, http.StatusOK, nil
 	case "get_ledger":
 		if auth == nil {
 			return nil, http.StatusUnauthorized, errors.New("authentication required")
 		}
 		accountID := params["accountId"]
-		ptrs := s.ledger.FindAllByIndex([]string{"accountId"}, accountID)
-		rows, err := rowsByPointers(s.ledger, ptrs)
+		rows, err := s.ledgerT.FindAllByIndex("accountId", accountID)
 		if err == nil {
-			return nonNilRows(rows), http.StatusOK, nil
+			return rows, http.StatusOK, nil
 		}
-		allRows, scanErr := s.ledger.Scan(10000, 0)
+		allRows, scanErr := s.ledgerT.Scan(10000, 0)
 		if scanErr != nil {
 			return nil, http.StatusBadRequest, scanErr
 		}
-		filtered := make([]map[string]any, 0, len(allRows))
+		filtered := make([]fgen.Ledger, 0, len(allRows))
 		for _, row := range allRows {
-			if toString(row["accountId"]) == accountID {
+			if row.AccountID == accountID {
 				filtered = append(filtered, row)
 			}
 		}
-		return nonNilRows(filtered), http.StatusOK, nil
+		return filtered, http.StatusOK, nil
 	default:
 		return nil, http.StatusNotFound, errors.New("unknown view")
 	}
@@ -503,13 +552,13 @@ func (s *appServer) execReducer(name string, params map[string]any, auth *schema
 		if accountType != "checking" && accountType != "savings" && accountType != "credit" {
 			return nil, http.StatusBadRequest, errors.New("invalid account type")
 		}
-		row, err := s.accounts.Insert(map[string]any{
-			"ownerId":  auth.ID,
-			"name":     toString(params["name"]),
-			"type":     accountType,
-			"balance":  float64(0),
-			"currency": defaultString(toString(params["currency"]), "USD"),
-		}, nil)
+		row, err := s.accountsT.Insert(fgen.Account{
+			OwnerID:  auth.ID,
+			Name:     toString(params["name"]),
+			Type:     accountType,
+			Balance:  0,
+			Currency: defaultString(toString(params["currency"]), "USD"),
+		})
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
@@ -533,7 +582,7 @@ func (s *appServer) deposit(accountID string, amount float64) (any, int, error) 
 	lock.Lock()
 	defer lock.Unlock()
 
-	account, err := s.accounts.Get(accountID)
+	account, err := s.accountsT.Get(accountID)
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
@@ -541,36 +590,37 @@ func (s *appServer) deposit(accountID string, amount float64) (any, int, error) 
 		return nil, http.StatusBadRequest, errors.New("account not found")
 	}
 
-	newBalance := toFloat64(account["balance"]) + amount
-	if _, err := s.accounts.Update(accountID, map[string]any{"balance": newBalance}, nil); err != nil {
+	newBalance := account.Balance + amount
+	if _, err := s.accountsT.Update(accountID, map[string]any{"balance": newBalance}); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
 
-	tx, err := s.transactions.Insert(map[string]any{
-		"fromAccountId": "EXTERNAL",
-		"toAccountId":   accountID,
-		"amount":        amount,
-		"currency":      toString(account["currency"]),
-		"status":        "completed",
-		"description":   "Deposit",
-	}, nil)
+	desc := "Deposit"
+	tx, err := s.transactionsT.Insert(fgen.Transaction{
+		FromAccountID: "EXTERNAL",
+		ToAccountID:   accountID,
+		Amount:        amount,
+		Currency:      account.Currency,
+		Status:        "completed",
+		Description:   &desc,
+	})
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
 
-	if _, err := s.ledger.Insert(map[string]any{
-		"accountId":     accountID,
-		"transactionId": toString(tx["id"]),
-		"amount":        amount,
-		"balanceAfter":  newBalance,
-		"type":          "credit",
-	}, nil); err != nil {
+	if _, err := s.ledgerT.Insert(fgen.Ledger{
+		AccountID:     accountID,
+		TransactionID: tx.ID,
+		Amount:        amount,
+		BalanceAfter:  newBalance,
+		Type:          "credit",
+	}); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
 	s.statsOnDeposit(amount)
 	s.pushRecentTx(tx)
 
-	return map[string]any{"balance": newBalance, "transactionId": tx["id"]}, http.StatusOK, nil
+	return map[string]any{"balance": newBalance, "transactionId": tx.ID}, http.StatusOK, nil
 }
 
 func (s *appServer) transfer(_userID, fromID, toID string, amount float64, description string) (any, int, error) {
@@ -597,7 +647,7 @@ func (s *appServer) transfer(_userID, fromID, toID string, amount float64, descr
 		defer s.accountLocks[i2].Unlock()
 	}
 
-	from, err := s.accounts.Get(fromID)
+	from, err := s.accountsT.Get(fromID)
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
@@ -605,7 +655,7 @@ func (s *appServer) transfer(_userID, fromID, toID string, amount float64, descr
 		return nil, http.StatusBadRequest, errors.New("source account not found")
 	}
 
-	to, err := s.accounts.Get(toID)
+	to, err := s.accountsT.Get(toID)
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
@@ -613,72 +663,74 @@ func (s *appServer) transfer(_userID, fromID, toID string, amount float64, descr
 		return nil, http.StatusBadRequest, errors.New("destination account not found")
 	}
 
-	fromBalance := toFloat64(from["balance"])
-	toBalance := toFloat64(to["balance"])
-	currency := toString(from["currency"])
+	fromBalance := from.Balance
+	toBalance := to.Balance
+	currency := from.Currency
 
 	if fromBalance < amount {
-		tx, err := s.transactions.Insert(map[string]any{
-			"fromAccountId": fromID,
-			"toAccountId":   toID,
-			"amount":        amount,
-			"currency":      currency,
-			"status":        "failed",
-			"description":   defaultString(description, "Transfer (insufficient funds)"),
-		}, nil)
+		desc := defaultString(description, "Transfer (insufficient funds)")
+		tx, err := s.transactionsT.Insert(fgen.Transaction{
+			FromAccountID: fromID,
+			ToAccountID:   toID,
+			Amount:        amount,
+			Currency:      currency,
+			Status:        "failed",
+			Description:   &desc,
+		})
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
 		s.statsOnFailedTransfer()
 		s.pushRecentTx(tx)
-		return map[string]any{"status": "failed", "reason": "insufficient_funds", "transactionId": tx["id"]}, http.StatusOK, nil
+		return map[string]any{"status": "failed", "reason": "insufficient_funds", "transactionId": tx.ID}, http.StatusOK, nil
 	}
 
 	newFrom := fromBalance - amount
 	newTo := toBalance + amount
 
-	if _, err := s.accounts.Update(fromID, map[string]any{"balance": newFrom}, nil); err != nil {
+	if _, err := s.accountsT.Update(fromID, map[string]any{"balance": newFrom}); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
-	if _, err := s.accounts.Update(toID, map[string]any{"balance": newTo}, nil); err != nil {
+	if _, err := s.accountsT.Update(toID, map[string]any{"balance": newTo}); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
 
-	tx, err := s.transactions.Insert(map[string]any{
-		"fromAccountId": fromID,
-		"toAccountId":   toID,
-		"amount":        amount,
-		"currency":      currency,
-		"status":        "completed",
-		"description":   defaultString(description, "Transfer"),
-	}, nil)
+	desc := defaultString(description, "Transfer")
+	tx, err := s.transactionsT.Insert(fgen.Transaction{
+		FromAccountID: fromID,
+		ToAccountID:   toID,
+		Amount:        amount,
+		Currency:      currency,
+		Status:        "completed",
+		Description:   &desc,
+	})
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
 
-	txID := toString(tx["id"])
-	if _, err := s.ledger.Insert(map[string]any{
-		"accountId":     fromID,
-		"transactionId": txID,
-		"amount":        -amount,
-		"balanceAfter":  newFrom,
-		"type":          "debit",
-	}, nil); err != nil {
+	txID := tx.ID
+	if _, err := s.ledgerT.Insert(fgen.Ledger{
+		AccountID:     fromID,
+		TransactionID: txID,
+		Amount:        -amount,
+		BalanceAfter:  newFrom,
+		Type:          "debit",
+	}); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
-	if _, err := s.ledger.Insert(map[string]any{
-		"accountId":     toID,
-		"transactionId": txID,
-		"amount":        amount,
-		"balanceAfter":  newTo,
-		"type":          "credit",
-	}, nil); err != nil {
+	if _, err := s.ledgerT.Insert(fgen.Ledger{
+		AccountID:     toID,
+		TransactionID: txID,
+		Amount:        amount,
+		BalanceAfter:  newTo,
+		Type:          "credit",
+	}); err != nil {
 		return nil, http.StatusBadRequest, err
 	}
 	s.statsOnCompletedTransfer(amount)
 	s.pushRecentTx(tx)
 
-	return map[string]any{"status": "completed", "transactionId": tx["id"]}, http.StatusOK, nil
+	return map[string]any{"status": "completed", "transactionId": tx.ID}, http.StatusOK, nil
 }
 
 func (s *appServer) rebuildCaches() error {
@@ -694,13 +746,13 @@ func (s *appServer) rebuildCaches() error {
 
 	accountCount := s.accounts.Count()
 	if accountCount > 0 {
-		rows, err := s.accounts.Scan(accountCount, 0)
+		rows, err := s.accountsT.Scan(accountCount, 0)
 		if err != nil {
 			return err
 		}
 		var totalBalance float64
 		for _, row := range rows {
-			totalBalance += toFloat64(row["balance"])
+			totalBalance += row.Balance
 		}
 		s.stats.mu.Lock()
 		s.stats.totalBalance = totalBalance
@@ -709,7 +761,7 @@ func (s *appServer) rebuildCaches() error {
 
 	txCount := s.transactions.Count()
 	if txCount > 0 {
-		rows, err := s.transactions.Scan(txCount, 0)
+		rows, err := s.transactionsT.Scan(txCount, 0)
 		if err != nil {
 			return err
 		}
@@ -717,10 +769,10 @@ func (s *appServer) rebuildCaches() error {
 		failed := 0
 		var totalVolume float64
 		for _, row := range rows {
-			switch toString(row["status"]) {
+			switch row.Status {
 			case "completed":
 				completed++
-				totalVolume += toFloat64(row["amount"])
+				totalVolume += row.Amount
 			case "failed":
 				failed++
 			}
@@ -734,19 +786,19 @@ func (s *appServer) rebuildCaches() error {
 
 	s.recentTxMu.Lock()
 	if s.recentTxLimit > 0 {
-		s.recentTxRing = make([]map[string]any, s.recentTxLimit)
+		s.recentTxRing = make([]fgen.Transaction, s.recentTxLimit)
 		s.recentTxHead = 0
 		s.recentTxSize = 0
 		recentCount := minInt(txCount, s.recentTxLimit)
 		if recentCount > 0 {
 			offset := txCount - recentCount
-			rows, err := s.transactions.Scan(recentCount, offset)
+			rows, err := s.transactionsT.Scan(recentCount, offset)
 			if err != nil {
 				s.recentTxMu.Unlock()
 				return err
 			}
 			for _, row := range rows {
-				s.recentTxRing[s.recentTxHead] = copyRowMap(row)
+				s.recentTxRing[s.recentTxHead] = row
 				s.recentTxHead = (s.recentTxHead + 1) % s.recentTxLimit
 				if s.recentTxSize < s.recentTxLimit {
 					s.recentTxSize++
@@ -813,15 +865,15 @@ func (s *appServer) statsOnCompletedTransfer(amount float64) {
 	s.stats.mu.Unlock()
 }
 
-func (s *appServer) pushRecentTx(tx map[string]any) {
+func (s *appServer) pushRecentTx(tx fgen.Transaction) {
 	if s.recentTxLimit <= 0 {
 		return
 	}
 	s.recentTxMu.Lock()
 	if len(s.recentTxRing) == 0 {
-		s.recentTxRing = make([]map[string]any, s.recentTxLimit)
+		s.recentTxRing = make([]fgen.Transaction, s.recentTxLimit)
 	}
-	s.recentTxRing[s.recentTxHead] = copyRowMap(tx)
+	s.recentTxRing[s.recentTxHead] = tx
 	s.recentTxHead = (s.recentTxHead + 1) % len(s.recentTxRing)
 	if s.recentTxSize < len(s.recentTxRing) {
 		s.recentTxSize++
@@ -829,7 +881,7 @@ func (s *appServer) pushRecentTx(tx map[string]any) {
 	s.recentTxMu.Unlock()
 }
 
-func (s *appServer) getRecentTransactions(limit int) []map[string]any {
+func (s *appServer) getRecentTransactions(limit int) []fgen.Transaction {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -838,18 +890,14 @@ func (s *appServer) getRecentTransactions(limit int) []map[string]any {
 	defer s.recentTxMu.RUnlock()
 
 	if s.recentTxSize == 0 || len(s.recentTxRing) == 0 {
-		return []map[string]any{}
+		return []fgen.Transaction{}
 	}
 
 	n := minInt(limit, s.recentTxSize)
-	out := make([]map[string]any, 0, n)
+	out := make([]fgen.Transaction, 0, n)
 	for i := 0; i < n; i++ {
 		idx := (s.recentTxHead - 1 - i + len(s.recentTxRing)) % len(s.recentTxRing)
-		row := s.recentTxRing[idx]
-		if row == nil {
-			continue
-		}
-		out = append(out, copyRowMap(row))
+		out = append(out, s.recentTxRing[idx])
 	}
 	return out
 }
@@ -990,39 +1038,21 @@ func (s *appServer) streamSSE(w http.ResponseWriter, r *http.Request, rawViews [
 	}
 }
 
-func rowsByPointers(table *engine.TableInstance, pointers []schema.RowPointer) ([]map[string]any, error) {
-	if len(pointers) == 0 {
-		return []map[string]any{}, nil
-	}
-	rows := make([]map[string]any, 0, len(pointers))
-	for _, p := range pointers {
-		row, err := table.GetByPointer(p)
-		if err != nil {
-			return nil, err
-		}
-		if row != nil {
-			rows = append(rows, row)
-		}
-	}
-	return rows, nil
-}
-
-func deduplicateRowsByID(rows []map[string]any) []map[string]any {
+func deduplicateTransactionsByID(rows []fgen.Transaction) []fgen.Transaction {
 	if len(rows) == 0 {
 		return rows
 	}
 	seen := make(map[string]struct{}, len(rows))
-	out := make([]map[string]any, 0, len(rows))
+	out := make([]fgen.Transaction, 0, len(rows))
 	for _, row := range rows {
-		id := toString(row["id"])
-		if id == "" {
+		if row.ID == "" {
 			out = append(out, row)
 			continue
 		}
-		if _, ok := seen[id]; ok {
+		if _, ok := seen[row.ID]; ok {
 			continue
 		}
-		seen[id] = struct{}{}
+		seen[row.ID] = struct{}{}
 		out = append(out, row)
 	}
 	return out
@@ -1140,6 +1170,48 @@ func jsonResp(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func structToMap[T any](v T) (map[string]any, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out, nil
+}
+
+func mapToStruct[T any](m map[string]any) (T, error) {
+	var out T
+	data, err := json.Marshal(m)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func mapsToStructs[T any](rows []map[string]any) ([]T, error) {
+	if len(rows) == 0 {
+		return []T{}, nil
+	}
+	out := make([]T, 0, len(rows))
+	for _, row := range rows {
+		item, err := mapToStruct[T](row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 func toString(v any) string {
 	if v == nil {
 		return ""
@@ -1212,13 +1284,6 @@ func generateToken(length int) string {
 		return s[:length]
 	}
 	return s
-}
-
-func nonNilRows(rows []map[string]any) []map[string]any {
-	if rows == nil {
-		return []map[string]any{}
-	}
-	return rows
 }
 
 func findModuleRoot() (string, error) {
