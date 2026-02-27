@@ -474,6 +474,7 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 				ti.def.Indexes = append(ti.def.Indexes, schema.IndexDef{
 					Fields: []string{field.Name},
 					Unique: true,
+					Type:   schema.IndexTypeHash,
 				})
 			}
 		}
@@ -481,8 +482,10 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 
 	// Set up secondary indexes
 	for _, indexDef := range ti.def.Indexes {
-		indexKey := strings.Join(indexDef.Fields, ",")
-		if indexDef.Unique {
+		indexKey := secondaryIndexKey(indexDef)
+		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+			ti.secondaryIdxs[indexKey] = storage.NewFullTextIndex()
+		} else if indexDef.Unique {
 			ti.secondaryIdxs[indexKey] = storage.NewHashIndex()
 		} else {
 			ti.secondaryIdxs[indexKey] = storage.NewMultiIndex()
@@ -575,22 +578,28 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 		}
 
 		for _, indexDef := range ti.def.Indexes {
-			indexKey := strings.Join(indexDef.Fields, ",")
+			indexKey := secondaryIndexKey(indexDef)
 			idx := ti.secondaryIdxs[indexKey]
 			if idx == nil {
 				continue
 			}
 
-			keyValues := make([]interface{}, len(indexDef.Fields))
-			for i, f := range indexDef.Fields {
-				keyValues[i] = row[f]
-			}
-			key := storage.CompositeKey(keyValues)
-
 			switch idx := idx.(type) {
+			case *storage.FullTextIndex:
+				idx.Index(toString(row[ti.primaryKeyField()]), textValuesForFields(row, indexDef.Fields)...)
 			case *storage.HashIndex:
+				keyValues := make([]interface{}, len(indexDef.Fields))
+				for i, f := range indexDef.Fields {
+					keyValues[i] = row[f]
+				}
+				key := storage.CompositeKey(keyValues)
 				idx.Set(key, pointer)
 			case *storage.MultiIndex:
+				keyValues := make([]interface{}, len(indexDef.Fields))
+				for i, f := range indexDef.Fields {
+					keyValues[i] = row[f]
+				}
+				key := storage.CompositeKey(keyValues)
 				idx.Add(key, pointer)
 			}
 		}
@@ -672,10 +681,10 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	}
 
 	for _, indexDef := range ti.def.Indexes {
-		if !indexDef.Unique {
+		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText || !indexDef.Unique {
 			continue
 		}
-		indexKey := strings.Join(indexDef.Fields, ",")
+		indexKey := secondaryIndexKey(indexDef)
 		idx := ti.secondaryIdxs[indexKey]
 		if hi, ok := idx.(*storage.HashIndex); ok {
 			keyValues := make([]interface{}, len(indexDef.Fields))
@@ -714,17 +723,24 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		ti.primaryIndex.Set(pk, pointer)
 	}
 	for _, indexDef := range ti.def.Indexes {
-		indexKey := strings.Join(indexDef.Fields, ",")
+		indexKey := secondaryIndexKey(indexDef)
 		idx := ti.secondaryIdxs[indexKey]
-		keyValues := make([]interface{}, len(indexDef.Fields))
-		for i, f := range indexDef.Fields {
-			keyValues[i] = row[f]
-		}
-		key := storage.CompositeKey(keyValues)
 		switch idx := idx.(type) {
+		case *storage.FullTextIndex:
+			idx.Index(pk, textValuesForFields(row, indexDef.Fields)...)
 		case *storage.HashIndex:
+			keyValues := make([]interface{}, len(indexDef.Fields))
+			for i, f := range indexDef.Fields {
+				keyValues[i] = row[f]
+			}
+			key := storage.CompositeKey(keyValues)
 			idx.Set(key, pointer)
 		case *storage.MultiIndex:
+			keyValues := make([]interface{}, len(indexDef.Fields))
+			for i, f := range indexDef.Fields {
+				keyValues[i] = row[f]
+			}
+			key := storage.CompositeKey(keyValues)
 			idx.Add(key, pointer)
 		}
 	}
@@ -988,8 +1004,11 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 
 		// Fix pointers in secondary indexes for the relocated row
 		for _, indexDef := range ti.def.Indexes {
-			indexKey := strings.Join(indexDef.Fields, ",")
+			indexKey := secondaryIndexKey(indexDef)
 			idx := ti.secondaryIdxs[indexKey]
+			if _, isFullText := idx.(*storage.FullTextIndex); isFullText {
+				continue
+			}
 			keyValues := make([]interface{}, len(indexDef.Fields))
 			for i, f := range indexDef.Fields {
 				keyValues[i] = newRow[f]
@@ -1027,10 +1046,10 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 // validateIndexChanges checks unique constraints for changed indexed fields.
 func (ti *TableInstance) validateIndexChanges(existing, newRow map[string]interface{}) error {
 	for _, indexDef := range ti.def.Indexes {
-		if !indexDef.Unique {
+		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText || !indexDef.Unique {
 			continue
 		}
-		indexKey := strings.Join(indexDef.Fields, ",")
+		indexKey := secondaryIndexKey(indexDef)
 		idx := ti.secondaryIdxs[indexKey]
 
 		oldValues := make([]interface{}, len(indexDef.Fields))
@@ -1058,8 +1077,13 @@ func (ti *TableInstance) validateIndexChanges(existing, newRow map[string]interf
 // applyIndexChanges removes old index entries and adds new ones for changed fields.
 func (ti *TableInstance) applyIndexChanges(existing, newRow map[string]interface{}, pointer schema.RowPointer) {
 	for _, indexDef := range ti.def.Indexes {
-		indexKey := strings.Join(indexDef.Fields, ",")
+		indexKey := secondaryIndexKey(indexDef)
 		idx := ti.secondaryIdxs[indexKey]
+
+		if fti, ok := idx.(*storage.FullTextIndex); ok {
+			fti.Index(toString(newRow[ti.primaryKeyField()]), textValuesForFields(newRow, indexDef.Fields)...)
+			continue
+		}
 
 		oldValues := make([]interface{}, len(indexDef.Fields))
 		newValues := make([]interface{}, len(indexDef.Fields))
@@ -1129,17 +1153,24 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	// Remove from indexes
 	ti.primaryIndex.Delete(key)
 	for _, indexDef := range ti.def.Indexes {
-		indexKey := strings.Join(indexDef.Fields, ",")
+		indexKey := secondaryIndexKey(indexDef)
 		idx := ti.secondaryIdxs[indexKey]
-		keyValues := make([]interface{}, len(indexDef.Fields))
-		for i, f := range indexDef.Fields {
-			keyValues[i] = existing[f]
-		}
-		k := storage.CompositeKey(keyValues)
 		switch idx := idx.(type) {
+		case *storage.FullTextIndex:
+			idx.Delete(key)
 		case *storage.HashIndex:
+			keyValues := make([]interface{}, len(indexDef.Fields))
+			for i, f := range indexDef.Fields {
+				keyValues[i] = existing[f]
+			}
+			k := storage.CompositeKey(keyValues)
 			idx.Delete(k)
 		case *storage.MultiIndex:
+			keyValues := make([]interface{}, len(indexDef.Fields))
+			for i, f := range indexDef.Fields {
+				keyValues[i] = existing[f]
+			}
+			k := storage.CompositeKey(keyValues)
 			idx.Delete(k, pointer)
 		}
 	}
@@ -1250,6 +1281,36 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 	return nil
 }
 
+// SearchFullText searches a full-text secondary index over the given fields.
+func (ti *TableInstance) SearchFullText(fields []string, query string, limit int) ([]map[string]interface{}, error) {
+	idx := ti.secondaryIdxs[fullTextIndexKey(fields)]
+	fti, ok := idx.(*storage.FullTextIndex)
+	if !ok {
+		return nil, fmt.Errorf("full-text index not found on fields (%s)", strings.Join(fields, ", "))
+	}
+
+	pks := fti.Search(query, limit)
+	if len(pks) == 0 {
+		return []map[string]interface{}{}, nil
+	}
+
+	results := make([]map[string]interface{}, 0, len(pks))
+	for _, pk := range pks {
+		row, err := ti.Get(pk)
+		if err != nil {
+			return nil, err
+		}
+		if row == nil {
+			continue
+		}
+		results = append(results, row)
+		if limit > 0 && len(results) >= limit {
+			break
+		}
+	}
+	return results, nil
+}
+
 // GetByPointer reads a row from a direct page/slot pointer.
 func (ti *TableInstance) GetByPointer(pointer schema.RowPointer) (map[string]interface{}, error) {
 	page, err := ti.tableFile.GetPage(pointer.PageNumber)
@@ -1311,6 +1372,32 @@ func (ti *TableInstance) Close() error {
 }
 
 // --- Helpers ---
+
+func normalizeIndexType(t schema.IndexType) schema.IndexType {
+	if t == "" {
+		return schema.IndexTypeHash
+	}
+	return t
+}
+
+func secondaryIndexKey(indexDef schema.IndexDef) string {
+	if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+		return fullTextIndexKey(indexDef.Fields)
+	}
+	return strings.Join(indexDef.Fields, ",")
+}
+
+func fullTextIndexKey(fields []string) string {
+	return "ft:" + strings.Join(fields, ",")
+}
+
+func textValuesForFields(row map[string]interface{}, fields []string) []string {
+	values := make([]string, 0, len(fields))
+	for _, field := range fields {
+		values = append(values, toString(row[field]))
+	}
+	return values
+}
 
 func (ti *TableInstance) rowLockForKey(key string) *sync.Mutex {
 	return &ti.rowLocks[hashString(key)%updateLockShards]

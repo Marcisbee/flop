@@ -27,3 +27,4 @@ benchmarks/finance-sqlite-go/finance-sqlite-go
 benchmarks/finance-turso-go/finance-sqlite-go
 benchmarks/finance-turso-go/finance-turso-go
 /benchmarks/.tools
+/examples/movies-go-react/data

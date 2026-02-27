@@ -4,21 +4,21 @@ package schema
 type FieldKind string
 
 const (
-	KindString    FieldKind = "string"
-	KindNumber    FieldKind = "number"
-	KindBoolean   FieldKind = "boolean"
-	KindJson      FieldKind = "json"
-	KindBcrypt    FieldKind = "bcrypt"
-	KindRef       FieldKind = "ref"
-	KindRefMulti  FieldKind = "refMulti"
+	KindString     FieldKind = "string"
+	KindNumber     FieldKind = "number"
+	KindBoolean    FieldKind = "boolean"
+	KindJson       FieldKind = "json"
+	KindBcrypt     FieldKind = "bcrypt"
+	KindRef        FieldKind = "ref"
+	KindRefMulti   FieldKind = "refMulti"
 	KindFileSingle FieldKind = "fileSingle"
 	KindFileMulti  FieldKind = "fileMulti"
-	KindRoles     FieldKind = "roles"
-	KindEnum      FieldKind = "enum"
-	KindInteger   FieldKind = "integer"
-	KindVector    FieldKind = "vector"
-	KindSet       FieldKind = "set"
-	KindTimestamp FieldKind = "timestamp"
+	KindRoles      FieldKind = "roles"
+	KindEnum       FieldKind = "enum"
+	KindInteger    FieldKind = "integer"
+	KindVector     FieldKind = "vector"
+	KindSet        FieldKind = "set"
+	KindTimestamp  FieldKind = "timestamp"
 )
 
 // TypeTag is the binary serialization tag for field values.
@@ -81,8 +81,8 @@ type CompiledField struct {
 
 // CompiledSchema is the in-memory representation of a table schema.
 type CompiledSchema struct {
-	Fields    []CompiledField
-	FieldMap  map[string]*CompiledField
+	Fields   []CompiledField
+	FieldMap map[string]*CompiledField
 }
 
 // NewCompiledSchema builds a CompiledSchema from a slice of fields.
@@ -120,14 +120,14 @@ type StoredSchema struct {
 
 // StoredTableMeta tracks schema version history for a table.
 type StoredTableMeta struct {
-	CurrentSchemaVersion int                     `json:"currentSchemaVersion"`
-	Schemas              map[int]*StoredSchema   `json:"schemas"`
+	CurrentSchemaVersion int                   `json:"currentSchemaVersion"`
+	Schemas              map[int]*StoredSchema `json:"schemas"`
 }
 
 // StoredMeta is the top-level JSON payload of _meta.flop.
 type StoredMeta struct {
-	Version int                        `json:"version"`
-	Created string                     `json:"created"`
+	Version int                         `json:"version"`
+	Created string                      `json:"created"`
 	Tables  map[string]*StoredTableMeta `json:"tables"`
 }
 
@@ -138,15 +138,23 @@ type RowPointer struct {
 }
 
 // IndexDef describes a secondary index.
+type IndexType string
+
+const (
+	IndexTypeHash     IndexType = "hash"
+	IndexTypeFullText IndexType = "fullText"
+)
+
 type IndexDef struct {
 	Fields []string
 	Unique bool
+	Type   IndexType
 }
 
 // MigrationStep is user-defined migration info (extracted from JS).
 type MigrationStep struct {
-	Version   int
-	Rename    map[string]string
+	Version int
+	Rename  map[string]string
 	// Transform is handled on the JS side
 }
 

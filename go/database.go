@@ -150,6 +150,11 @@ func (ti *TableInstance) FindByUniqueIndex(field string, value any) (map[string]
 	return row, true
 }
 
+// SearchFullText searches a configured full-text index on the selected fields.
+func (ti *TableInstance) SearchFullText(fields []string, query string, limit int) ([]map[string]any, error) {
+	return ti.ti.SearchFullText(fields, query, limit)
+}
+
 // BuildEngineTableDefs compiles this App schema to internal engine table defs.
 func (a *App) BuildEngineTableDefs() map[string]*schema.TableDef {
 	return a.buildTableDefs()
@@ -201,12 +206,21 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 				indexes = append(indexes, schema.IndexDef{
 					Fields: []string{fs.JSONName},
 					Unique: true,
+					Type:   schema.IndexTypeHash,
 				})
 			}
 			if fs.Indexed && !fs.Unique {
 				indexes = append(indexes, schema.IndexDef{
 					Fields: []string{fs.JSONName},
 					Unique: false,
+					Type:   schema.IndexTypeHash,
+				})
+			}
+			if fs.FullText {
+				indexes = append(indexes, schema.IndexDef{
+					Fields: []string{fs.JSONName},
+					Unique: false,
+					Type:   schema.IndexTypeFullText,
 				})
 			}
 		}

@@ -202,6 +202,11 @@ func (fb *FieldBuilder[T]) Index() *FieldBuilder[T] {
 	return fb
 }
 
+func (fb *FieldBuilder[T]) FullText() *FieldBuilder[T] {
+	fb.spec.FullText = true
+	return fb
+}
+
 // SchemaBuilder provides a schema-first table definition API.
 type SchemaBuilder struct {
 	table *tableSpec
@@ -360,6 +365,7 @@ func (b *StringFieldRules) Unique() *StringFieldRules          { b.spec.Unique =
 func (b *StringFieldRules) Default(v any) *StringFieldRules    { b.spec.Default = v; return b }
 func (b *StringFieldRules) Autogen(p string) *StringFieldRules { b.spec.Autogen = p; return b }
 func (b *StringFieldRules) Index() *StringFieldRules           { b.spec.Indexed = true; return b }
+func (b *StringFieldRules) FullText() *StringFieldRules        { b.spec.FullText = true; return b }
 func (b *StringFieldRules) Virtual() *StringFieldRules         { b.spec.Virtual = true; return b }
 func (b *StringFieldRules) MinLen(n int) *StringFieldRules     { b.spec.MinLen = &n; return b }
 func (b *StringFieldRules) MaxLen(n int) *StringFieldRules     { b.spec.MaxLen = &n; return b }
@@ -770,6 +776,7 @@ type FieldSpec struct {
 	Unique        bool     `json:"unique,omitempty"`
 	Primary       bool     `json:"primary,omitempty"`
 	Indexed       bool     `json:"indexed,omitempty"`
+	FullText      bool     `json:"fullText,omitempty"`
 	Virtual       bool     `json:"virtual,omitempty"`
 	Default       any      `json:"default,omitempty"`
 	Autogen       string   `json:"autogen,omitempty"`
@@ -946,6 +953,7 @@ type fieldSpec struct {
 	Unique           bool
 	Primary          bool
 	Indexed          bool
+	FullText         bool
 	Virtual          bool
 	Default          any
 	Autogen          string
@@ -976,6 +984,7 @@ func (fs *fieldSpec) toPublic() FieldSpec {
 		Unique:        fs.Unique,
 		Primary:       fs.Primary,
 		Indexed:       fs.Indexed,
+		FullText:      fs.FullText,
 		Virtual:       fs.Virtual,
 		Default:       fs.Default,
 		Autogen:       fs.Autogen,
