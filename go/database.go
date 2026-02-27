@@ -150,6 +150,11 @@ func (ti *TableInstance) FindByUniqueIndex(field string, value any) (map[string]
 	return row, true
 }
 
+// BuildEngineTableDefs compiles this App schema to internal engine table defs.
+func (a *App) BuildEngineTableDefs() map[string]*schema.TableDef {
+	return a.buildTableDefs()
+}
+
 // buildTableDefs converts App table specs to engine TableDefs.
 func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	defs := make(map[string]*schema.TableDef, len(a.tables))

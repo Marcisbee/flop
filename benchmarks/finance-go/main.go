@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -233,100 +232,7 @@ func buildTableDefs() map[string]*schema.TableDef {
 		s.Timestamp("createdAt").DefaultNow()
 	})
 
-	return compileTableDefs(app.Spec())
-}
-
-func compileTableDefs(spec flop.AppSpec) map[string]*schema.TableDef {
-	defs := make(map[string]*schema.TableDef, len(spec.Tables))
-	for _, t := range spec.Tables {
-		fields := make([]schema.CompiledField, 0, len(t.Fields))
-		fieldByJSON := make(map[string]flop.FieldSpec, len(t.Fields))
-		indexes := make([]schema.IndexDef, 0)
-		isAuth := false
-
-		for _, f := range t.Fields {
-			cf := schema.CompiledField{
-				Name:             f.JSONName,
-				Kind:             compileKind(f.Kind),
-				Required:         f.Required,
-				Unique:           f.Unique,
-				DefaultValue:     f.Default,
-				AutoGenPattern:   f.Autogen,
-				BcryptRounds:     f.BcryptRounds,
-				RefTableName:     f.RefTable,
-				RefField:         f.RefField,
-				MimeTypes:        append([]string(nil), f.MimeTypes...),
-				EnumValues:       append([]string(nil), f.EnumValues...),
-				VectorDimensions: f.VectorDims,
-			}
-			fields = append(fields, cf)
-			fieldByJSON[f.JSONName] = f
-
-			if f.Kind == "roles" {
-				isAuth = true
-			}
-			if f.Unique && !f.Primary {
-				indexes = append(indexes, schema.IndexDef{Fields: []string{f.JSONName}, Unique: true})
-			}
-			if f.Indexed && !f.Unique {
-				indexes = append(indexes, schema.IndexDef{Fields: []string{f.JSONName}, Unique: false})
-			}
-		}
-
-		sort.SliceStable(fields, func(i, j int) bool {
-			fi, iok := fieldByJSON[fields[i].Name]
-			fj, jok := fieldByJSON[fields[j].Name]
-			if iok && jok && fi.Primary != fj.Primary {
-				return fi.Primary
-			}
-			return fields[i].Name < fields[j].Name
-		})
-
-		defs[t.Name] = &schema.TableDef{
-			Name:           t.Name,
-			CompiledSchema: schema.NewCompiledSchema(fields),
-			Indexes:        indexes,
-			Auth:           isAuth,
-		}
-	}
-	return defs
-}
-
-func compileKind(kind string) schema.FieldKind {
-	switch kind {
-	case "string":
-		return schema.KindString
-	case "number":
-		return schema.KindNumber
-	case "integer":
-		return schema.KindInteger
-	case "boolean":
-		return schema.KindBoolean
-	case "json":
-		return schema.KindJson
-	case "bcrypt":
-		return schema.KindBcrypt
-	case "refSingle", "ref":
-		return schema.KindRef
-	case "refMulti":
-		return schema.KindRefMulti
-	case "fileSingle":
-		return schema.KindFileSingle
-	case "fileMulti":
-		return schema.KindFileMulti
-	case "roles":
-		return schema.KindRoles
-	case "timestamp":
-		return schema.KindTimestamp
-	case "vector":
-		return schema.KindVector
-	case "set":
-		return schema.KindSet
-	case "enum":
-		return schema.KindEnum
-	default:
-		return schema.KindString
-	}
+	return app.BuildEngineTableDefs()
 }
 
 func (s *appServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
