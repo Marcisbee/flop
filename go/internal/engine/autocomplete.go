@@ -11,15 +11,13 @@ import (
 type AutocompleteEntry struct {
 	Key  string
 	Text string
-	Data map[string]interface{}
+	Data interface{}
 }
 
 type autocompleteItem struct {
-	norm          string
-	normNoArticle string
-	raw           string
-	rawNoArticle  string
-	entry         AutocompleteEntry
+	norm  string
+	raw   string
+	entry AutocompleteEntry
 }
 
 // AutocompleteIndex provides fast in-memory prefix search with forgiving
@@ -27,12 +25,11 @@ type autocompleteItem struct {
 type AutocompleteIndex struct {
 	mu    sync.RWMutex
 	items []autocompleteItem
-	byKey map[string]autocompleteItem
 }
 
 // NewAutocompleteIndex builds a new autocomplete index.
 func NewAutocompleteIndex(entries []AutocompleteEntry) *AutocompleteIndex {
-	idx := &AutocompleteIndex{byKey: make(map[string]autocompleteItem, len(entries))}
+	idx := &AutocompleteIndex{}
 	idx.Add(entries)
 	return idx
 }
@@ -46,8 +43,9 @@ func (a *AutocompleteIndex) Add(entries []AutocompleteEntry) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.byKey == nil {
-		a.byKey = make(map[string]autocompleteItem, len(entries))
+	byKey := make(map[string]autocompleteItem, len(a.items)+len(entries))
+	for _, item := range a.items {
+		byKey[item.entry.Key] = item
 	}
 
 	for _, entry := range entries {
@@ -57,22 +55,20 @@ func (a *AutocompleteIndex) Add(entries []AutocompleteEntry) {
 		raw := normalizeAutocompleteRaw(entry.Text)
 		norm := normalizeAutocomplete(entry.Text)
 		item := autocompleteItem{
-			norm:          norm,
-			normNoArticle: removeLeadingArticle(norm),
-			raw:           raw,
-			rawNoArticle:  removeLeadingArticle(raw),
+			norm: norm,
+			raw:  raw,
 			entry: AutocompleteEntry{
 				Key:  entry.Key,
 				Text: entry.Text,
 				Data: cloneAutocompleteData(entry.Data),
 			},
 		}
-		a.byKey[entry.Key] = item
+		byKey[entry.Key] = item
 	}
 
 	a.items = a.items[:0]
-	a.items = make([]autocompleteItem, 0, len(a.byKey))
-	for _, item := range a.byKey {
+	a.items = make([]autocompleteItem, 0, len(byKey))
+	for _, item := range byKey {
 		a.items = append(a.items, item)
 	}
 
@@ -138,9 +134,9 @@ func (a *AutocompleteIndex) Query(prefix string, limit int) []AutocompleteEntry 
 
 	if len(out) < limit {
 		for _, item := range a.items {
-			match := strings.HasPrefix(item.normNoArticle, norm) || strings.Contains(item.norm, norm)
+			match := strings.HasPrefix(removeLeadingArticle(item.norm), norm) || strings.Contains(item.norm, norm)
 			if !match {
-				match = strings.HasPrefix(item.rawNoArticle, rawNorm) || strings.Contains(item.raw, rawNorm)
+				match = strings.HasPrefix(removeLeadingArticle(item.raw), rawNorm) || strings.Contains(item.raw, rawNorm)
 			}
 			if !match && !multiTokenQuery {
 				match = hasWordPrefix(item.norm, norm) || hasWordPrefix(item.raw, rawNorm)
@@ -163,12 +159,19 @@ func (a *AutocompleteIndex) Query(prefix string, limit int) []AutocompleteEntry 
 	return out
 }
 
-func cloneAutocompleteData(in map[string]interface{}) map[string]interface{} {
-	if len(in) == 0 {
+func cloneAutocompleteData(in interface{}) interface{} {
+	if in == nil {
 		return nil
 	}
-	out := make(map[string]interface{}, len(in))
-	for k, v := range in {
+	m, ok := in.(map[string]interface{})
+	if !ok {
+		return in
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
 		out[k] = v
 	}
 	return out

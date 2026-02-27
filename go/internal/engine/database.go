@@ -543,42 +543,20 @@ func (ti *TableInstance) rebuildIndex() error {
 		return nil
 	}
 
-	rows, err := ti.tableFile.ScanAllRows()
-	if err != nil {
-		return err
-	}
-
-	for _, scanned := range rows {
-		row, sv, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
+	return ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
-			continue
+			return true
 		}
-
-		currentRow := row
-		if int(sv) < ti.currentVersion {
-			chain := ti.migChains[int(sv)]
-			if chain != nil {
-				values, sv2, _, err := storage.DeserializeRawFields(scanned.Data, 0)
-				if err == nil {
-					oldSchema := ti.tableMeta.Schemas[int(sv2)]
-					if oldSchema != nil {
-						oldRow := schema.DeserializeWithSchema(values, oldSchema)
-						currentRow = chain.Migrate(oldRow)
-					}
-				}
-			}
-		}
-
-		key := toString(currentRow[pkField])
+		key := toString(row[pkField])
 		if key != "" {
 			ti.primaryIndex.Set(key, schema.RowPointer{
 				PageNumber: scanned.PageNumber,
 				SlotIndex:  uint16(scanned.SlotIndex),
 			})
 		}
-	}
-
-	return nil
+		return true
+	})
 }
 
 func (ti *TableInstance) rebuildSecondaryIndexes() error {
@@ -593,15 +571,10 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 		}
 	}
 
-	rows, err := ti.tableFile.ScanAllRows()
-	if err != nil {
-		return err
-	}
-
-	for _, scanned := range rows {
-		row, _, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
+	return ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
-			continue
+			return true
 		}
 
 		pointer := schema.RowPointer{
@@ -635,9 +608,8 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 				idx.Add(key, pointer)
 			}
 		}
-	}
-
-	return nil
+		return true
+	})
 }
 
 func (ti *TableInstance) rebuildSecondaryIndexesAsync() {
@@ -1338,50 +1310,91 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 		limit = 100
 	}
 
-	rows, err := ti.tableFile.ScanAllRows()
-	if err != nil {
-		return nil, err
-	}
-
 	var results []map[string]interface{}
 	skipped := 0
 	count := 0
 
-	for _, scanned := range rows {
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
 		if skipped < offset {
 			skipped++
-			continue
+			return true
 		}
 		if count >= limit {
-			break
+			return false
 		}
 
-		row, sv, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
+		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
-			continue
-		}
-
-		if int(sv) < ti.currentVersion {
-			chain := ti.migChains[int(sv)]
-			if chain != nil {
-				values, sv2, _, err := storage.DeserializeRawFields(scanned.Data, 0)
-				if err == nil {
-					oldSchema := ti.tableMeta.Schemas[int(sv2)]
-					if oldSchema != nil {
-						oldRow := schema.DeserializeWithSchema(values, oldSchema)
-						results = append(results, chain.Migrate(oldRow))
-						count++
-						continue
-					}
-				}
-			}
+			return true
 		}
 
 		results = append(results, row)
 		count++
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return results, nil
+}
+
+// BuildAutocompleteEntries builds reusable autocomplete entries from this table.
+func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, payloadFields ...string) ([]AutocompleteEntry, error) {
+	keyField = strings.TrimSpace(keyField)
+	textField = strings.TrimSpace(textField)
+	if keyField == "" || textField == "" {
+		return nil, fmt.Errorf("keyField and textField are required")
+	}
+
+	cleanPayload := make([]string, 0, len(payloadFields))
+	for _, field := range payloadFields {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			cleanPayload = append(cleanPayload, field)
+		}
+	}
+
+	out := make([]AutocompleteEntry, 0, ti.Count())
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
+		if err != nil {
+			return true
+		}
+
+		key := toString(row[keyField])
+		text := toString(row[textField])
+		if key == "" || text == "" {
+			return true
+		}
+
+		var data interface{}
+		switch len(cleanPayload) {
+		case 0:
+			data = nil
+		case 1:
+			data = row[cleanPayload[0]]
+		default:
+			payload := make(map[string]interface{}, len(cleanPayload))
+			for _, field := range cleanPayload {
+				payload[field] = row[field]
+			}
+			if len(payload) > 0 {
+				data = payload
+			}
+		}
+
+		out = append(out, AutocompleteEntry{
+			Key:  key,
+			Text: text,
+			Data: data,
+		})
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // FindByIndex finds a row by a secondary unique index.
@@ -1492,7 +1505,10 @@ func (ti *TableInstance) GetByPointer(pointer schema.RowPointer) (map[string]int
 	if rawData == nil {
 		return nil, nil
 	}
+	return ti.deserializeCurrentRow(rawData)
+}
 
+func (ti *TableInstance) deserializeCurrentRow(rawData []byte) (map[string]interface{}, error) {
 	row, sv, _, err := storage.DeserializeRow(rawData, 0, ti.def.CompiledSchema)
 	if err != nil {
 		return nil, err
@@ -1516,47 +1532,49 @@ func (ti *TableInstance) GetByPointer(pointer schema.RowPointer) (map[string]int
 }
 
 func (ti *TableInstance) uniqueConflictByScan(fields []string, matchKey, excludePK string) (bool, error) {
-	rows, err := ti.tableFile.ScanAllRows()
+	var conflict bool
+	pkField := ti.primaryKeyField()
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
+		if err != nil {
+			return true
+		}
+		if excludePK != "" && toString(row[pkField]) == excludePK {
+			return true
+		}
+		if secondaryIndexRowKey(fields, row) == matchKey {
+			conflict = true
+			return false
+		}
+		return true
+	})
 	if err != nil {
 		return false, err
 	}
-	pkField := ti.primaryKeyField()
-	for _, scanned := range rows {
-		row, _, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
-		if err != nil {
-			continue
-		}
-		if excludePK != "" && toString(row[pkField]) == excludePK {
-			continue
-		}
-		if secondaryIndexRowKey(fields, row) == matchKey {
-			return true, nil
-		}
-	}
-	return false, nil
+	return conflict, nil
 }
 
 func (ti *TableInstance) scanPointersByIndexKey(fields []string, matchKey string, limit int) ([]schema.RowPointer, error) {
-	rows, err := ti.tableFile.ScanAllRows()
-	if err != nil {
-		return nil, err
-	}
 	out := make([]schema.RowPointer, 0, 16)
-	for _, scanned := range rows {
-		row, _, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
-			continue
+			return true
 		}
 		if secondaryIndexRowKey(fields, row) != matchKey {
-			continue
+			return true
 		}
 		out = append(out, schema.RowPointer{
 			PageNumber: scanned.PageNumber,
 			SlotIndex:  uint16(scanned.SlotIndex),
 		})
 		if limit > 0 && len(out) >= limit {
-			break
+			return false
 		}
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -1567,16 +1585,11 @@ func (ti *TableInstance) searchFullTextByScan(fields []string, query string, lim
 		return []map[string]interface{}{}, nil
 	}
 
-	rows, err := ti.tableFile.ScanAllRows()
-	if err != nil {
-		return nil, err
-	}
-
 	results := make([]map[string]interface{}, 0, 16)
-	for _, scanned := range rows {
-		row, _, _, err := storage.DeserializeRow(scanned.Data, 0, ti.def.CompiledSchema)
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
-			continue
+			return true
 		}
 		docTokens := tokenizeFullTextLikeSet(textValuesForFields(row, fields)...)
 		match := true
@@ -1587,12 +1600,16 @@ func (ti *TableInstance) searchFullTextByScan(fields []string, query string, lim
 			}
 		}
 		if !match {
-			continue
+			return true
 		}
 		results = append(results, row)
 		if limit > 0 && len(results) >= limit {
-			break
+			return false
 		}
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
 	return results, nil
 }

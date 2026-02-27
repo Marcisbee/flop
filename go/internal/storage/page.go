@@ -163,16 +163,29 @@ type SlotEntry struct {
 	Data      []byte
 }
 
+// ForEachSlot calls fn for each non-deleted slot.
+// The provided data slice points into the page buffer and is valid only
+// for the duration of fn.
+func (p *Page) ForEachSlot(fn func(slotIndex int, data []byte) bool) {
+	for i := 0; i < int(p.SlotCount); i++ {
+		off, length := p.GetSlot(i)
+		if length == 0 {
+			continue
+		}
+		if !fn(i, p.Data[off:off+length]) {
+			return
+		}
+	}
+}
+
 // Slots returns all valid (non-deleted) slot entries.
 func (p *Page) Slots() []SlotEntry {
 	var entries []SlotEntry
-	for i := 0; i < int(p.SlotCount); i++ {
-		off, length := p.GetSlot(i)
-		if length > 0 {
-			data := make([]byte, length)
-			copy(data, p.Data[off:off+length])
-			entries = append(entries, SlotEntry{SlotIndex: i, Data: data})
-		}
-	}
+	p.ForEachSlot(func(slotIndex int, raw []byte) bool {
+		data := make([]byte, len(raw))
+		copy(data, raw)
+		entries = append(entries, SlotEntry{SlotIndex: slotIndex, Data: data})
+		return true
+	})
 	return entries
 }

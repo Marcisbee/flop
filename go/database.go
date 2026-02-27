@@ -202,49 +202,7 @@ func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, pa
 	if ti == nil || ti.ti == nil {
 		return nil, fmt.Errorf("table is nil")
 	}
-	keyField = strings.TrimSpace(keyField)
-	textField = strings.TrimSpace(textField)
-	if keyField == "" || textField == "" {
-		return nil, fmt.Errorf("keyField and textField are required")
-	}
-
-	count := ti.ti.Count()
-	if count == 0 {
-		return []AutocompleteEntry{}, nil
-	}
-	rows, err := ti.ti.Scan(count, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]AutocompleteEntry, 0, len(rows))
-	for _, row := range rows {
-		key := toStringAny(row[keyField])
-		text := toStringAny(row[textField])
-		if key == "" || text == "" {
-			continue
-		}
-		var data map[string]interface{}
-		if len(payloadFields) > 0 {
-			data = make(map[string]interface{}, len(payloadFields))
-			for _, field := range payloadFields {
-				field = strings.TrimSpace(field)
-				if field == "" {
-					continue
-				}
-				data[field] = row[field]
-			}
-			if len(data) == 0 {
-				data = nil
-			}
-		}
-		out = append(out, AutocompleteEntry{
-			Key:  key,
-			Text: text,
-			Data: data,
-		})
-	}
-	return out, nil
+	return ti.ti.BuildAutocompleteEntries(keyField, textField, payloadFields...)
 }
 
 // BuildEngineTableDefs compiles this App schema to internal engine table defs.
@@ -377,20 +335,6 @@ func mapKind(kind string) schema.FieldKind {
 		return schema.KindEnum
 	default:
 		return schema.KindString
-	}
-}
-
-func toStringAny(v any) string {
-	if v == nil {
-		return ""
-	}
-	switch val := v.(type) {
-	case string:
-		return val
-	case []byte:
-		return string(val)
-	default:
-		return fmt.Sprintf("%v", v)
 	}
 }
 

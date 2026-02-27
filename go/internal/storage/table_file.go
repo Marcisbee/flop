@@ -153,20 +153,44 @@ type ScannedRow struct {
 	Data       []byte
 }
 
-func (tf *TableFile) ScanAllRows() ([]ScannedRow, error) {
-	var rows []ScannedRow
+// ForEachRow iterates all non-deleted rows in table order.
+// The row data slice is only valid during the callback.
+func (tf *TableFile) ForEachRow(fn func(ScannedRow) bool) error {
 	for p := uint32(0); p < tf.PageCount; p++ {
 		page, err := tf.GetPage(p)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		for _, entry := range page.Slots() {
-			rows = append(rows, ScannedRow{
+		keepGoing := true
+		page.ForEachSlot(func(slotIndex int, data []byte) bool {
+			keepGoing = fn(ScannedRow{
 				PageNumber: p,
-				SlotIndex:  entry.SlotIndex,
-				Data:       entry.Data,
+				SlotIndex:  slotIndex,
+				Data:       data,
 			})
+			return keepGoing
+		})
+		if !keepGoing {
+			return nil
 		}
+	}
+	return nil
+}
+
+func (tf *TableFile) ScanAllRows() ([]ScannedRow, error) {
+	var rows []ScannedRow
+	err := tf.ForEachRow(func(scanned ScannedRow) bool {
+		data := make([]byte, len(scanned.Data))
+		copy(data, scanned.Data)
+		rows = append(rows, ScannedRow{
+			PageNumber: scanned.PageNumber,
+			SlotIndex:  scanned.SlotIndex,
+			Data:       data,
+		})
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
 	return rows, nil
 }

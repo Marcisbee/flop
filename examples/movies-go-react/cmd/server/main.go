@@ -147,14 +147,10 @@ func main() {
 		rows := autocomplete.Query(q, limit)
 		out := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
-			year := 0
-			if row.Data != nil {
-				year = toInt(row.Data["year"])
-			}
 			out = append(out, map[string]any{
 				"slug":  row.Key,
 				"title": row.Text,
-				"year":  year,
+				"year":  yearFromAutocompleteData(row.Data),
 			})
 		}
 		writeJSON(w, map[string]any{"ok": true, "data": out})
@@ -449,4 +445,14 @@ func toInt(v any) int {
 	default:
 		return 0
 	}
+}
+
+func yearFromAutocompleteData(data any) int {
+	if data == nil {
+		return 0
+	}
+	if m, ok := data.(map[string]interface{}); ok {
+		return toInt(m["year"])
+	}
+	return toInt(data)
 }
