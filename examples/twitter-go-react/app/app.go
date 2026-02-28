@@ -235,16 +235,43 @@ func ListTimeline(db *flop.Database, limit, offset int, viewerID string) []*Twee
 		return nil
 	}
 
-	rows, err := tweets.Scan(limit+offset+500, 0)
-	if err != nil {
-		return nil
+	// Read from the newest tail in chunks, not from the oldest head.
+	// Scanning from offset 0 misses recent rows on large datasets.
+	total := tweets.Count()
+	chunk := limit*4 + offset*2 + 500
+	if chunk < 2000 {
+		chunk = 2000
+	}
+	if chunk > total {
+		chunk = total
+	}
+	start := total - chunk
+	if start < 0 {
+		start = 0
 	}
 
-	// Filter out replies for timeline
 	var filtered []map[string]any
-	for _, row := range rows {
-		if Str(row["replyToId"]) == "" {
-			filtered = append(filtered, row)
+	target := offset + limit
+	if target < 100 {
+		target = 100
+	}
+	for {
+		rows, err := tweets.Scan(chunk, start)
+		if err != nil {
+			return nil
+		}
+		for _, row := range rows {
+			if Str(row["replyToId"]) == "" {
+				filtered = append(filtered, row)
+			}
+		}
+		if start == 0 || len(filtered) >= target {
+			break
+		}
+		if start <= chunk {
+			start = 0
+		} else {
+			start -= chunk
 		}
 	}
 

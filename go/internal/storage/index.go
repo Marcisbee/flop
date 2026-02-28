@@ -302,9 +302,7 @@ func (m *MultiIndex) Add(key string, pointer schema.RowPointer) {
 			}
 		}
 		if len(m.data[key]) == 0 {
-			if len(m.mapped.GetAll(key)) == 0 {
-				m.mappedExtraKeys++
-			}
+			m.mappedExtraKeys++
 		}
 		m.data[key] = append(m.data[key], pointer)
 		m.mappedExtraPosts++
@@ -358,21 +356,17 @@ func (m *MultiIndex) Delete(key string, pointer schema.RowPointer) {
 				m.mappedExtraPosts--
 				if len(m.data[key]) == 0 {
 					delete(m.data, key)
-					if len(m.mapped.GetAll(key)) == 0 {
-						m.mappedExtraKeys--
-					}
+					m.mappedExtraKeys--
 				}
 				return
 			}
 		}
-		if m.mapped.HasPointer(key, pointer) {
-			tombs := m.deleted[key]
-			if tombs == nil {
-				tombs = make(map[uint64]struct{})
-				m.deleted[key] = tombs
-			}
-			tombs[rowPointerKey(pointer)] = struct{}{}
+		tombs := m.deleted[key]
+		if tombs == nil {
+			tombs = make(map[uint64]struct{})
+			m.deleted[key] = tombs
 		}
+		tombs[rowPointerKey(pointer)] = struct{}{}
 		return
 	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {

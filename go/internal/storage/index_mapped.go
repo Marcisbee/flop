@@ -268,13 +268,28 @@ func (m *mappedMultiBase) GetAll(key string) []schema.RowPointer {
 }
 
 func (m *mappedMultiBase) HasPointer(key string, pointer schema.RowPointer) bool {
-	ptrs := m.GetAll(key)
-	for _, p := range ptrs {
-		if p.PageNumber == pointer.PageNumber && p.SlotIndex == pointer.SlotIndex {
+	_, off, ptrCount, ok := m.findEntryHeader(key)
+	if !ok {
+		return false
+	}
+	for i := 0; i < ptrCount; i++ {
+		if off+6 > len(m.data) {
+			return false
+		}
+		page := binary.LittleEndian.Uint32(m.data[off : off+4])
+		off += 4
+		slot := binary.LittleEndian.Uint16(m.data[off : off+2])
+		off += 2
+		if page == pointer.PageNumber && slot == pointer.SlotIndex {
 			return true
 		}
 	}
 	return false
+}
+
+func (m *mappedMultiBase) HasKey(key string) bool {
+	_, _, _, ok := m.findEntryHeader(key)
+	return ok
 }
 
 func (m *mappedMultiBase) Range(fn func(string, []schema.RowPointer) bool) {
@@ -321,6 +336,41 @@ func (m *mappedMultiBase) entry(i int) ([]byte, []schema.RowPointer, bool) {
 		out[j] = schema.RowPointer{PageNumber: page, SlotIndex: slot}
 	}
 	return key, out, true
+}
+
+// findEntryHeader locates key and returns key bytes, pointer payload offset and count.
+func (m *mappedMultiBase) findEntryHeader(key string) ([]byte, int, int, bool) {
+	if m == nil || m.count == 0 {
+		return nil, 0, 0, false
+	}
+	target := []byte(key)
+	lo, hi := 0, m.count-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		off := int(m.offsets[mid])
+		if off < 0 || off+2 > len(m.data) {
+			return nil, 0, 0, false
+		}
+		keyLen := int(binary.LittleEndian.Uint16(m.data[off : off+2]))
+		off += 2
+		if keyLen < 0 || off+keyLen+4 > len(m.data) {
+			return nil, 0, 0, false
+		}
+		k := m.data[off : off+keyLen]
+		cmp := bytes.Compare(k, target)
+		off += keyLen
+		ptrCount := int(binary.LittleEndian.Uint32(m.data[off : off+4]))
+		off += 4
+		switch cmp {
+		case 0:
+			return k, off, ptrCount, true
+		case -1:
+			lo = mid + 1
+		default:
+			hi = mid - 1
+		}
+	}
+	return nil, 0, 0, false
 }
 
 func ReadMappedMultiIndexFile(path string) (*MultiIndex, error) {
