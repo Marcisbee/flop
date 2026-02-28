@@ -409,6 +409,7 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	flopPath := filepath.Join(dataDir, ti.Name+".flop")
 	walPath := filepath.Join(dataDir, ti.Name+".wal")
 	idxPath := filepath.Join(dataDir, ti.Name+".idx")
+	midxPath := filepath.Join(dataDir, ti.Name+".midx")
 
 	currentStored := schema.CompiledToStored(ti.def.CompiledSchema)
 
@@ -464,13 +465,20 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	}
 	ti.primaryIndex = storage.NewHashIndex()
 
-	// Load primary index from .idx or rebuild
-	idx, err := storage.ReadIndexFile(idxPath)
+	// Load primary index from mapped .midx first, then fallback to .idx, or rebuild.
+	idx, err := storage.ReadMappedIndexFile(midxPath)
 	if err == nil && idx.Size() > 0 {
 		ti.primaryIndex = idx
 	} else {
-		if err := ti.rebuildIndex(); err != nil {
-			return err
+		idx, err = storage.ReadIndexFile(idxPath)
+		if err == nil && idx.Size() > 0 {
+			ti.primaryIndex = idx
+			// Best effort: seed mapped index so next restart can load without full deserialize.
+			_ = storage.WriteMappedIndexFile(midxPath, ti.primaryIndex)
+		} else {
+			if err := ti.rebuildIndex(); err != nil {
+				return err
+			}
 		}
 	}
 	ti.initializeAutoIncrementCounters()
@@ -1784,6 +1792,10 @@ func (ti *TableInstance) Checkpoint() error {
 	}
 	idxPath := filepath.Join(ti.dataDir, ti.Name+".idx")
 	if err := storage.WriteIndexFile(idxPath, ti.primaryIndex); err != nil {
+		return err
+	}
+	midxPath := filepath.Join(ti.dataDir, ti.Name+".midx")
+	if err := storage.WriteMappedIndexFile(midxPath, ti.primaryIndex); err != nil {
 		return err
 	}
 	if err := ti.wal.Fsync(); err != nil {

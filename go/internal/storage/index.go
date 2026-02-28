@@ -15,9 +15,13 @@ const idxVersion = 2
 
 // HashIndex is an in-memory Map<string, RowPointer> for primary/unique indexes.
 type HashIndex struct {
-	mu   sync.RWMutex
-	data map[string]schema.RowPointer
-	uuid map[[16]byte]schema.RowPointer
+	mu               sync.RWMutex
+	data             map[string]schema.RowPointer
+	uuid             map[[16]byte]schema.RowPointer
+	mapped           *mappedHashBase
+	mappedRelease    func()
+	deleted          map[string]struct{}
+	mappedExtraCount int
 }
 
 type HashIndexStats struct {
@@ -39,6 +43,15 @@ func NewHashIndexWithCapacity(capacity int) *HashIndex {
 func (h *HashIndex) Get(key string) (schema.RowPointer, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if h.mapped != nil {
+		if p, ok := h.data[key]; ok {
+			return p, true
+		}
+		if _, deleted := h.deleted[key]; deleted {
+			return schema.RowPointer{}, false
+		}
+		return h.mapped.Get(key)
+	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {
 		if p, found := h.uuid[uuidKey]; found {
 			return p, true
@@ -51,6 +64,25 @@ func (h *HashIndex) Get(key string) (schema.RowPointer, bool) {
 func (h *HashIndex) Set(key string, pointer schema.RowPointer) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.mapped != nil {
+		if _, exists := h.data[key]; exists {
+			h.data[key] = pointer
+			return
+		}
+		if _, tomb := h.deleted[key]; tomb {
+			delete(h.deleted, key)
+			h.data[key] = pointer
+			if !h.mapped.Has(key) {
+				h.mappedExtraCount++
+			}
+			return
+		}
+		if !h.mapped.Has(key) {
+			h.mappedExtraCount++
+		}
+		h.data[key] = pointer
+		return
+	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {
 		if h.uuid == nil {
 			h.uuid = make(map[[16]byte]schema.RowPointer)
@@ -64,6 +96,15 @@ func (h *HashIndex) Set(key string, pointer schema.RowPointer) {
 func (h *HashIndex) Has(key string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if h.mapped != nil {
+		if _, ok := h.data[key]; ok {
+			return true
+		}
+		if _, deleted := h.deleted[key]; deleted {
+			return false
+		}
+		return h.mapped.Has(key)
+	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {
 		if _, found := h.uuid[uuidKey]; found {
 			return true
@@ -76,6 +117,23 @@ func (h *HashIndex) Has(key string) bool {
 func (h *HashIndex) Delete(key string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.mapped != nil {
+		if _, ok := h.data[key]; ok {
+			delete(h.data, key)
+			if !h.mapped.Has(key) {
+				h.mappedExtraCount--
+			}
+			return true
+		}
+		if _, deleted := h.deleted[key]; deleted {
+			return false
+		}
+		if h.mapped.Has(key) {
+			h.deleted[key] = struct{}{}
+			return true
+		}
+		return false
+	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {
 		if _, found := h.uuid[uuidKey]; found {
 			delete(h.uuid, uuidKey)
@@ -92,12 +150,16 @@ func (h *HashIndex) Delete(key string) bool {
 func (h *HashIndex) Size() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if h.mapped != nil {
+		return h.mapped.Size() - len(h.deleted) + h.mappedExtraCount
+	}
 	return len(h.data) + len(h.uuid)
 }
 
 func (h *HashIndex) Clear() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.clearMappedLocked()
 	h.data = make(map[string]schema.RowPointer)
 	h.uuid = nil
 }
@@ -108,6 +170,7 @@ func (h *HashIndex) ResetWithCapacity(capacity int) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.clearMappedLocked()
 	h.data = make(map[string]schema.RowPointer, capacity)
 	h.uuid = nil
 }
@@ -115,13 +178,32 @@ func (h *HashIndex) ResetWithCapacity(capacity int) {
 func (h *HashIndex) Range(fn func(string, schema.RowPointer) bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if h.mapped != nil {
+		seen := make(map[string]struct{}, len(h.data))
+		for k, v := range h.data {
+			seen[k] = struct{}{}
+			if !fn(k, v) {
+				return
+			}
+		}
+		h.mapped.Range(func(k string, v schema.RowPointer) bool {
+			if _, deleted := h.deleted[k]; deleted {
+				return true
+			}
+			if _, shadowed := seen[k]; shadowed {
+				return true
+			}
+			return fn(k, v)
+		})
+		return
+	}
 	for k, v := range h.data {
 		if !fn(k, v) {
 			return
 		}
 	}
 	for k, v := range h.uuid {
-		if !fn(string(k[:]), v) {
+		if !fn(formatUUIDCanonical(k), v) {
 			return
 		}
 	}
@@ -132,6 +214,17 @@ func (h *HashIndex) Range(fn func(string, schema.RowPointer) bool) {
 func (h *HashIndex) Stats() HashIndexStats {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if h.mapped != nil {
+		var payload uint64
+		for k := range h.data {
+			payload += uint64(len(k) + 6)
+		}
+		payload += h.mapped.EstimatedPayloadBytes
+		return HashIndexStats{
+			Keys:                  h.mapped.Size() - len(h.deleted) + h.mappedExtraCount,
+			EstimatedPayloadBytes: payload,
+		}
+	}
 	var payload uint64
 	for k := range h.data {
 		payload += uint64(len(k) + 6) // key bytes + row pointer payload
@@ -140,6 +233,28 @@ func (h *HashIndex) Stats() HashIndexStats {
 	return HashIndexStats{
 		Keys:                  len(h.data) + len(h.uuid),
 		EstimatedPayloadBytes: payload,
+	}
+}
+
+func (h *HashIndex) clearMappedLocked() {
+	if h.mappedRelease != nil {
+		h.mappedRelease()
+		h.mappedRelease = nil
+	}
+	h.mapped = nil
+	h.deleted = nil
+	h.mappedExtraCount = 0
+}
+
+func newHashIndexWithMapped(base *mappedHashBase, release func()) *HashIndex {
+	if release == nil {
+		release = func() {}
+	}
+	return &HashIndex{
+		data:          make(map[string]schema.RowPointer),
+		mapped:        base,
+		mappedRelease: release,
+		deleted:       make(map[string]struct{}),
 	}
 }
 
@@ -420,6 +535,22 @@ func fromHexNibble(c byte) int {
 	}
 }
 
+func formatUUIDCanonical(key [16]byte) string {
+	const hextable = "0123456789abcdef"
+	var out [36]byte
+	pos := 0
+	for i, b := range key {
+		if i == 4 || i == 6 || i == 8 || i == 10 {
+			out[pos] = '-'
+			pos++
+		}
+		out[pos] = hextable[b>>4]
+		out[pos+1] = hextable[b&0x0f]
+		pos += 2
+	}
+	return string(out[:])
+}
+
 // SerializeIndex writes a HashIndex to .idx file format.
 func SerializeIndex(index *HashIndex) []byte {
 	// Header: magic(4) + version(2) + entryCount(4) = 10 bytes
@@ -564,13 +695,14 @@ func deserializeIndexV1(data []byte) (*HashIndex, error) {
 
 // ReadIndexFile reads an index from disk.
 func ReadIndexFile(path string) (*HashIndex, error) {
-	data, err := os.ReadFile(path)
+	data, release, err := readIndexFileBytes(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return NewHashIndex(), nil
 		}
 		return nil, err
 	}
+	defer release()
 	return DeserializeIndex(data)
 }
 
