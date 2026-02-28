@@ -89,6 +89,11 @@ type AdminAnalyticsProvider interface {
 	AdminAnalytics() *server.RequestAnalytics
 }
 
+// AdminIndexStatsProvider exposes per-table index statistics for observability.
+type AdminIndexStatsProvider interface {
+	AdminIndexStats() any
+}
+
 // AdminConfig configures the default admin handler.
 type AdminConfig struct {
 	// SetupToken is populated automatically when AdminSetupProvider is
@@ -120,6 +125,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 	sseProvider, sseEnabled := provider.(AdminSSEProvider)
 	filterProvider, filterEnabled := provider.(AdminFilterProvider)
 	analyticsProvider, analyticsCapable := provider.(AdminAnalyticsProvider)
+	indexStatsProvider, indexStatsCapable := provider.(AdminIndexStatsProvider)
 
 	// Setup provider — generates a one-time token when no superadmin exists.
 	setupProvider, setupCapable := provider.(AdminSetupProvider)
@@ -412,6 +418,32 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					"ok":     true,
 					"window": window.String(),
 					"data":   data,
+				})
+				return
+
+			case "/_/api/analytics/runtime":
+				if r.Method != http.MethodGet {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"ok":   true,
+					"data": server.RuntimeStatsSnapshot(),
+				})
+				return
+
+			case "/_/api/analytics/indexes":
+				if r.Method != http.MethodGet {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if !indexStatsCapable {
+					adminJSONError(w, "index stats unavailable", http.StatusNotImplemented)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"ok":   true,
+					"data": indexStatsProvider.AdminIndexStats(),
 				})
 				return
 			}

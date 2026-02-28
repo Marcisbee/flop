@@ -18,6 +18,11 @@ type HashIndex struct {
 	data map[string]schema.RowPointer
 }
 
+type HashIndexStats struct {
+	Keys                  int
+	EstimatedPayloadBytes uint64
+}
+
 func NewHashIndex() *HashIndex {
 	return &HashIndex{data: make(map[string]schema.RowPointer)}
 }
@@ -74,10 +79,31 @@ func (h *HashIndex) Range(fn func(string, schema.RowPointer) bool) {
 	}
 }
 
+// Stats returns key count and a lower-bound payload estimate in bytes.
+// The estimate excludes Go runtime map/slice overhead and allocator metadata.
+func (h *HashIndex) Stats() HashIndexStats {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var payload uint64
+	for k := range h.data {
+		payload += uint64(len(k) + 6) // key bytes + row pointer payload
+	}
+	return HashIndexStats{
+		Keys:                  len(h.data),
+		EstimatedPayloadBytes: payload,
+	}
+}
+
 // MultiIndex is Map<string, []RowPointer> for non-unique indexes.
 type MultiIndex struct {
 	mu   sync.RWMutex
 	data map[string][]schema.RowPointer
+}
+
+type MultiIndexStats struct {
+	Keys                  int
+	Entries               int
+	EstimatedPayloadBytes uint64
 }
 
 func NewMultiIndex() *MultiIndex {
@@ -115,6 +141,24 @@ func (m *MultiIndex) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.data = make(map[string][]schema.RowPointer)
+}
+
+// Stats returns key count, posting entries, and a lower-bound payload estimate.
+// The estimate excludes Go runtime map/slice overhead and allocator metadata.
+func (m *MultiIndex) Stats() MultiIndexStats {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var entries int
+	var payload uint64
+	for k, ptrs := range m.data {
+		entries += len(ptrs)
+		payload += uint64(len(k) + 6*len(ptrs))
+	}
+	return MultiIndexStats{
+		Keys:                  len(m.data),
+		Entries:               entries,
+		EstimatedPayloadBytes: payload,
+	}
 }
 
 // CompositeKey builds a composite key from multiple field values.

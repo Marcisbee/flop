@@ -647,6 +647,21 @@ func (p *EngineAdminProvider) AdminAnalytics() *server.RequestAnalytics {
 	return p.DB.RequestAnalytics()
 }
 
+// AdminIndexStats returns per-table index diagnostics for observability pages.
+func (p *EngineAdminProvider) AdminIndexStats() any {
+	if p == nil || p.DB == nil || p.DB.db == nil {
+		return map[string]any{
+			"generatedAtUnixMilli":  time.Now().UnixMilli(),
+			"tableCount":            0,
+			"primaryIndexCount":     0,
+			"secondaryIndexCount":   0,
+			"estimatedPayloadBytes": uint64(0),
+			"tables":                []any{},
+		}
+	}
+	return p.DB.db.IndexStatsReport()
+}
+
 // WrapWithAnalytics records request timing/error telemetry while preserving the wrapped handler behavior.
 func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler {
 	if next == nil {

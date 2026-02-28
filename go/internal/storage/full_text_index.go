@@ -19,6 +19,13 @@ type FullTextIndex struct {
 	nextDoc  uint32
 }
 
+type FullTextStats struct {
+	TokenCount            int
+	DocCount              int
+	PostingEntries        int
+	EstimatedPayloadBytes uint64
+}
+
 func NewFullTextIndex() *FullTextIndex {
 	return &FullTextIndex{
 		postings: make(map[string][]uint32),
@@ -26,6 +33,36 @@ func NewFullTextIndex() *FullTextIndex {
 		docByPK:  make(map[string]uint32),
 		pkByDoc:  make(map[uint32]string),
 		nextDoc:  1,
+	}
+}
+
+// Stats returns structural counts and a lower-bound payload estimate.
+// The estimate excludes Go runtime map/slice overhead and allocator metadata.
+func (f *FullTextIndex) Stats() FullTextStats {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	var postingEntries int
+	var payload uint64
+	for token, docs := range f.postings {
+		postingEntries += len(docs)
+		payload += uint64(len(token) + 4*len(docs))
+	}
+	for docID, terms := range f.docTerms {
+		_ = docID
+		for _, term := range terms {
+			payload += uint64(len(term))
+		}
+	}
+	for pk := range f.docByPK {
+		payload += uint64(len(pk) + 4)
+	}
+
+	return FullTextStats{
+		TokenCount:            len(f.postings),
+		DocCount:              len(f.docByPK),
+		PostingEntries:        postingEntries,
+		EstimatedPayloadBytes: payload,
 	}
 }
 

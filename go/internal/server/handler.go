@@ -854,6 +854,18 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 		return
 	}
 
+	// Runtime stats
+	if path == "/_/api/analytics/runtime" && r.Method == "GET" {
+		h.handleAnalyticsRuntime(w)
+		return
+	}
+
+	// Index stats
+	if path == "/_/api/analytics/indexes" && r.Method == "GET" {
+		h.handleAnalyticsIndexes(w)
+		return
+	}
+
 	// Table rows
 	if re := regexp.MustCompile(`^/_/api/tables/([^/]+)/rows$`); true {
 		match := re.FindStringSubmatch(path)
@@ -1425,6 +1437,20 @@ func (h *Handler) handleAnalyticsTimeseries(w http.ResponseWriter, r *http.Reque
 		"ok":     true,
 		"window": window.String(),
 		"data":   series,
+	})
+}
+
+func (h *Handler) handleAnalyticsRuntime(w http.ResponseWriter) {
+	jsonResponse(w, map[string]interface{}{
+		"ok":   true,
+		"data": RuntimeStatsSnapshot(),
+	})
+}
+
+func (h *Handler) handleAnalyticsIndexes(w http.ResponseWriter) {
+	jsonResponse(w, map[string]interface{}{
+		"ok":   true,
+		"data": h.db.IndexStatsReport(),
 	})
 }
 

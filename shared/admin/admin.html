@@ -186,6 +186,10 @@ select.cell-editor{appearance:auto}
 .analytics-route-chip.active{border-color:var(--accent);color:var(--text-heading)}
 .analytics-logs{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
 .analytics-empty{padding:24px;color:var(--text-muted);text-align:center}
+.observe-panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
+.observe-body{flex:1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
+.observe-table-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.mono-sm{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px}
 
 /* File fields */
 .file-display{display:inline-flex;align-items:center;gap:6px}
@@ -338,6 +342,7 @@ const icons = {
   chevRight: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 01.708 0l6 6a.5.5 0 010 .708l-6 6a.5.5 0 01-.708-.708L10.293 8 4.646 2.354a.5.5 0 010-.708z"/></svg>`,
   db: html`<svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><ellipse cx="8" cy="3.5" rx="5.5" ry="2"/><path d="M13.5 5.5c0 1.1-2.46 2-5.5 2s-5.5-.9-5.5-2"/><path d="M2.5 3.5v9c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-9" fill="none" stroke="currentColor" stroke-width="1"/><path d="M13.5 8.5c0 1.1-2.46 2-5.5 2s-5.5-.9-5.5-2" fill="none" stroke="currentColor" stroke-width="1"/></svg>`,
   chart: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 14h14v1H0V1h1v13z"/><path d="M3 10.5l2.3-2.3 2.2 1.5 3.7-4.2.8.7-4.3 4.9-2.3-1.6L3.7 11.2z"/></svg>`,
+  pulse: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 8h2.7l1.2-3.1a.5.5 0 01.94.02L7.6 11.2l1.1-2.2a.5.5 0 01.45-.28H15v1H9.46l-1.5 3a.5.5 0 01-.93-.07L5.3 6.74 4.45 8.9A.5.5 0 013.98 9H1V8z"/></svg>`,
 };
 
 // ── Helpers ──
@@ -378,7 +383,7 @@ function Toasts() {
 
 // ── Components ──
 
-function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, onSelect, onSelectAnalytics, onBackup, onRestore, onLogout }) {
+function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnabled, onSelect, onSelectAnalytics, onSelectObserve, onBackup, onRestore, onLogout }) {
   return html`
     <div class="sidebar">
       <div class="sidebar-header">
@@ -405,6 +410,15 @@ function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, onSelect, o
           >
             <span class="sidebar-item-icon">${icons.chart}</span>
             <span class="sidebar-item-label">Analytics</span>
+          </button>
+        `}
+        ${observeEnabled && html`
+          <button
+            class=${"sidebar-item" + (viewMode === 'observe' ? " active" : "")}
+            onClick=${onSelectObserve}
+          >
+            <span class="sidebar-item-icon">${icons.pulse}</span>
+            <span class="sidebar-item-label">Observe</span>
           </button>
         `}
       </div>
@@ -889,6 +903,19 @@ function fmtPct(n) {
   return (Number(n) || 0).toFixed(2) + '%';
 }
 
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return v.toFixed(0) + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let x = v / 1024;
+  let i = 0;
+  while (x >= 1024 && i < units.length - 1) {
+    x /= 1024;
+    i++;
+  }
+  return x.toFixed(2) + ' ' + units[i];
+}
+
 function fmtTime(ts) {
   const n = Number(ts);
   if (!Number.isFinite(n) || n <= 0) return '-';
@@ -915,7 +942,7 @@ function AnalyticsChart({ points }) {
 
   const width = 1000;
   const height = 220;
-  const padX = 34;
+  const padX = 0;
   const padY = 16;
   const innerW = width - padX * 2;
   const innerH = height - padY * 2;
@@ -950,8 +977,8 @@ function AnalyticsChart({ points }) {
   let hoverMeta = null;
   if (hover && data.length > 0) {
     const n = Math.max(1, data.length - 1);
-    const xPlot = Math.min(Math.max(padX, hover.xSvg), width - padX);
-    const t = (xPlot - padX) / innerW;
+    const xPlot = Math.min(Math.max(0, hover.xSvg), width);
+    const t = innerW > 0 ? (xPlot - padX) / innerW : 0;
     const raw = t * n;
     const left = Math.floor(raw);
     const right = Math.min(data.length - 1, left + 1);
@@ -1009,6 +1036,7 @@ function AnalyticsPanel() {
   const [windowSize, setWindowSize] = useState('24h');
   const [config, setConfig] = useState(null);
   const [series, setSeries] = useState({ points: [], summary: { count: 0, errorCount: 0, errorRate: 0, avgMs: 0, p95Ms: 0 }, routes: [], droppedEvents: 0, retentionHours: 168 });
+  const [runtimeStats, setRuntimeStats] = useState(null);
   const [routeType, setRouteType] = useState('');
   const [routeName, setRouteName] = useState('');
   const [logs, setLogs] = useState([]);
@@ -1068,6 +1096,16 @@ function AnalyticsPanel() {
     }
   }, [supported, logPage, logSearchQuery]);
 
+  const loadRuntime = useCallback(async () => {
+    if (!supported) return;
+    try {
+      const data = await api('/analytics/runtime');
+      if (data && data.data) setRuntimeStats(data.data);
+    } catch {
+      // Best effort: runtime stats are informational only.
+    }
+  }, [supported]);
+
   useEffect(() => {
     loadConfig().finally(() => setLoaded(true));
   }, []);
@@ -1075,6 +1113,7 @@ function AnalyticsPanel() {
   useEffect(() => {
     if (!supported) return;
     loadSeries();
+    loadRuntime();
   }, [supported, loadSeries]);
 
   useEffect(() => {
@@ -1087,9 +1126,10 @@ function AnalyticsPanel() {
     const id = setInterval(() => {
       loadSeries();
       loadLogs(logPage, logSearchQuery);
+      loadRuntime();
     }, 10000);
     return () => clearInterval(id);
-  }, [supported, loadSeries, loadLogs, logPage, logSearchQuery]);
+  }, [supported, loadSeries, loadLogs, loadRuntime, logPage, logSearchQuery]);
 
   const applyLogFilter = useCallback(() => {
     setLogSearchQuery(logSearch.trim());
@@ -1132,6 +1172,14 @@ function AnalyticsPanel() {
           <div class="analytics-card"><div class="analytics-card-label">Avg Duration</div><div class="analytics-card-value">${fmtMs(summary.avgMs)}</div></div>
           <div class="analytics-card"><div class="analytics-card-label">P95 Duration</div><div class="analytics-card-value">${fmtMs(summary.p95Ms)}</div></div>
           <div class="analytics-card"><div class="analytics-card-label">Dropped Events</div><div class="analytics-card-value">${fmtCount(series.droppedEvents)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Heap Alloc</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapAlloc)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Heap In Use</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapInuse)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Heap Idle</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapIdle)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Heap Released</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapReleased)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Heap Sys</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapSys)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Go Sys</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.sys)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Goroutines</div><div class="analytics-card-value">${fmtCount(runtimeStats?.goroutines)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">GC Count</div><div class="analytics-card-value">${fmtCount(runtimeStats?.numGC)}</div></div>
         </div>
 
         <div class="analytics-chart-wrap">
@@ -1213,12 +1261,149 @@ function AnalyticsPanel() {
   `;
 }
 
+function ObservePanel() {
+  const [loaded, setLoaded] = useState(false);
+  const [supported, setSupported] = useState(true);
+  const [report, setReport] = useState(null);
+  const [runtimeStats, setRuntimeStats] = useState(null);
+  const [query, setQuery] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const [indexResp, runtimeResp] = await Promise.all([
+        api('/analytics/indexes'),
+        api('/analytics/runtime'),
+      ]);
+      if (!indexResp || !indexResp.data) {
+        setSupported(false);
+        return;
+      }
+      setReport(indexResp.data);
+      if (runtimeResp && runtimeResp.data) setRuntimeStats(runtimeResp.data);
+      setSupported(true);
+    } catch {
+      setSupported(false);
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 10000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  if (!loaded) {
+    return html`<div class="empty-state"><div class="empty-title">Loading observability…</div></div>`;
+  }
+  if (!supported) {
+    return html`<div class="empty-state"><div class="empty-title">Observe unavailable</div><div class="empty-desc">This runtime does not expose index diagnostics.</div></div>`;
+  }
+
+  const tables = Array.isArray(report?.tables) ? report.tables : [];
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? tables.filter(t =>
+      (t.table || '').toLowerCase().includes(q) ||
+      (t.secondaryIndexes || []).some(i =>
+        (i.name || '').toLowerCase().includes(q) ||
+        (i.type || '').toLowerCase().includes(q) ||
+        (i.fields || []).join(',').toLowerCase().includes(q)
+      )
+    )
+    : tables;
+
+  const secondaryEntries = filtered.reduce((sum, t) =>
+    sum + (t.secondaryIndexes || []).reduce((inner, i) => inner + (Number(i.entryCount) || 0), 0), 0
+  );
+
+  return html`
+    <div class="observe-panel">
+      <div class="analytics-toolbar">
+        <div class="analytics-title">${icons.pulse} Observe</div>
+        <div class="analytics-actions">
+          <div class="search-box">
+            ${icons.search}
+            <input type="text" placeholder="Filter tables/indexes…" value=${query} onInput=${e => setQuery(e.target.value)} />
+          </div>
+        </div>
+      </div>
+
+      <div class="observe-body">
+        <div class="analytics-cards">
+          <div class="analytics-card"><div class="analytics-card-label">Tables</div><div class="analytics-card-value">${fmtCount(report?.tableCount)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Primary Indexes</div><div class="analytics-card-value">${fmtCount(report?.primaryIndexCount)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Secondary Indexes</div><div class="analytics-card-value">${fmtCount(report?.secondaryIndexCount)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Index Entries</div><div class="analytics-card-value">${fmtCount(secondaryEntries)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Estimated Index Payload</div><div class="analytics-card-value">${fmtBytes(report?.estimatedPayloadBytes)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Heap In Use</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapInuse)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Heap Idle</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapIdle)}</div></div>
+          <div class="analytics-card"><div class="analytics-card-label">Go Sys</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.sys)}</div></div>
+        </div>
+
+        <div class="observe-table-wrap">
+          <div class="panel-toolbar">
+            <div class="panel-title">
+              <span class="panel-title-icon">${icons.table}</span>
+              Indexes By Table
+              <span class="panel-meta">${fmtCount(filtered.length)} tables</span>
+            </div>
+            <div class="panel-meta">snapshot ${fmtTime(report?.generatedAtUnixMilli)}</div>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th><span class="th-name">table</span></th>
+                  <th><span class="th-name">index</span></th>
+                  <th><span class="th-name">type</span></th>
+                  <th><span class="th-name">entries</span></th>
+                  <th><span class="th-name">keys</span></th>
+                  <th><span class="th-name">est. payload</span></th>
+                  <th><span class="th-name">ready</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered.length === 0 && html`<tr><td colspan="7" class="empty-row">No matching tables/indexes</td></tr>`}
+                ${filtered.map(t => html`
+                  <tr key=${t.table + ':primary'}>
+                    <td>${t.table}<span class="th-type"> (${fmtCount(t.rows)} rows)</span></td>
+                    <td class="mono-sm">${t.primaryKeyField || 'id'} (primary)</td>
+                    <td>primary</td>
+                    <td>${fmtCount(t.primaryKeys)}</td>
+                    <td>${fmtCount(t.primaryKeys)}</td>
+                    <td>${fmtBytes(t.primaryEstimatedBytes)}</td>
+                    <td>yes</td>
+                  </tr>
+                  ${(t.secondaryIndexes || []).map(idx => html`
+                    <tr key=${t.table + ':' + idx.name}>
+                      <td><span class="null">↳</span></td>
+                      <td class="mono-sm">${idx.name}${idx.fields && idx.fields.length ? ' [' + idx.fields.join(', ') + ']' : ''}</td>
+                      <td>${idx.type}${idx.unique ? ' (u)' : ''}</td>
+                      <td>${fmtCount(idx.entryCount)}</td>
+                      <td>${fmtCount(idx.keyCount)}</td>
+                      <td>${fmtBytes(idx.estimatedPayloadBytes)}</td>
+                      <td>${t.secondaryReady ? 'yes' : 'building'}</td>
+                    </tr>
+                  `)}
+                `)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 // ── Main App ──
 function App() {
   const [tables, setTables] = useState([]);
   const [currentTable, setCurrentTable] = useState(null);
   const [viewMode, setViewMode] = useState('table');
   const [analyticsEnabled, setAnalyticsEnabled] = useState(false);
+  const [observeEnabled, setObserveEnabled] = useState(false);
   const evtRef = useRef(null);
 
   const loadTables = useCallback(async () => {
@@ -1302,6 +1487,9 @@ function App() {
     api('/analytics/config').then((data) => {
       if (data && data.enabled) setAnalyticsEnabled(true);
     }).catch(() => setAnalyticsEnabled(false));
+    api('/analytics/indexes').then((data) => {
+      if (data && data.data) setObserveEnabled(true);
+    }).catch(() => setObserveEnabled(false));
   }, []);
 
   // Hash sync
@@ -1312,6 +1500,10 @@ function App() {
       const decoded = decodeURIComponent(h.split('/')[0]);
       if (decoded === '_analytics') {
         setViewMode('analytics');
+        return;
+      }
+      if (decoded === '_observe') {
+        setViewMode('observe');
         return;
       }
       setViewMode('table');
@@ -1331,6 +1523,11 @@ function App() {
   const selectAnalytics = useCallback(() => {
     setViewMode('analytics');
     window.location.hash = '_analytics';
+  }, []);
+
+  const selectObserve = useCallback(() => {
+    setViewMode('observe');
+    window.location.hash = '_observe';
   }, []);
 
   const handleBackup = useCallback(async () => {
@@ -1367,8 +1564,10 @@ function App() {
       currentTable=${currentTable}
       viewMode=${viewMode}
       analyticsEnabled=${analyticsEnabled}
+      observeEnabled=${observeEnabled}
       onSelect=${selectTable}
       onSelectAnalytics=${selectAnalytics}
+      onSelectObserve=${selectObserve}
       onBackup=${handleBackup}
       onRestore=${handleRestore}
       onLogout=${logout}
@@ -1376,6 +1575,8 @@ function App() {
     <div class="main">
       ${viewMode === 'analytics' && analyticsEnabled
         ? html`<${AnalyticsPanel} />`
+        : viewMode === 'observe' && observeEnabled
+        ? html`<${ObservePanel} />`
         : currentTable
         ? html`<${DataTable} key=${currentTable} tableName=${currentTable} schema=${currentSchema} onReload=${loadTables} sseSignal=${sseSignal} />`
         : html`<${EmptyState} />`
