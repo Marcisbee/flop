@@ -32,10 +32,11 @@ func BuildWithDataDir(dataDir string) *flop.App {
 		SyncMode:              "normal",
 		AsyncSecondaryIndexes: true,
 		RequestLogRetention:   7 * 24 * time.Hour,
+		EnablePprof:           true,
 	})
 
 	users := flop.Define(application, "users", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Autogen(`[a-z0-9]{12}`)
+		s.String("id").Primary("uuidv7")
 		s.String("email").Required().Unique().Email().MaxLen(255)
 		s.Bcrypt("password", 10).Required()
 		s.String("handle").Required().Unique().MinLen(1).MaxLen(30)
@@ -50,7 +51,7 @@ func BuildWithDataDir(dataDir string) *flop.App {
 	})
 
 	flop.Define(application, "tweets", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Autogen(`[a-z0-9]{16}`)
+		s.String("id").Primary("uuidv7")
 		s.Ref("authorId", users, "id").Required().Index()
 		s.String("content").Required().MaxLen(280).FullText()
 		s.String("replyToId").Index() // tweet id this is replying to
@@ -78,25 +79,25 @@ func BuildWithDataDir(dataDir string) *flop.App {
 		s.Timestamp("createdAt").DefaultNow()
 	})
 
-	// Likes: composite key = "userId:tweetId"
 	flop.Define(application, "likes", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary() // format: userId:tweetId
+		s.Number("id").Primary("autoincrement")
+		s.String("edgeKey").Required().Unique()
 		s.Ref("userId", users, "id").Required()
 		s.String("tweetId").Required().Index()
 		s.Timestamp("createdAt").DefaultNow()
 	})
 
-	// Retweets: composite key = "userId:tweetId"
 	flop.Define(application, "retweets", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary() // format: userId:tweetId
+		s.Number("id").Primary("autoincrement")
+		s.String("edgeKey").Required().Unique()
 		s.Ref("userId", users, "id").Required()
 		s.String("tweetId").Required().Index()
 		s.Timestamp("createdAt").DefaultNow()
 	})
 
-	// Follows: composite key = "followerId:followingId"
 	flop.Define(application, "follows", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary() // format: followerId:followingId
+		s.Number("id").Primary("autoincrement")
+		s.String("edgeKey").Required().Unique()
 		s.Ref("followerId", users, "id").Required().Index()
 		s.Ref("followingId", users, "id").Required().Index()
 		s.Timestamp("createdAt").DefaultNow()
@@ -104,7 +105,7 @@ func BuildWithDataDir(dataDir string) *flop.App {
 
 	// Notifications
 	flop.Define(application, "notifications", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Autogen(`[a-z0-9]{16}`)
+		s.String("id").Primary("uuidv7")
 		s.Ref("userId", users, "id").Required().Index() // who receives
 		s.Ref("actorId", users, "id").Required()        // who caused
 		s.Enum("type", "like", "retweet", "reply", "follow", "quote").Required()
@@ -214,15 +215,13 @@ func ToTweetWithAuthor(row map[string]any, db *flop.Database, viewerID string) *
 	if viewerID != "" {
 		likes := db.Table("likes")
 		if likes != nil {
-			likeID := viewerID + ":" + t.ID
-			row, err := likes.Get(likeID)
-			t.Liked = err == nil && row != nil
+			row, ok := likes.FindByUniqueIndex("edgeKey", viewerID+":"+t.ID)
+			t.Liked = ok && row != nil
 		}
 		retweets := db.Table("retweets")
 		if retweets != nil {
-			rtID := viewerID + ":" + t.ID
-			row, err := retweets.Get(rtID)
-			t.Retweeted = err == nil && row != nil
+			row, ok := retweets.FindByUniqueIndex("edgeKey", viewerID+":"+t.ID)
+			t.Retweeted = ok && row != nil
 		}
 	}
 
@@ -400,10 +399,8 @@ func GetUserProfile(db *flop.Database, userID string, viewerID string) *UserProf
 		profile.FollowerCount = follows.CountByIndex("followingId", userID)
 		profile.FollowingCount = follows.CountByIndex("followerId", userID)
 		if viewerID != "" {
-			// Check if viewer follows this user via composite key lookup
-			followID := viewerID + ":" + userID
-			row, err := follows.Get(followID)
-			profile.IsFollowing = err == nil && row != nil
+			row, ok := follows.FindByUniqueIndex("edgeKey", viewerID+":"+userID)
+			profile.IsFollowing = ok && row != nil
 		}
 	}
 

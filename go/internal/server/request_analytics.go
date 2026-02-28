@@ -41,8 +41,26 @@ type AnalyticsEvent struct {
 }
 
 type requestLogRecord struct {
-	Ts  int64
-	Row map[string]interface{}
+	Ts           int64
+	ID           string
+	Time         string
+	RouteType    string
+	RouteName    string
+	Method       string
+	Path         string
+	Transport    string
+	Status       string
+	OK           bool
+	StatusCode   int
+	DurationMs   float64
+	ErrorMessage string
+	Details      string
+	UserID       string
+}
+
+type requestLogDiskRecord struct {
+	Ts  int64                  `json:"Ts"`
+	Row map[string]interface{} `json:"Row"`
 }
 
 type requestMinuteBucket struct {
@@ -163,18 +181,19 @@ func (ra *RequestAnalytics) loadFromDiskLocked() {
 		if line == "" {
 			continue
 		}
-		var rec requestLogRecord
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		var diskRec requestLogDiskRecord
+		if err := json.Unmarshal([]byte(line), &diskRec); err != nil {
 			continue
 		}
-		if rec.Ts <= 0 {
-			rec.Ts = int64(toFloatValue(rec.Row["ts"]))
+		if diskRec.Ts <= 0 {
+			diskRec.Ts = int64(toFloatValue(diskRec.Row["ts"]))
 		}
-		if rec.Ts <= 0 || rec.Row == nil || rec.Ts < cutoff {
+		if diskRec.Ts <= 0 || diskRec.Row == nil || diskRec.Ts < cutoff {
 			continue
 		}
+		rec := recordFromRow(diskRec.Ts, diskRec.Row)
 		ra.logs = append(ra.logs, rec)
-		ra.addMetricsFromRowLocked(rec.Ts, rec.Row)
+		ra.addMetricsFromRecordLocked(rec)
 	}
 	ra.seq.Store(uint64(len(ra.logs)))
 }
@@ -263,18 +282,25 @@ func (ra *RequestAnalytics) QueryLogs(page, limit int, search, filterExpr string
 	total := 0
 	rows := make([]map[string]interface{}, 0, limit)
 	for i := len(logs) - 1; i >= 0; i-- {
-		row := logs[i].Row
-		if search != "" && !matchesSearch(row, search) {
+		rec := logs[i]
+		if search != "" && !matchesSearchRecord(rec, search) {
 			continue
 		}
-		if matchFn != nil && !matchFn(row) {
-			continue
+		var row map[string]interface{}
+		if matchFn != nil {
+			row = rec.toRow()
+			if !matchFn(row) {
+				continue
+			}
 		}
 		total++
 		if total <= offset || len(rows) >= limit {
 			continue
 		}
-		rows = append(rows, cloneRow(row))
+		if row == nil {
+			row = rec.toRow()
+		}
+		rows = append(rows, row)
 	}
 	return rows, total, nil
 }
@@ -409,28 +435,27 @@ func (ra *RequestAnalytics) apply(event AnalyticsEvent) {
 
 	detailText := detailsToText(event.Details)
 	errText := truncateText(strings.TrimSpace(event.ErrorMessage), requestMaxErrorBytes)
-	row := map[string]interface{}{
-		"id":           fmt.Sprintf("%d-%d", ts, ra.seq.Add(1)),
-		"ts":           ts,
-		"time":         time.UnixMilli(ts).UTC().Format(time.RFC3339Nano),
-		"routeType":    event.RouteType,
-		"routeName":    event.RouteName,
-		"method":       event.Method,
-		"path":         event.Path,
-		"transport":    event.Transport,
-		"status":       status,
-		"ok":           event.OK,
-		"statusCode":   event.StatusCode,
-		"durationMs":   durationMs,
-		"errorMessage": errText,
-		"details":      detailText,
-		"userId":       event.UserID,
+	rec := requestLogRecord{
+		Ts:           ts,
+		ID:           fmt.Sprintf("%d-%d", ts, ra.seq.Add(1)),
+		Time:         time.UnixMilli(ts).UTC().Format(time.RFC3339Nano),
+		RouteType:    event.RouteType,
+		RouteName:    event.RouteName,
+		Method:       event.Method,
+		Path:         event.Path,
+		Transport:    event.Transport,
+		Status:       status,
+		OK:           event.OK,
+		StatusCode:   event.StatusCode,
+		DurationMs:   durationMs,
+		ErrorMessage: errText,
+		Details:      detailText,
+		UserID:       event.UserID,
 	}
 
 	ra.mu.Lock()
-	rec := requestLogRecord{Ts: ts, Row: row}
 	ra.logs = append(ra.logs, rec)
-	ra.addMetricsFromRowLocked(ts, row)
+	ra.addMetricsFromRecordLocked(rec)
 	ra.appendRecordLocked(rec)
 
 	const pruneIntervalMs = int64(time.Minute / time.Millisecond)
@@ -486,13 +511,13 @@ func addBucket(agg *requestAgg, bucket *requestMinuteBucket) {
 	}
 }
 
-func (ra *RequestAnalytics) addMetricsFromRowLocked(ts int64, row map[string]interface{}) {
-	minuteTs := floorMinuteUnixMilli(ts)
-	routeType := routeValue(row["routeType"])
+func (ra *RequestAnalytics) addMetricsFromRecordLocked(rec requestLogRecord) {
+	minuteTs := floorMinuteUnixMilli(rec.Ts)
+	routeType := rec.RouteType
 	if routeType == "" {
 		routeType = "request"
 	}
-	routeName := routeValue(row["routeName"])
+	routeName := rec.RouteName
 	key := fmt.Sprintf("%d|%s|%s", minuteTs, routeType, routeName)
 
 	b := ra.metrics[key]
@@ -506,16 +531,11 @@ func (ra *RequestAnalytics) addMetricsFromRowLocked(ts int64, row map[string]int
 	}
 	b.Count++
 
-	okValue, ok := row["ok"].(bool)
-	if ok {
-		if !okValue {
-			b.ErrorCount++
-		}
-	} else if strings.EqualFold(routeValue(row["status"]), "error") {
+	if !rec.OK || strings.EqualFold(rec.Status, "error") {
 		b.ErrorCount++
 	}
 
-	duration := toFloatValue(row["durationMs"])
+	duration := rec.DurationMs
 	if duration < 0 {
 		duration = 0
 	}
@@ -530,7 +550,7 @@ func (ra *RequestAnalytics) appendRecordLocked(rec requestLogRecord) {
 	if err := ra.ensureAppendFileLocked(); err != nil {
 		return
 	}
-	payload, err := json.Marshal(rec)
+	payload, err := json.Marshal(requestLogDiskRecord{Ts: rec.Ts, Row: rec.toRow()})
 	if err != nil {
 		return
 	}
@@ -566,7 +586,7 @@ func (ra *RequestAnalytics) compactLocked() error {
 		return err
 	}
 	for _, rec := range ra.logs {
-		payload, err := json.Marshal(rec)
+		payload, err := json.Marshal(requestLogDiskRecord{Ts: rec.Ts, Row: rec.toRow()})
 		if err != nil {
 			continue
 		}
@@ -592,16 +612,16 @@ func (ra *RequestAnalytics) compactLocked() error {
 	return ra.ensureAppendFileLocked()
 }
 
-func matchesSearch(row map[string]interface{}, search string) bool {
+func matchesSearchRecord(rec requestLogRecord, search string) bool {
 	fields := []string{
-		routeValue(row["routeType"]),
-		routeValue(row["routeName"]),
-		routeValue(row["method"]),
-		routeValue(row["status"]),
-		routeValue(row["path"]),
-		routeValue(row["errorMessage"]),
-		routeValue(row["details"]),
-		routeValue(row["userId"]),
+		rec.RouteType,
+		rec.RouteName,
+		rec.Method,
+		rec.Status,
+		rec.Path,
+		rec.ErrorMessage,
+		rec.Details,
+		rec.UserID,
 	}
 	for _, f := range fields {
 		if strings.Contains(strings.ToLower(f), search) {
@@ -618,12 +638,44 @@ func routeValue(v interface{}) string {
 	return fmt.Sprint(v)
 }
 
-func cloneRow(in map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(in))
-	for k, v := range in {
-		out[k] = v
+func recordFromRow(ts int64, row map[string]interface{}) requestLogRecord {
+	return requestLogRecord{
+		Ts:           ts,
+		ID:           routeValue(row["id"]),
+		Time:         routeValue(row["time"]),
+		RouteType:    routeValue(row["routeType"]),
+		RouteName:    routeValue(row["routeName"]),
+		Method:       routeValue(row["method"]),
+		Path:         routeValue(row["path"]),
+		Transport:    routeValue(row["transport"]),
+		Status:       routeValue(row["status"]),
+		OK:           toBoolValue(row["ok"]),
+		StatusCode:   int(toFloatValue(row["statusCode"])),
+		DurationMs:   toFloatValue(row["durationMs"]),
+		ErrorMessage: routeValue(row["errorMessage"]),
+		Details:      routeValue(row["details"]),
+		UserID:       routeValue(row["userId"]),
 	}
-	return out
+}
+
+func (r requestLogRecord) toRow() map[string]interface{} {
+	return map[string]interface{}{
+		"id":           r.ID,
+		"ts":           r.Ts,
+		"time":         r.Time,
+		"routeType":    r.RouteType,
+		"routeName":    r.RouteName,
+		"method":       r.Method,
+		"path":         r.Path,
+		"transport":    r.Transport,
+		"status":       r.Status,
+		"ok":           r.OK,
+		"statusCode":   r.StatusCode,
+		"durationMs":   r.DurationMs,
+		"errorMessage": r.ErrorMessage,
+		"details":      r.Details,
+		"userId":       r.UserID,
+	}
 }
 
 func detailsToText(details map[string]interface{}) string {
@@ -726,4 +778,14 @@ func toFloatValue(v interface{}) float64 {
 		}
 	}
 	return 0
+}
+
+func toBoolValue(v interface{}) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return strings.EqualFold(strings.TrimSpace(b), "true")
+	}
+	return false
 }

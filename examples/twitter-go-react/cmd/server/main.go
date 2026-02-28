@@ -345,19 +345,18 @@ func main() {
 		}
 
 		likes := db.Table("likes")
-		likeID := userID + ":" + tweetID
-
-		existing, _ := likes.Get(likeID)
-		if existing != nil {
+		edgeKey := userID + ":" + tweetID
+		existing, ok := likes.FindByUniqueIndex("edgeKey", edgeKey)
+		if ok && existing != nil {
 			// Unlike
-			likes.Delete(likeID)
+			likes.Delete(twitter.Str(existing["id"]))
 			writeJSON(w, map[string]any{"ok": true, "liked": false})
 			return
 		}
 
 		// Like
 		likes.Insert(map[string]any{
-			"id":      likeID,
+			"edgeKey": edgeKey,
 			"userId":  userID,
 			"tweetId": tweetID,
 		})
@@ -402,18 +401,17 @@ func main() {
 
 		retweets := db.Table("retweets")
 		tweets := db.Table("tweets")
-		rtID := userID + ":" + tweetID
-
-		existing, _ := retweets.Get(rtID)
-		if existing != nil {
+		edgeKey := userID + ":" + tweetID
+		existing, ok := retweets.FindByUniqueIndex("edgeKey", edgeKey)
+		if ok && existing != nil {
 			// Undo retweet
-			retweets.Delete(rtID)
+			retweets.Delete(twitter.Str(existing["id"]))
 			writeJSON(w, map[string]any{"ok": true, "retweeted": false})
 			return
 		}
 
 		retweets.Insert(map[string]any{
-			"id":      rtID,
+			"edgeKey": edgeKey,
 			"userId":  userID,
 			"tweetId": tweetID,
 		})
@@ -456,18 +454,17 @@ func main() {
 		}
 
 		follows := db.Table("follows")
-		followID := followerID + ":" + followingID
-
-		existing, _ := follows.Get(followID)
-		if existing != nil {
+		edgeKey := followerID + ":" + followingID
+		existing, ok := follows.FindByUniqueIndex("edgeKey", edgeKey)
+		if ok && existing != nil {
 			// Unfollow
-			follows.Delete(followID)
+			follows.Delete(twitter.Str(existing["id"]))
 			writeJSON(w, map[string]any{"ok": true, "following": false})
 			return
 		}
 
 		follows.Insert(map[string]any{
-			"id":          followID,
+			"edgeKey":     edgeKey,
 			"followerId":  followerID,
 			"followingId": followingID,
 		})

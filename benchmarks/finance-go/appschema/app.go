@@ -9,7 +9,7 @@ func Build() *flop.App {
 	app := flop.New(flop.Config{})
 
 	users := flop.Define(app, "users", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
+		s.String("id").Primary("uuidv7").Required().Unique()
 		s.String("email").Required().Unique().Email().MaxLen(255)
 		s.Bcrypt("password", 10).Required()
 		s.String("name").Required().MinLen(2).MaxLen(120)
@@ -17,7 +17,7 @@ func Build() *flop.App {
 	})
 
 	accounts := flop.Define(app, "accounts", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
+		s.String("id").Primary("uuidv7").Required().Unique()
 		s.Ref("ownerId", users, "id").Required().Index()
 		s.String("name").Required().MaxLen(120)
 		s.Enum("type", "checking", "savings", "credit").Required()
@@ -27,7 +27,7 @@ func Build() *flop.App {
 	})
 
 	transactions := flop.Define(app, "transactions", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
+		s.String("id").Primary("uuidv7").Required().Unique()
 		s.Ref("fromAccountId", accounts, "id").Required().Index()
 		s.Ref("toAccountId", accounts, "id").Required().Index()
 		s.Number("amount").Required()
@@ -38,7 +38,7 @@ func Build() *flop.App {
 	})
 
 	flop.Define(app, "ledger", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Required().Unique().Autogen(`[a-z0-9]{15}`)
+		s.String("id").Primary("uuidv7").Required().Unique()
 		s.Ref("accountId", accounts, "id").Required().Index()
 		s.Ref("transactionId", transactions, "id").Required()
 		s.Number("amount").Required()

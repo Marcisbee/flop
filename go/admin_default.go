@@ -94,6 +94,11 @@ type AdminIndexStatsProvider interface {
 	AdminIndexStats() any
 }
 
+// AdminPprofProvider exposes whether profiling routes should be enabled.
+type AdminPprofProvider interface {
+	AdminEnablePprof() bool
+}
+
 // AdminConfig configures the default admin handler.
 type AdminConfig struct {
 	// SetupToken is populated automatically when AdminSetupProvider is
@@ -126,6 +131,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 	filterProvider, filterEnabled := provider.(AdminFilterProvider)
 	analyticsProvider, analyticsCapable := provider.(AdminAnalyticsProvider)
 	indexStatsProvider, indexStatsCapable := provider.(AdminIndexStatsProvider)
+	pprofProvider, pprofCapable := provider.(AdminPprofProvider)
 
 	// Setup provider — generates a one-time token when no superadmin exists.
 	setupProvider, setupCapable := provider.(AdminSetupProvider)
@@ -348,6 +354,20 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				// Keep alive until client disconnects
 				<-r.Context().Done()
 			}
+			return
+		}
+
+		// Go pprof diagnostics (superadmin only when auth is enabled)
+		if strings.HasPrefix(path, "/_/debug/pprof") {
+			if !pprofCapable || !pprofProvider.AdminEnablePprof() {
+				adminJSONError(w, "pprof disabled", http.StatusNotFound)
+				return
+			}
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			server.ServePrefixedPprof("/_/debug/pprof", w, r)
 			return
 		}
 

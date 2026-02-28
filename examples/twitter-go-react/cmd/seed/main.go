@@ -356,7 +356,7 @@ func main() {
 		followSet[key] = true
 
 		followBatch = append(followBatch, map[string]any{
-			"id":          key,
+			"edgeKey":     key,
 			"followerId":  followerID,
 			"followingId": followingID,
 		})
@@ -450,7 +450,7 @@ func main() {
 		likeSet[key] = true
 
 		likeBatch = append(likeBatch, map[string]any{
-			"id":      key,
+			"edgeKey": key,
 			"userId":  userID,
 			"tweetId": tweetID,
 		})
@@ -486,7 +486,7 @@ func main() {
 		rtSet[key] = true
 
 		rtBatch = append(rtBatch, map[string]any{
-			"id":      key,
+			"edgeKey": key,
 			"userId":  userID,
 			"tweetId": tweetID,
 		})

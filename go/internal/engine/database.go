@@ -2,9 +2,11 @@ package engine
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -384,6 +386,7 @@ type TableInstance struct {
 	rowLocks      [updateLockShards]sync.Mutex
 	pageLocks     [updateLockShards]sync.Mutex
 	walEntryCount int
+	autoIDNext    map[string]int64
 }
 
 func newTableInstance(name string, def *schema.TableDef, db *Database) (*TableInstance, error) {
@@ -394,6 +397,7 @@ func newTableInstance(name string, def *schema.TableDef, db *Database) (*TableIn
 		secondaryIdxs:  make(map[string]interface{}),
 		indexDefsByKey: make(map[string]schema.IndexDef),
 		migChains:      make(map[int]*schema.MigrationChain),
+		autoIDNext:     make(map[string]int64),
 		db:             db,
 	}, nil
 }
@@ -458,6 +462,7 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	if err := ti.replayWAL(); err != nil {
 		return err
 	}
+	ti.primaryIndex = storage.NewHashIndex()
 
 	// Load primary index from .idx or rebuild
 	idx, err := storage.ReadIndexFile(idxPath)
@@ -468,6 +473,7 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 			return err
 		}
 	}
+	ti.initializeAutoIncrementCounters()
 
 	// Auto-create unique indexes for fields with Unique flag
 	for _, field := range ti.def.CompiledSchema.Fields {
@@ -593,18 +599,13 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 			case *storage.FullTextIndex:
 				idx.Index(toString(row[ti.primaryKeyField()]), textValuesForFields(row, indexDef.Fields)...)
 			case *storage.HashIndex:
-				keyValues := make([]interface{}, len(indexDef.Fields))
-				for i, f := range indexDef.Fields {
-					keyValues[i] = row[f]
-				}
-				key := storage.CompositeKey(keyValues)
+				key := storage.CompositeKeyFromRow(row, indexDef.Fields)
 				idx.Set(key, pointer)
 			case *storage.MultiIndex:
-				keyValues := make([]interface{}, len(indexDef.Fields))
-				for i, f := range indexDef.Fields {
-					keyValues[i] = row[f]
+				if allIndexFieldsUnset(row, indexDef.Fields) {
+					continue
 				}
-				key := storage.CompositeKey(keyValues)
+				key := storage.CompositeKeyFromRow(row, indexDef.Fields)
 				idx.Add(key, pointer)
 			}
 		}
@@ -656,6 +657,40 @@ func (ti *TableInstance) primaryKeyField() string {
 	return "id"
 }
 
+func (ti *TableInstance) initializeAutoIncrementCounters() {
+	if ti.autoIDNext == nil {
+		ti.autoIDNext = make(map[string]int64)
+	}
+	for _, f := range ti.def.CompiledSchema.Fields {
+		if strings.ToLower(strings.TrimSpace(f.AutoIDStrategy)) != "autoincrement" {
+			continue
+		}
+		maxSeen := int64(0)
+		if f.Name == ti.primaryKeyField() && ti.primaryIndex != nil {
+			ti.primaryIndex.Range(func(key string, _ schema.RowPointer) bool {
+				n, ok := parseInt64Like(key)
+				if ok && n > maxSeen {
+					maxSeen = n
+				}
+				return true
+			})
+		}
+		ti.autoIDNext[f.Name] = maxSeen + 1
+	}
+}
+
+func (ti *TableInstance) nextAutoIDValue(field schema.CompiledField) interface{} {
+	next := ti.autoIDNext[field.Name]
+	if next <= 0 {
+		next = 1
+	}
+	ti.autoIDNext[field.Name] = next + 1
+	if field.Kind == schema.KindInteger {
+		return next
+	}
+	return float64(next)
+}
+
 // GetDef returns the table definition.
 func (ti *TableInstance) GetDef() *schema.TableDef {
 	return ti.def
@@ -687,7 +722,13 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	for _, field := range ti.def.CompiledSchema.Fields {
 		val := row[field.Name]
 		if val == nil {
-			if field.AutoGenPattern != "" {
+			if field.AutoIDStrategy != "" {
+				generated, err := generateAutoID(field, ti)
+				if err != nil {
+					return nil, err
+				}
+				row[field.Name] = generated
+			} else if field.AutoGenPattern != "" {
 				generated, err := generateFromPattern(field.AutoGenPattern)
 				if err != nil {
 					return nil, err
@@ -707,6 +748,13 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		if row[field.Name] != nil {
 			if err := validateFieldValue(&field, row[field.Name]); err != nil {
 				return nil, err
+			}
+			if strings.EqualFold(field.AutoIDStrategy, "autoincrement") {
+				if n, ok := parseInt64Like(row[field.Name]); ok {
+					if ti.autoIDNext[field.Name] <= n {
+						ti.autoIDNext[field.Name] = n + 1
+					}
+				}
 			}
 			// Deduplicate sets
 			if field.Kind == schema.KindSet {
@@ -778,18 +826,13 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		case *storage.FullTextIndex:
 			idx.Index(pk, textValuesForFields(row, indexDef.Fields)...)
 		case *storage.HashIndex:
-			keyValues := make([]interface{}, len(indexDef.Fields))
-			for i, f := range indexDef.Fields {
-				keyValues[i] = row[f]
-			}
-			key := storage.CompositeKey(keyValues)
+			key := storage.CompositeKeyFromRow(row, indexDef.Fields)
 			idx.Set(key, pointer)
 		case *storage.MultiIndex:
-			keyValues := make([]interface{}, len(indexDef.Fields))
-			for i, f := range indexDef.Fields {
-				keyValues[i] = row[f]
+			if allIndexFieldsUnset(row, indexDef.Fields) {
+				continue
 			}
-			key := storage.CompositeKey(keyValues)
+			key := storage.CompositeKeyFromRow(row, indexDef.Fields)
 			idx.Add(key, pointer)
 		}
 	}
@@ -1111,11 +1154,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 			if _, isFullText := idx.(*storage.FullTextIndex); isFullText {
 				continue
 			}
-			keyValues := make([]interface{}, len(indexDef.Fields))
-			for i, f := range indexDef.Fields {
-				keyValues[i] = newRow[f]
-			}
-			k := storage.CompositeKey(keyValues)
+			k := storage.CompositeKeyFromRow(newRow, indexDef.Fields)
 			if hi, ok := idx.(*storage.HashIndex); ok {
 				hi.Set(k, newPointer)
 			}
@@ -1162,8 +1201,10 @@ func (ti *TableInstance) validateIndexChanges(existing, newRow map[string]interf
 		}
 		oldKey := storage.CompositeKey(oldValues)
 		newKey := storage.CompositeKey(newValues)
+		oldHas := !allIndexValuesUnset(oldValues)
+		newHas := !allIndexValuesUnset(newValues)
 
-		if oldKey == newKey {
+		if oldHas == newHas && oldKey == newKey {
 			continue
 		}
 
@@ -1207,8 +1248,10 @@ func (ti *TableInstance) applyIndexChanges(existing, newRow map[string]interface
 		}
 		oldKey := storage.CompositeKey(oldValues)
 		newKey := storage.CompositeKey(newValues)
+		oldHas := !allIndexValuesUnset(oldValues)
+		newHas := !allIndexValuesUnset(newValues)
 
-		if oldKey == newKey {
+		if oldHas == newHas && oldKey == newKey {
 			continue
 		}
 
@@ -1217,8 +1260,12 @@ func (ti *TableInstance) applyIndexChanges(existing, newRow map[string]interface
 			idx.Delete(oldKey)
 			idx.Set(newKey, pointer)
 		case *storage.MultiIndex:
-			idx.Delete(oldKey, pointer)
-			idx.Add(newKey, pointer)
+			if oldHas {
+				idx.Delete(oldKey, pointer)
+			}
+			if newHas {
+				idx.Add(newKey, pointer)
+			}
 		}
 	}
 }
@@ -1273,18 +1320,13 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 		case *storage.FullTextIndex:
 			idx.Delete(key)
 		case *storage.HashIndex:
-			keyValues := make([]interface{}, len(indexDef.Fields))
-			for i, f := range indexDef.Fields {
-				keyValues[i] = existing[f]
-			}
-			k := storage.CompositeKey(keyValues)
+			k := storage.CompositeKeyFromRow(existing, indexDef.Fields)
 			idx.Delete(k)
 		case *storage.MultiIndex:
-			keyValues := make([]interface{}, len(indexDef.Fields))
-			for i, f := range indexDef.Fields {
-				keyValues[i] = existing[f]
+			if allIndexFieldsUnset(existing, indexDef.Fields) {
+				continue
 			}
-			k := storage.CompositeKey(keyValues)
+			k := storage.CompositeKeyFromRow(existing, indexDef.Fields)
 			idx.Delete(k, pointer)
 		}
 	}
@@ -1525,7 +1567,11 @@ func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema
 
 	idx := ti.secondaryIdxs[indexKey]
 	if hi, ok := idx.(*storage.HashIndex); ok {
-		return hi.Get(toString(value))
+		matchKey := toString(value)
+		if len(fields) > 1 {
+			matchKey = storage.CompositeKey(anySlice(value))
+		}
+		return hi.Get(matchKey)
 	}
 	return schema.RowPointer{}, false
 }
@@ -1553,9 +1599,17 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 	idx := ti.secondaryIdxs[indexKey]
 	switch idx := idx.(type) {
 	case *storage.MultiIndex:
-		return idx.GetAll(toString(value))
+		matchKey := toString(value)
+		if len(fields) > 1 {
+			matchKey = storage.CompositeKey(anySlice(value))
+		}
+		return idx.GetAll(matchKey)
 	case *storage.HashIndex:
-		p, ok := idx.Get(toString(value))
+		matchKey := toString(value)
+		if len(fields) > 1 {
+			matchKey = storage.CompositeKey(anySlice(value))
+		}
+		p, ok := idx.Get(matchKey)
 		if ok {
 			return []schema.RowPointer{p}
 		}
@@ -1802,11 +1856,37 @@ func copyRow(row map[string]interface{}) map[string]interface{} {
 }
 
 func secondaryIndexRowKey(fields []string, row map[string]interface{}) string {
-	values := make([]interface{}, len(fields))
-	for i, f := range fields {
-		values[i] = row[f]
+	return storage.CompositeKeyFromRow(row, fields)
+}
+
+func allIndexValuesUnset(values []interface{}) bool {
+	for _, v := range values {
+		if v == nil {
+			continue
+		}
+		if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+			continue
+		}
+		// Any non-empty value means the index key should be materialized.
+		if v != nil {
+			return false
+		}
 	}
-	return storage.CompositeKey(values)
+	return true
+}
+
+func allIndexFieldsUnset(row map[string]interface{}, fields []string) bool {
+	for _, f := range fields {
+		v := row[f]
+		if v == nil {
+			continue
+		}
+		if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func anySlice(value interface{}) []interface{} {
@@ -1952,6 +2032,37 @@ func toNumber(v interface{}) (float64, bool) {
 	}
 }
 
+func parseInt64Like(v interface{}) (int64, bool) {
+	switch val := v.(type) {
+	case int64:
+		return val, true
+	case int:
+		return int64(val), true
+	case int32:
+		return int64(val), true
+	case float64:
+		if val == float64(int64(val)) {
+			return int64(val), true
+		}
+	case float32:
+		if val == float32(int64(val)) {
+			return int64(val), true
+		}
+	case string:
+		s := strings.TrimSpace(val)
+		if s == "" {
+			return 0, false
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return n, true
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil && f == float64(int64(f)) {
+			return int64(f), true
+		}
+	}
+	return 0, false
+}
+
 func deduplicateStrings(arr []interface{}) []interface{} {
 	seen := make(map[string]struct{}, len(arr))
 	result := make([]interface{}, 0, len(arr))
@@ -2023,6 +2134,110 @@ func generateFromPattern(pattern string) (string, error) {
 	}
 
 	return string(result), nil
+}
+
+func generateAutoID(field schema.CompiledField, ti *TableInstance) (interface{}, error) {
+	switch strings.ToLower(strings.TrimSpace(field.AutoIDStrategy)) {
+	case "uuidv7":
+		return generateUUIDv7()
+	case "ulid":
+		return generateULID()
+	case "nanoid":
+		return generateNanoID(21)
+	case "random":
+		return generateFromPattern("[a-z0-9]{12}")
+	case "autoincrement":
+		if ti == nil {
+			return nil, fmt.Errorf("autoincrement requires table context")
+		}
+		return ti.nextAutoIDValue(field), nil
+	default:
+		return nil, fmt.Errorf("unsupported autogen strategy: %s", field.AutoIDStrategy)
+	}
+}
+
+func generateUUIDv7() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+
+	ts := uint64(time.Now().UnixMilli())
+	b[0] = byte(ts >> 40)
+	b[1] = byte(ts >> 32)
+	b[2] = byte(ts >> 24)
+	b[3] = byte(ts >> 16)
+	b[4] = byte(ts >> 8)
+	b[5] = byte(ts)
+
+	// Version 7
+	b[6] = (b[6] & 0x0f) | 0x70
+	// RFC 4122 variant (10xxxxxx)
+	b[8] = (b[8] & 0x3f) | 0x80
+
+	var out [36]byte
+	hex.Encode(out[0:8], b[0:4])
+	out[8] = '-'
+	hex.Encode(out[9:13], b[4:6])
+	out[13] = '-'
+	hex.Encode(out[14:18], b[6:8])
+	out[18] = '-'
+	hex.Encode(out[19:23], b[8:10])
+	out[23] = '-'
+	hex.Encode(out[24:36], b[10:16])
+	return string(out[:]), nil
+}
+
+func generateULID() (string, error) {
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	var entropy [10]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", err
+	}
+	ts := uint64(time.Now().UnixMilli())
+	var out [26]byte
+
+	for i := 9; i >= 0; i-- {
+		out[i] = alphabet[ts&0x1f]
+		ts >>= 5
+	}
+
+	var bits uint64
+	var bitCount uint
+	pos := 10
+	for i := 0; i < len(entropy); i++ {
+		bits = (bits << 8) | uint64(entropy[i])
+		bitCount += 8
+		for bitCount >= 5 && pos < 26 {
+			shift := bitCount - 5
+			idx := (bits >> shift) & 0x1f
+			out[pos] = alphabet[idx]
+			bits &= (1 << shift) - 1
+			bitCount -= 5
+			pos++
+		}
+	}
+	for pos < 26 {
+		out[pos] = alphabet[0]
+		pos++
+	}
+	return string(out[:]), nil
+}
+
+func generateNanoID(length int) (string, error) {
+	if length <= 0 {
+		length = 21
+	}
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-"
+	buf := make([]byte, length)
+	r := make([]byte, length)
+	if _, err := rand.Read(r); err != nil {
+		return "", err
+	}
+	for i := 0; i < length; i++ {
+		buf[i] = alphabet[int(r[i])%len(alphabet)]
+	}
+	return string(buf), nil
 }
 
 func expandCharset(spec string) []byte {

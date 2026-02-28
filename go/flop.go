@@ -22,6 +22,7 @@ type Config struct {
 	SyncMode              string        `json:"syncMode,omitempty"`
 	AsyncSecondaryIndexes bool          `json:"asyncSecondaryIndexes,omitempty"`
 	RequestLogRetention   time.Duration `json:"-"`
+	EnablePprof           bool          `json:"-"`
 }
 
 // CachedTypeHint identifies the storage type for a cached field.
@@ -128,8 +129,11 @@ func (tb *TableBuilder[T]) Field(name string) *FieldBuilder[T] {
 	return &FieldBuilder[T]{table: tb.table, spec: fs}
 }
 
-func (fb *FieldBuilder[T]) Primary() *FieldBuilder[T] {
+func (fb *FieldBuilder[T]) Primary(strategy ...string) *FieldBuilder[T] {
 	fb.spec.Primary = true
+	if len(strategy) > 0 {
+		fb.spec.PrimaryStrategy = normalizePrimaryStrategy(strategy[0])
+	}
 	return fb
 }
 
@@ -413,7 +417,13 @@ func (sb *SchemaBuilder) field(name, kind, tsType string) *fieldSpec {
 	return fs
 }
 
-func (b *StringFieldRules) Primary() *StringFieldRules         { b.spec.Primary = true; return b }
+func (b *StringFieldRules) Primary(strategy ...string) *StringFieldRules {
+	b.spec.Primary = true
+	if len(strategy) > 0 {
+		b.spec.PrimaryStrategy = normalizePrimaryStrategy(strategy[0])
+	}
+	return b
+}
 func (b *StringFieldRules) Required() *StringFieldRules        { b.spec.Required = true; return b }
 func (b *StringFieldRules) Unique() *StringFieldRules          { b.spec.Unique = true; return b }
 func (b *StringFieldRules) Default(v any) *StringFieldRules    { b.spec.Default = v; return b }
@@ -429,7 +439,14 @@ func (b *StringFieldRules) Pattern(expr string) *StringFieldRules {
 }
 func (b *StringFieldRules) Email() *StringFieldRules { b.spec.Format = "email"; return b }
 
-func (b *NumberFieldRules) Required() *NumberFieldRules     { b.spec.Required = true; return b }
+func (b *NumberFieldRules) Required() *NumberFieldRules { b.spec.Required = true; return b }
+func (b *NumberFieldRules) Primary(strategy ...string) *NumberFieldRules {
+	b.spec.Primary = true
+	if len(strategy) > 0 {
+		b.spec.PrimaryStrategy = normalizePrimaryStrategy(strategy[0])
+	}
+	return b
+}
 func (b *NumberFieldRules) Unique() *NumberFieldRules       { b.spec.Unique = true; return b }
 func (b *NumberFieldRules) Default(v any) *NumberFieldRules { b.spec.Default = v; return b }
 func (b *NumberFieldRules) Index() *NumberFieldRules        { b.spec.Indexed = true; return b }
@@ -437,7 +454,14 @@ func (b *NumberFieldRules) Virtual() *NumberFieldRules      { b.spec.Virtual = t
 func (b *NumberFieldRules) Min(v float64) *NumberFieldRules { b.spec.Min = &v; return b }
 func (b *NumberFieldRules) Max(v float64) *NumberFieldRules { b.spec.Max = &v; return b }
 
-func (b *IntegerFieldRules) Required() *IntegerFieldRules     { b.spec.Required = true; return b }
+func (b *IntegerFieldRules) Required() *IntegerFieldRules { b.spec.Required = true; return b }
+func (b *IntegerFieldRules) Primary(strategy ...string) *IntegerFieldRules {
+	b.spec.Primary = true
+	if len(strategy) > 0 {
+		b.spec.PrimaryStrategy = normalizePrimaryStrategy(strategy[0])
+	}
+	return b
+}
 func (b *IntegerFieldRules) Unique() *IntegerFieldRules       { b.spec.Unique = true; return b }
 func (b *IntegerFieldRules) Default(v any) *IntegerFieldRules { b.spec.Default = v; return b }
 func (b *IntegerFieldRules) Index() *IntegerFieldRules        { b.spec.Indexed = true; return b }
@@ -478,7 +502,13 @@ func (b *EnumFieldRules) Default(v any) *EnumFieldRules { b.spec.Default = v; re
 func (b *EnumFieldRules) Index() *EnumFieldRules        { b.spec.Indexed = true; return b }
 func (b *EnumFieldRules) Virtual() *EnumFieldRules      { b.spec.Virtual = true; return b }
 
-func (b *RefFieldRules) Primary() *RefFieldRules         { b.spec.Primary = true; return b }
+func (b *RefFieldRules) Primary(strategy ...string) *RefFieldRules {
+	b.spec.Primary = true
+	if len(strategy) > 0 {
+		b.spec.PrimaryStrategy = normalizePrimaryStrategy(strategy[0])
+	}
+	return b
+}
 func (b *RefFieldRules) Required() *RefFieldRules        { b.spec.Required = true; return b }
 func (b *RefFieldRules) Unique() *RefFieldRules          { b.spec.Unique = true; return b }
 func (b *RefFieldRules) Default(v any) *RefFieldRules    { b.spec.Default = v; return b }
@@ -843,34 +873,35 @@ type TableSpec struct {
 }
 
 type FieldSpec struct {
-	GoName        string   `json:"goName"`
-	JSONName      string   `json:"jsonName"`
-	Kind          string   `json:"kind"`
-	TSType        string   `json:"tsType"`
-	Required      bool     `json:"required,omitempty"`
-	Unique        bool     `json:"unique,omitempty"`
-	Primary       bool     `json:"primary,omitempty"`
-	Indexed       bool     `json:"indexed,omitempty"`
-	FullText      bool     `json:"fullText,omitempty"`
-	Virtual       bool     `json:"virtual,omitempty"`
-	Cached        bool     `json:"cached,omitempty"`
-	Default       any      `json:"default,omitempty"`
-	Autogen       string   `json:"autogen,omitempty"`
-	BcryptRounds  int      `json:"bcryptRounds,omitempty"`
-	EnumValues    []string `json:"enumValues,omitempty"`
-	VectorDims    int      `json:"vectorDims,omitempty"`
-	RefTable      string   `json:"refTable,omitempty"`
-	RefField      string   `json:"refField,omitempty"`
-	Relation      string   `json:"relation,omitempty"`
-	RelationTable string   `json:"relationTable,omitempty"`
-	RelationField string   `json:"relationField,omitempty"`
-	MimeTypes     []string `json:"mimeTypes,omitempty"`
-	MinLen        *int     `json:"minLen,omitempty"`
-	MaxLen        *int     `json:"maxLen,omitempty"`
-	Min           *float64 `json:"min,omitempty"`
-	Max           *float64 `json:"max,omitempty"`
-	Pattern       string   `json:"pattern,omitempty"`
-	Format        string   `json:"format,omitempty"`
+	GoName          string   `json:"goName"`
+	JSONName        string   `json:"jsonName"`
+	Kind            string   `json:"kind"`
+	TSType          string   `json:"tsType"`
+	Required        bool     `json:"required,omitempty"`
+	Unique          bool     `json:"unique,omitempty"`
+	Primary         bool     `json:"primary,omitempty"`
+	Indexed         bool     `json:"indexed,omitempty"`
+	FullText        bool     `json:"fullText,omitempty"`
+	Virtual         bool     `json:"virtual,omitempty"`
+	Cached          bool     `json:"cached,omitempty"`
+	Default         any      `json:"default,omitempty"`
+	Autogen         string   `json:"autogen,omitempty"`
+	PrimaryStrategy string   `json:"primaryStrategy,omitempty"`
+	BcryptRounds    int      `json:"bcryptRounds,omitempty"`
+	EnumValues      []string `json:"enumValues,omitempty"`
+	VectorDims      int      `json:"vectorDims,omitempty"`
+	RefTable        string   `json:"refTable,omitempty"`
+	RefField        string   `json:"refField,omitempty"`
+	Relation        string   `json:"relation,omitempty"`
+	RelationTable   string   `json:"relationTable,omitempty"`
+	RelationField   string   `json:"relationField,omitempty"`
+	MimeTypes       []string `json:"mimeTypes,omitempty"`
+	MinLen          *int     `json:"minLen,omitempty"`
+	MaxLen          *int     `json:"maxLen,omitempty"`
+	Min             *float64 `json:"min,omitempty"`
+	Max             *float64 `json:"max,omitempty"`
+	Pattern         string   `json:"pattern,omitempty"`
+	Format          string   `json:"format,omitempty"`
 }
 
 type EndpointSpec struct {
@@ -1048,6 +1079,7 @@ type fieldSpec struct {
 	Cached           bool
 	Default          any
 	Autogen          string
+	PrimaryStrategy  string
 	BcryptRounds     int
 	EnumValues       []string
 	VectorDimensions int
@@ -1067,34 +1099,58 @@ type fieldSpec struct {
 
 func (fs *fieldSpec) toPublic() FieldSpec {
 	return FieldSpec{
-		GoName:        fs.GoName,
-		JSONName:      fs.JSONName,
-		Kind:          fs.Kind,
-		TSType:        fs.TSType,
-		Required:      fs.Required,
-		Unique:        fs.Unique,
-		Primary:       fs.Primary,
-		Indexed:       fs.Indexed,
-		FullText:      fs.FullText,
-		Virtual:       fs.Virtual,
-		Cached:        fs.Cached,
-		Default:       fs.Default,
-		Autogen:       fs.Autogen,
-		BcryptRounds:  fs.BcryptRounds,
-		EnumValues:    append([]string(nil), fs.EnumValues...),
-		VectorDims:    fs.VectorDimensions,
-		RefTable:      fs.RefTable,
-		RefField:      fs.RefField,
-		Relation:      fs.Relation,
-		RelationTable: fs.RelationTable,
-		RelationField: fs.RelationField,
-		MimeTypes:     append([]string(nil), fs.MimeTypes...),
-		MinLen:        copyIntPtr(fs.MinLen),
-		MaxLen:        copyIntPtr(fs.MaxLen),
-		Min:           copyFloatPtr(fs.Min),
-		Max:           copyFloatPtr(fs.Max),
-		Pattern:       fs.Pattern,
-		Format:        fs.Format,
+		GoName:          fs.GoName,
+		JSONName:        fs.JSONName,
+		Kind:            fs.Kind,
+		TSType:          fs.TSType,
+		Required:        fs.Required,
+		Unique:          fs.Unique,
+		Primary:         fs.Primary,
+		Indexed:         fs.Indexed,
+		FullText:        fs.FullText,
+		Virtual:         fs.Virtual,
+		Cached:          fs.Cached,
+		Default:         fs.Default,
+		Autogen:         fs.Autogen,
+		PrimaryStrategy: fs.PrimaryStrategy,
+		BcryptRounds:    fs.BcryptRounds,
+		EnumValues:      append([]string(nil), fs.EnumValues...),
+		VectorDims:      fs.VectorDimensions,
+		RefTable:        fs.RefTable,
+		RefField:        fs.RefField,
+		Relation:        fs.Relation,
+		RelationTable:   fs.RelationTable,
+		RelationField:   fs.RelationField,
+		MimeTypes:       append([]string(nil), fs.MimeTypes...),
+		MinLen:          copyIntPtr(fs.MinLen),
+		MaxLen:          copyIntPtr(fs.MaxLen),
+		Min:             copyFloatPtr(fs.Min),
+		Max:             copyFloatPtr(fs.Max),
+		Pattern:         fs.Pattern,
+		Format:          fs.Format,
+	}
+}
+
+func normalizePrimaryStrategy(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "", "uuidv7", "ulid", "nanoid", "random":
+		return s
+	case "autoincrement", "auto_increment", "increment":
+		return "autoincrement"
+	case "auto":
+		return "autoincrement"
+	default:
+		panic("flop: unsupported primary strategy: " + raw)
+	}
+}
+
+func isNumericKind(kind string) bool {
+	switch kind {
+	case "number", "integer", "timestamp":
+		return true
+	default:
+		return false
 	}
 }
 

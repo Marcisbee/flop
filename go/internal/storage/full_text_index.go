@@ -13,12 +13,11 @@ type FullTextIndex struct {
 	mu sync.RWMutex
 
 	postings map[uint32][]uint32
-	docTerms map[uint32][]uint32
+	docTerms [][]uint32
 	docByPK  map[string]uint32
-	pkByDoc  map[uint32]string
+	docPKs   []string
 
 	tokenIDByText map[string]uint32
-	tokenTextByID map[uint32]string
 
 	nextDocID   uint32
 	nextTokenID uint32
@@ -34,11 +33,10 @@ type FullTextStats struct {
 func NewFullTextIndex() *FullTextIndex {
 	return &FullTextIndex{
 		postings:      make(map[uint32][]uint32),
-		docTerms:      make(map[uint32][]uint32),
+		docTerms:      make([][]uint32, 1),
 		docByPK:       make(map[string]uint32),
-		pkByDoc:       make(map[uint32]string),
+		docPKs:        make([]string, 1),
 		tokenIDByText: make(map[string]uint32),
-		tokenTextByID: make(map[uint32]string),
 		nextDocID:     1,
 		nextTokenID:   1,
 	}
@@ -52,14 +50,15 @@ func (f *FullTextIndex) Stats() FullTextStats {
 
 	var postingEntries int
 	var payload uint64
-	for tokenID, docs := range f.postings {
+	for _, docs := range f.postings {
 		postingEntries += len(docs)
 		payload += uint64(4 * len(docs))
-		if term, ok := f.tokenTextByID[tokenID]; ok {
-			payload += uint64(len(term))
-		}
 	}
-	for _, termIDs := range f.docTerms {
+	for term := range f.tokenIDByText {
+		payload += uint64(len(term))
+	}
+	for i := 1; i < len(f.docTerms); i++ {
+		termIDs := f.docTerms[i]
 		payload += uint64(4 * len(termIDs))
 	}
 	for pk := range f.docByPK {
@@ -89,8 +88,9 @@ func (f *FullTextIndex) Index(pk string, texts ...string) {
 	if !exists {
 		docID = f.nextDocID
 		f.nextDocID++
+		f.ensureDocSlotLocked(docID)
 		f.docByPK[pk] = docID
-		f.pkByDoc[docID] = pk
+		f.docPKs[docID] = pk
 	}
 
 	f.removeDocTokensLocked(docID)
@@ -101,6 +101,7 @@ func (f *FullTextIndex) Index(pk string, texts ...string) {
 		tokenIDs = append(tokenIDs, tokID)
 		f.postings[tokID] = addSortedUnique(f.postings[tokID], docID)
 	}
+	f.ensureDocSlotLocked(docID)
 	f.docTerms[docID] = tokenIDs
 }
 
@@ -119,8 +120,12 @@ func (f *FullTextIndex) Delete(pk string) {
 
 	f.removeDocTokensLocked(docID)
 	delete(f.docByPK, pk)
-	delete(f.pkByDoc, docID)
-	delete(f.docTerms, docID)
+	if int(docID) < len(f.docPKs) {
+		f.docPKs[docID] = ""
+	}
+	if int(docID) < len(f.docTerms) {
+		f.docTerms[docID] = nil
+	}
 }
 
 // Clear removes all indexed data.
@@ -128,11 +133,10 @@ func (f *FullTextIndex) Clear() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.postings = make(map[uint32][]uint32)
-	f.docTerms = make(map[uint32][]uint32)
+	f.docTerms = make([][]uint32, 1)
 	f.docByPK = make(map[string]uint32)
-	f.pkByDoc = make(map[uint32]string)
+	f.docPKs = make([]string, 1)
 	f.tokenIDByText = make(map[string]uint32)
-	f.tokenTextByID = make(map[uint32]string)
 	f.nextDocID = 1
 	f.nextTokenID = 1
 }
@@ -174,7 +178,10 @@ func (f *FullTextIndex) Search(query string, limit int) []string {
 
 	out := make([]string, 0, len(candidates))
 	for _, docID := range candidates {
-		pk := f.pkByDoc[docID]
+		if int(docID) >= len(f.docPKs) {
+			continue
+		}
+		pk := f.docPKs[docID]
 		if pk == "" {
 			continue
 		}
@@ -193,11 +200,13 @@ func (f *FullTextIndex) internTokenIDLocked(token string) uint32 {
 	id := f.nextTokenID
 	f.nextTokenID++
 	f.tokenIDByText[token] = id
-	f.tokenTextByID[id] = token
 	return id
 }
 
 func (f *FullTextIndex) removeDocTokensLocked(docID uint32) {
+	if int(docID) >= len(f.docTerms) {
+		return
+	}
 	oldTerms := f.docTerms[docID]
 	if len(oldTerms) == 0 {
 		return
@@ -206,14 +215,21 @@ func (f *FullTextIndex) removeDocTokensLocked(docID uint32) {
 		list := removeSortedValue(f.postings[termID], docID)
 		if len(list) == 0 {
 			delete(f.postings, termID)
-			if token := f.tokenTextByID[termID]; token != "" {
-				delete(f.tokenTextByID, termID)
-				delete(f.tokenIDByText, token)
-			}
 			continue
 		}
 		f.postings[termID] = list
 	}
+	f.docTerms[docID] = nil
+}
+
+func (f *FullTextIndex) ensureDocSlotLocked(docID uint32) {
+	need := int(docID) + 1
+	if need <= len(f.docTerms) {
+		return
+	}
+	grow := need - len(f.docTerms)
+	f.docTerms = append(f.docTerms, make([][]uint32, grow)...)
+	f.docPKs = append(f.docPKs, make([]string, grow)...)
 }
 
 func addSortedUnique(in []uint32, id uint32) []uint32 {
@@ -305,7 +321,6 @@ func tokenizeTexts(texts ...string) []string {
 	for t := range seen {
 		out = append(out, t)
 	}
-	sort.Strings(out)
 	return out
 }
 

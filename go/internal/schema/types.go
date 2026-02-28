@@ -71,6 +71,7 @@ type CompiledField struct {
 	Unique           bool
 	DefaultValue     interface{}
 	AutoGenPattern   string // regex source, e.g. "[a-z0-9]{12}"
+	AutoIDStrategy   string // e.g. "uuidv7", "ulid", "nanoid", "random", "autoincrement"
 	BcryptRounds     int
 	RefTableName     string
 	RefField         string

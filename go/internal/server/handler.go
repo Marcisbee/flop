@@ -25,6 +25,7 @@ type ServerConfig struct {
 	JWTSecret           string
 	StaticDir           string
 	RequestLogRetention time.Duration
+	EnablePprof         bool
 }
 
 // HandlerCaller calls JS view/reducer handlers.
@@ -820,6 +821,16 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 		return
 	}
 
+	// pprof endpoints (superadmin only)
+	if strings.HasPrefix(path, "/_/debug/pprof") {
+		if !h.config.EnablePprof {
+			jsonError(w, "Not found", 404)
+			return
+		}
+		ServePrefixedPprof("/_/debug/pprof", w, r)
+		return
+	}
+
 	// Table listing
 	if path == "/_/api/tables" && r.Method == "GET" {
 		h.handleListTables(w)
@@ -1035,25 +1046,10 @@ func (h *Handler) handleListRows(w http.ResponseWriter, r *http.Request, tableNa
 
 	// Stable ordering by primary key to match TS admin behavior.
 	if len(rows) > 0 {
-		pk := table.GetDef().CompiledSchema.Fields[0].Name
+		pkField := table.GetDef().CompiledSchema.Fields[0]
+		pk := pkField.Name
 		sort.Slice(rows, func(i, j int) bool {
-			ai := rows[i][pk]
-			aj := rows[j][pk]
-			switch aiv := ai.(type) {
-			case float64:
-				if ajv, ok := aj.(float64); ok {
-					return aiv < ajv
-				}
-			case int:
-				if ajv, ok := aj.(int); ok {
-					return aiv < ajv
-				}
-			case int64:
-				if ajv, ok := aj.(int64); ok {
-					return aiv < ajv
-				}
-			}
-			return fmt.Sprint(ai) < fmt.Sprint(aj)
+			return adminValueLess(rows[i][pk], rows[j][pk], pkField.Kind)
 		})
 	}
 
@@ -1561,6 +1557,49 @@ func intParam(s string, defaultVal int) int {
 		return defaultVal
 	}
 	return n
+}
+
+func adminValueLess(a, b interface{}, kind schema.FieldKind) bool {
+	switch kind {
+	case schema.KindNumber, schema.KindInteger, schema.KindTimestamp:
+		an, aok := adminToFloat(a)
+		bn, bok := adminToFloat(b)
+		if aok && bok {
+			if an == bn {
+				return fmt.Sprint(a) < fmt.Sprint(b)
+			}
+			return an < bn
+		}
+		if aok {
+			return true
+		}
+		if bok {
+			return false
+		}
+	}
+	return fmt.Sprint(a) < fmt.Sprint(b)
+}
+
+func adminToFloat(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 func parseWindowDuration(raw string, fallback time.Duration) time.Duration {

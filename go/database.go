@@ -25,6 +25,7 @@ type Database struct {
 	authService         *server.AuthService
 	jwtSecret           string
 	requestLogRetention time.Duration
+	enablePprof         bool
 	analyticsMu         sync.Mutex
 	analytics           *server.RequestAnalytics
 }
@@ -64,7 +65,11 @@ func (a *App) Open() (*Database, error) {
 	if retention <= 0 {
 		retention = server.DefaultRequestLogRetention
 	}
-	d := &Database{db: db, requestLogRetention: retention}
+	d := &Database{
+		db:                  db,
+		requestLogRetention: retention,
+		enablePprof:         a.config.EnablePprof,
+	}
 
 	// Set up auth service if there's an auth table
 	authTable := db.GetAuthTable()
@@ -262,6 +267,23 @@ func (ti *TableInstance) FindByUniqueIndex(field string, value any) (map[string]
 	return row, true
 }
 
+// FindByUniqueCompositeIndex finds a row by a unique composite index.
+// Values are matched against fields in order.
+func (ti *TableInstance) FindByUniqueCompositeIndex(fields []string, values ...any) (map[string]any, bool) {
+	if len(fields) == 0 || len(fields) != len(values) {
+		return nil, false
+	}
+	ptr, ok := ti.ti.FindByIndex(fields, values)
+	if !ok {
+		return nil, false
+	}
+	row, err := ti.ti.GetByPointer(ptr)
+	if err != nil || row == nil {
+		return nil, false
+	}
+	return row, true
+}
+
 // CountByIndex returns the number of rows matching a non-unique index value.
 func (ti *TableInstance) CountByIndex(field string, value any) int {
 	return len(ti.ti.FindAllByIndex([]string{field}, value))
@@ -270,6 +292,24 @@ func (ti *TableInstance) CountByIndex(field string, value any) int {
 // FindByIndex returns all rows matching a non-unique index value.
 func (ti *TableInstance) FindByIndex(field string, value any) ([]map[string]any, error) {
 	ptrs := ti.ti.FindAllByIndex([]string{field}, value)
+	rows := make([]map[string]any, 0, len(ptrs))
+	for _, ptr := range ptrs {
+		row, err := ti.ti.GetByPointer(ptr)
+		if err != nil || row == nil {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// FindByCompositeIndex returns all rows matching a composite index value.
+// Values are matched against fields in order.
+func (ti *TableInstance) FindByCompositeIndex(fields []string, values ...any) ([]map[string]any, error) {
+	if len(fields) == 0 || len(fields) != len(values) {
+		return []map[string]any{}, nil
+	}
+	ptrs := ti.ti.FindAllByIndex(fields, values)
 	rows := make([]map[string]any, 0, len(ptrs))
 	for _, ptr := range ptrs {
 		row, err := ti.ti.GetByPointer(ptr)
@@ -340,6 +380,9 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 		var indexes []schema.IndexDef
 		for _, fn := range fieldNames {
 			fs := ts.Fields[fn]
+			if fs.PrimaryStrategy == "autoincrement" && !isNumericKind(fs.Kind) {
+				panic("flop: autoincrement primary strategy requires number/integer/timestamp field: " + fs.JSONName)
+			}
 			cf := schema.CompiledField{
 				Name:             fs.JSONName,
 				Kind:             mapKind(fs.Kind),
@@ -347,6 +390,7 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 				Unique:           fs.Unique,
 				DefaultValue:     fs.Default,
 				AutoGenPattern:   fs.Autogen,
+				AutoIDStrategy:   fs.PrimaryStrategy,
 				BcryptRounds:     fs.BcryptRounds,
 				EnumValues:       append([]string(nil), fs.EnumValues...),
 				VectorDimensions: fs.VectorDimensions,
@@ -526,9 +570,10 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 
 	// Sort by primary key for stable ordering
 	if len(def.CompiledSchema.Fields) > 0 {
-		pkField := def.CompiledSchema.Fields[0].Name
+		pkDef := def.CompiledSchema.Fields[0]
+		pkField := pkDef.Name
 		sort.SliceStable(rows, func(i, j int) bool {
-			return fmt.Sprint(rows[i][pkField]) < fmt.Sprint(rows[j][pkField])
+			return adminSortValueLess(rows[i][pkField], rows[j][pkField], pkDef.Kind)
 		})
 	}
 
@@ -591,9 +636,10 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 
 	// Sort only the page of results
 	if len(matched) > 1 && len(def.CompiledSchema.Fields) > 0 {
-		pkField := def.CompiledSchema.Fields[0].Name
+		pkDef := def.CompiledSchema.Fields[0]
+		pkField := pkDef.Name
 		sort.SliceStable(matched, func(i, j int) bool {
-			return fmt.Sprint(matched[i][pkField]) < fmt.Sprint(matched[j][pkField])
+			return adminSortValueLess(matched[i][pkField], matched[j][pkField], pkDef.Kind)
 		})
 	}
 
@@ -660,6 +706,11 @@ func (p *EngineAdminProvider) AdminIndexStats() any {
 		}
 	}
 	return p.DB.db.IndexStatsReport()
+}
+
+// AdminEnablePprof reports whether profiling endpoints are enabled.
+func (p *EngineAdminProvider) AdminEnablePprof() bool {
+	return p != nil && p.DB != nil && p.DB.enablePprof
 }
 
 // WrapWithAnalytics records request timing/error telemetry while preserving the wrapped handler behavior.
@@ -931,6 +982,49 @@ func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func adminSortValueLess(a, b any, kind schema.FieldKind) bool {
+	switch kind {
+	case schema.KindNumber, schema.KindInteger, schema.KindTimestamp:
+		an, aok := adminSortToFloat(a)
+		bn, bok := adminSortToFloat(b)
+		if aok && bok {
+			if an == bn {
+				return fmt.Sprint(a) < fmt.Sprint(b)
+			}
+			return an < bn
+		}
+		if aok {
+			return true
+		}
+		if bok {
+			return false
+		}
+	}
+	return fmt.Sprint(a) < fmt.Sprint(b)
+}
+
+func adminSortToFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	}
+	return 0, false
 }
 
 // toString safely converts any value to string.

@@ -100,7 +100,7 @@ func (t typedEngineTable[T]) Insert(row T) (T, error) {
 	}
 	if def := t.raw.GetDef(); def != nil && def.CompiledSchema != nil {
 		for _, f := range def.CompiledSchema.Fields {
-			if f.AutoGenPattern == "" {
+			if f.AutoGenPattern == "" && f.AutoIDStrategy == "" {
 				continue
 			}
 			v, ok := m[f.Name]

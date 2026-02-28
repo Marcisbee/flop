@@ -28,7 +28,7 @@ func Build() *flop.App {
 	})
 
 	users := flop.Define(application, "users", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Autogen(`[a-z0-9]{12}`)
+		s.String("id").Primary("uuidv7")
 		s.String("email").Required().Unique().Email().MaxLen(255)
 		s.Bcrypt("password", 10).Required()
 		s.String("name").Required().MinLen(2).MaxLen(80)
@@ -36,7 +36,7 @@ func Build() *flop.App {
 	})
 
 	posts := flop.Define(application, "posts", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Autogen(`[a-z0-9]{8}`)
+		s.String("id").Primary("uuidv7")
 		s.String("slug").Required().Unique()
 		s.String("title").Required()
 		s.String("excerpt")
@@ -49,7 +49,7 @@ func Build() *flop.App {
 	})
 
 	flop.Define(application, "comments", func(s *flop.SchemaBuilder) {
-		s.String("id").Primary().Autogen(`[a-z0-9]{12}`)
+		s.String("id").Primary("uuidv7")
 		s.Ref("postId", posts, "id").Required().Index()
 		s.Ref("authorId", users, "id").Required().Index()
 		s.String("body").Required()
