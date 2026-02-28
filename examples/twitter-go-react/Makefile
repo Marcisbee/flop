@@ -22,6 +22,6 @@ seed:
 	GOCACHE=$(GOCACHE) go run ./cmd/seed -force
 
 build: build-js
-	GOCACHE=$(GOCACHE) go build -o twitter-server ./cmd/server
+	GOCACHE=$(GOCACHE) go build -trimpath -ldflags="-s -w" -o twitter-server ./cmd/server
 
 run: dev

@@ -260,9 +260,14 @@ func newHashIndexWithMapped(base *mappedHashBase, release func()) *HashIndex {
 
 // MultiIndex is Map<string, []RowPointer> for non-unique indexes.
 type MultiIndex struct {
-	mu   sync.RWMutex
-	data map[string][]schema.RowPointer
-	uuid map[[16]byte][]schema.RowPointer
+	mu               sync.RWMutex
+	data             map[string][]schema.RowPointer
+	uuid             map[[16]byte][]schema.RowPointer
+	mapped           *mappedMultiBase
+	mappedRelease    func()
+	deleted          map[string]map[uint64]struct{}
+	mappedExtraKeys  int
+	mappedExtraPosts int
 }
 
 type MultiIndexStats struct {
@@ -285,6 +290,26 @@ func NewMultiIndexWithCapacity(capacity int) *MultiIndex {
 func (m *MultiIndex) Add(key string, pointer schema.RowPointer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.mapped != nil {
+		if tombs, ok := m.deleted[key]; ok {
+			pk := rowPointerKey(pointer)
+			if _, exists := tombs[pk]; exists {
+				delete(tombs, pk)
+				if len(tombs) == 0 {
+					delete(m.deleted, key)
+				}
+				return
+			}
+		}
+		if len(m.data[key]) == 0 {
+			if len(m.mapped.GetAll(key)) == 0 {
+				m.mappedExtraKeys++
+			}
+		}
+		m.data[key] = append(m.data[key], pointer)
+		m.mappedExtraPosts++
+		return
+	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {
 		if m.uuid == nil {
 			m.uuid = make(map[[16]byte][]schema.RowPointer)
@@ -298,6 +323,22 @@ func (m *MultiIndex) Add(key string, pointer schema.RowPointer) {
 func (m *MultiIndex) GetAll(key string) []schema.RowPointer {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.mapped != nil {
+		base := m.mapped.GetAll(key)
+		added := m.data[key]
+		tombs := m.deleted[key]
+		out := make([]schema.RowPointer, 0, len(base)+len(added))
+		for _, p := range base {
+			if len(tombs) > 0 {
+				if _, deleted := tombs[rowPointerKey(p)]; deleted {
+					continue
+				}
+			}
+			out = append(out, p)
+		}
+		out = append(out, added...)
+		return out
+	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {
 		if ptrs, found := m.uuid[uuidKey]; found {
 			return ptrs
@@ -309,6 +350,31 @@ func (m *MultiIndex) GetAll(key string) []schema.RowPointer {
 func (m *MultiIndex) Delete(key string, pointer schema.RowPointer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.mapped != nil {
+		ptrs := m.data[key]
+		for i, p := range ptrs {
+			if p.PageNumber == pointer.PageNumber && p.SlotIndex == pointer.SlotIndex {
+				m.data[key] = append(ptrs[:i], ptrs[i+1:]...)
+				m.mappedExtraPosts--
+				if len(m.data[key]) == 0 {
+					delete(m.data, key)
+					if len(m.mapped.GetAll(key)) == 0 {
+						m.mappedExtraKeys--
+					}
+				}
+				return
+			}
+		}
+		if m.mapped.HasPointer(key, pointer) {
+			tombs := m.deleted[key]
+			if tombs == nil {
+				tombs = make(map[uint64]struct{})
+				m.deleted[key] = tombs
+			}
+			tombs[rowPointerKey(pointer)] = struct{}{}
+		}
+		return
+	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {
 		if ptrs, found := m.uuid[uuidKey]; found {
 			for i, p := range ptrs {
@@ -338,6 +404,7 @@ func (m *MultiIndex) Delete(key string, pointer schema.RowPointer) {
 func (m *MultiIndex) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.clearMappedLocked()
 	m.data = make(map[string][]schema.RowPointer)
 	m.uuid = nil
 }
@@ -348,6 +415,7 @@ func (m *MultiIndex) ResetWithCapacity(capacity int) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.clearMappedLocked()
 	m.data = make(map[string][]schema.RowPointer, capacity)
 	m.uuid = nil
 }
@@ -357,6 +425,24 @@ func (m *MultiIndex) ResetWithCapacity(capacity int) {
 func (m *MultiIndex) Stats() MultiIndexStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.mapped != nil {
+		var entries int
+		var payload uint64
+		for k, ptrs := range m.data {
+			entries += len(ptrs)
+			payload += uint64(len(k) + 6*len(ptrs))
+		}
+		deletedEntries := 0
+		for _, tombs := range m.deleted {
+			deletedEntries += len(tombs)
+		}
+		payload += m.mapped.EstimatedPayloadBytes
+		return MultiIndexStats{
+			Keys:                  m.mapped.KeyCount() + m.mappedExtraKeys,
+			Entries:               m.mapped.EntryCount() - deletedEntries + entries,
+			EstimatedPayloadBytes: payload,
+		}
+	}
 	var entries int
 	var payload uint64
 	for k, ptrs := range m.data {
@@ -372,6 +458,87 @@ func (m *MultiIndex) Stats() MultiIndexStats {
 		Entries:               entries,
 		EstimatedPayloadBytes: payload,
 	}
+}
+
+func (m *MultiIndex) clearMappedLocked() {
+	if m.mappedRelease != nil {
+		m.mappedRelease()
+		m.mappedRelease = nil
+	}
+	m.mapped = nil
+	m.deleted = nil
+	m.mappedExtraKeys = 0
+	m.mappedExtraPosts = 0
+}
+
+func newMultiIndexWithMapped(base *mappedMultiBase, release func()) *MultiIndex {
+	if release == nil {
+		release = func() {}
+	}
+	return &MultiIndex{
+		data:          make(map[string][]schema.RowPointer),
+		mapped:        base,
+		mappedRelease: release,
+		deleted:       make(map[string]map[uint64]struct{}),
+	}
+}
+
+func (m *MultiIndex) Range(fn func(string, []schema.RowPointer) bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.mapped != nil {
+		seen := make(map[string]struct{}, len(m.data))
+		for k, extra := range m.data {
+			seen[k] = struct{}{}
+			base := m.mapped.GetAll(k)
+			tombs := m.deleted[k]
+			merged := make([]schema.RowPointer, 0, len(base)+len(extra))
+			for _, p := range base {
+				if len(tombs) > 0 {
+					if _, deleted := tombs[rowPointerKey(p)]; deleted {
+						continue
+					}
+				}
+				merged = append(merged, p)
+			}
+			merged = append(merged, extra...)
+			if !fn(k, merged) {
+				return
+			}
+		}
+		m.mapped.Range(func(k string, base []schema.RowPointer) bool {
+			if _, done := seen[k]; done {
+				return true
+			}
+			tombs := m.deleted[k]
+			if len(tombs) == 0 {
+				return fn(k, base)
+			}
+			filtered := make([]schema.RowPointer, 0, len(base))
+			for _, p := range base {
+				if _, deleted := tombs[rowPointerKey(p)]; deleted {
+					continue
+				}
+				filtered = append(filtered, p)
+			}
+			return fn(k, filtered)
+		})
+		return
+	}
+	for k, v := range m.data {
+		if !fn(k, v) {
+			return
+		}
+	}
+	for k, v := range m.uuid {
+		if !fn(formatUUIDCanonical(k), v) {
+			return
+		}
+	}
+}
+
+func rowPointerKey(p schema.RowPointer) uint64 {
+	return (uint64(p.PageNumber) << 16) | uint64(p.SlotIndex)
 }
 
 // CompositeKey builds a composite key from multiple field values.

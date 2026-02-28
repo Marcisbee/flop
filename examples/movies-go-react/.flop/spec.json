@@ -1,7 +1,8 @@
 {
   "config": {
     "dataDir": "./data",
-    "syncMode": "normal"
+    "syncMode": "normal",
+    "asyncSecondaryIndexes": true
   },
   "tables": [
     {
@@ -29,7 +30,7 @@
           "kind": "string",
           "tsType": "string",
           "primary": true,
-          "autogen": "[a-z0-9]{12}"
+          "primaryStrategy": "uuidv7"
         },
         {
           "goName": "Overview",

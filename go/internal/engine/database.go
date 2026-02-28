@@ -364,21 +364,22 @@ const updateLockShards = 256
 type TableInstance struct {
 	Name string
 
-	def            *schema.TableDef
-	tableFile      *storage.TableFile
-	wal            *storage.WAL
-	primaryIndex   *storage.HashIndex
-	secondaryIdxs  map[string]interface{} // *HashIndex, *MultiIndex, or *FullTextIndex
-	indexDefsByKey map[string]schema.IndexDef
-	indexStateMu   sync.RWMutex
-	indexesReady   bool
-	indexBuildDone chan struct{}
-	migChains      map[int]*schema.MigrationChain
-	currentVersion int
-	tableMeta      *schema.StoredTableMeta
-	dataDir        string
-	pubsub         *PubSub
-	db             *Database
+	def              *schema.TableDef
+	tableFile        *storage.TableFile
+	wal              *storage.WAL
+	primaryIndex     *storage.HashIndex
+	secondaryIdxs    map[string]interface{} // *HashIndex, *MultiIndex, or *FullTextIndex
+	indexDefsByKey   map[string]schema.IndexDef
+	indexStateMu     sync.RWMutex
+	indexesReady     bool
+	indexBuildDone   chan struct{}
+	indexesToRebuild map[string]bool
+	migChains        map[int]*schema.MigrationChain
+	currentVersion   int
+	tableMeta        *schema.StoredTableMeta
+	dataDir          string
+	pubsub           *PubSub
+	db               *Database
 
 	// mu coordinates checkpoints/schema-changing writes.
 	// Insert/Delete/Checkpoint take Lock; Update fast path uses RLock.
@@ -391,14 +392,15 @@ type TableInstance struct {
 
 func newTableInstance(name string, def *schema.TableDef, db *Database) (*TableInstance, error) {
 	return &TableInstance{
-		Name:           name,
-		def:            def,
-		primaryIndex:   storage.NewHashIndex(),
-		secondaryIdxs:  make(map[string]interface{}),
-		indexDefsByKey: make(map[string]schema.IndexDef),
-		migChains:      make(map[int]*schema.MigrationChain),
-		autoIDNext:     make(map[string]int64),
-		db:             db,
+		Name:             name,
+		def:              def,
+		primaryIndex:     storage.NewHashIndex(),
+		secondaryIdxs:    make(map[string]interface{}),
+		indexDefsByKey:   make(map[string]schema.IndexDef),
+		indexesToRebuild: make(map[string]bool),
+		migChains:        make(map[int]*schema.MigrationChain),
+		autoIDNext:       make(map[string]int64),
+		db:               db,
 	}, nil
 }
 
@@ -505,15 +507,34 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 
 	// Set up secondary indexes
 	ti.indexDefsByKey = make(map[string]schema.IndexDef, len(ti.def.Indexes))
+	ti.indexesToRebuild = make(map[string]bool, len(ti.def.Indexes))
 	for _, indexDef := range ti.def.Indexes {
 		indexKey := secondaryIndexKey(indexDef)
 		ti.indexDefsByKey[indexKey] = indexDef
 		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
 			ti.secondaryIdxs[indexKey] = storage.NewFullTextIndex()
+			ti.indexesToRebuild[indexKey] = true
 		} else if indexDef.Unique {
-			ti.secondaryIdxs[indexKey] = storage.NewHashIndex()
+			persistPath := secondaryIndexDiskPath(dataDir, ti.Name, indexKey, true)
+			idx, lerr := storage.ReadMappedIndexFile(persistPath)
+			if lerr == nil && idx.Size() > 0 {
+				ti.secondaryIdxs[indexKey] = idx
+			} else {
+				ti.secondaryIdxs[indexKey] = storage.NewHashIndex()
+				ti.indexesToRebuild[indexKey] = true
+			}
 		} else {
-			ti.secondaryIdxs[indexKey] = storage.NewMultiIndex()
+			persistPath := secondaryIndexDiskPath(dataDir, ti.Name, indexKey, true)
+			idx, lerr := storage.ReadMappedMultiIndexFile(persistPath)
+			if lerr == nil {
+				ti.secondaryIdxs[indexKey] = idx
+				if idx.Stats().Entries == 0 {
+					ti.indexesToRebuild[indexKey] = true
+				}
+			} else {
+				ti.secondaryIdxs[indexKey] = storage.NewMultiIndex()
+				ti.indexesToRebuild[indexKey] = true
+			}
 		}
 	}
 
@@ -523,10 +544,15 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	if len(ti.def.Indexes) == 0 {
 		return nil
 	}
+	if len(ti.indexesToRebuild) == 0 {
+		ti.setIndexesReady(true)
+		return nil
+	}
 	if !ti.db.asyncSecondaryIndexes {
-		if err := ti.rebuildSecondaryIndexes(); err != nil {
+		if err := ti.rebuildSecondaryIndexesByKeys(ti.indexesToRebuild); err != nil {
 			return err
 		}
+		ti.indexesToRebuild = make(map[string]bool)
 		ti.setIndexesReady(true)
 		return nil
 	}
@@ -574,7 +600,14 @@ func (ti *TableInstance) rebuildIndex() error {
 }
 
 func (ti *TableInstance) rebuildSecondaryIndexes() error {
-	for _, idx := range ti.secondaryIdxs {
+	return ti.rebuildSecondaryIndexesByKeys(nil)
+}
+
+func (ti *TableInstance) rebuildSecondaryIndexesByKeys(keys map[string]bool) error {
+	for indexKey, idx := range ti.secondaryIdxs {
+		if keys != nil && !keys[indexKey] {
+			continue
+		}
 		switch idx := idx.(type) {
 		case *storage.FullTextIndex:
 			idx.Clear()
@@ -598,6 +631,9 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 
 		for _, indexDef := range ti.def.Indexes {
 			indexKey := secondaryIndexKey(indexDef)
+			if keys != nil && !keys[indexKey] {
+				continue
+			}
 			idx := ti.secondaryIdxs[indexKey]
 			if idx == nil {
 				continue
@@ -625,10 +661,11 @@ func (ti *TableInstance) rebuildSecondaryIndexesAsync() {
 	defer close(ti.indexBuildDone)
 	ti.mu.Lock()
 	defer ti.mu.Unlock()
-	if err := ti.rebuildSecondaryIndexes(); err != nil {
+	if err := ti.rebuildSecondaryIndexesByKeys(ti.indexesToRebuild); err != nil {
 		ti.setIndexesReady(false)
 		return
 	}
+	ti.indexesToRebuild = make(map[string]bool)
 	ti.setIndexesReady(true)
 }
 
@@ -1798,6 +1835,22 @@ func (ti *TableInstance) Checkpoint() error {
 	if err := storage.WriteMappedIndexFile(midxPath, ti.primaryIndex); err != nil {
 		return err
 	}
+	for indexKey, indexDef := range ti.indexDefsByKey {
+		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+			continue
+		}
+		path := secondaryIndexDiskPath(ti.dataDir, ti.Name, indexKey, true)
+		switch idx := ti.secondaryIdxs[indexKey].(type) {
+		case *storage.HashIndex:
+			if err := storage.WriteMappedIndexFile(path, idx); err != nil {
+				return err
+			}
+		case *storage.MultiIndex:
+			if err := storage.WriteMappedMultiIndexFile(path, idx); err != nil {
+				return err
+			}
+		}
+	}
 	if err := ti.wal.Fsync(); err != nil {
 		return err
 	}
@@ -1832,6 +1885,14 @@ func secondaryIndexKey(indexDef schema.IndexDef) string {
 
 func fullTextIndexKey(fields []string) string {
 	return "ft:" + strings.Join(fields, ",")
+}
+
+func secondaryIndexDiskPath(dataDir, tableName, indexKey string, mapped bool) string {
+	encoded := hex.EncodeToString([]byte(indexKey))
+	if mapped {
+		return filepath.Join(dataDir, tableName+"."+encoded+".smidx")
+	}
+	return filepath.Join(dataDir, tableName+"."+encoded+".sidx")
 }
 
 func textValuesForFields(row map[string]interface{}, fields []string) []string {

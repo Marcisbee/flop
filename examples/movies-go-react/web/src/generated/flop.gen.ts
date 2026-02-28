@@ -16,7 +16,8 @@ export type ReducerName = keyof FlopReducers;
 export const FLOP_SPEC = {
   "config": {
     "dataDir": "./data",
-    "syncMode": "normal"
+    "syncMode": "normal",
+    "asyncSecondaryIndexes": true
   },
   "tables": [
     {
@@ -44,7 +45,7 @@ export const FLOP_SPEC = {
           "kind": "string",
           "tsType": "string",
           "primary": true,
-          "autogen": "[a-z0-9]{12}"
+          "primaryStrategy": "uuidv7"
         },
         {
           "goName": "Overview",

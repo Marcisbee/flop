@@ -69,3 +69,33 @@ func TestMappedIndexOverlayMutations(t *testing.T) {
 		t.Fatalf("get z = %+v,%v", p, ok)
 	}
 }
+
+func TestMappedMultiIndexReadWriteAndOverlay(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "likes.smidx")
+
+	m := NewMultiIndex()
+	m.Add("k1", schema.RowPointer{PageNumber: 1, SlotIndex: 1})
+	m.Add("k1", schema.RowPointer{PageNumber: 1, SlotIndex: 2})
+	m.Add("k2", schema.RowPointer{PageNumber: 2, SlotIndex: 1})
+	if err := WriteMappedMultiIndexFile(path, m); err != nil {
+		t.Fatalf("write mapped multi: %v", err)
+	}
+
+	loaded, err := ReadMappedMultiIndexFile(path)
+	if err != nil {
+		t.Fatalf("read mapped multi: %v", err)
+	}
+
+	if got := len(loaded.GetAll("k1")); got != 2 {
+		t.Fatalf("k1 len = %d, want 2", got)
+	}
+
+	// Overlay: delete one base pointer, add one new pointer.
+	loaded.Delete("k1", schema.RowPointer{PageNumber: 1, SlotIndex: 1})
+	loaded.Add("k1", schema.RowPointer{PageNumber: 3, SlotIndex: 3})
+	ptrs := loaded.GetAll("k1")
+	if len(ptrs) != 2 {
+		t.Fatalf("k1 len after overlay = %d, want 2", len(ptrs))
+	}
+}

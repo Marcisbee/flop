@@ -9,7 +9,7 @@ dev:
 dev-gen: gen dev
 
 build:
-	GOCACHE=$(GOCACHE) go build -o movies-server ./cmd/server
+	GOCACHE=$(GOCACHE) go build -trimpath -ldflags="-s -w" -o movies-server ./cmd/server
 
 run-bin:
 	./movies-server
