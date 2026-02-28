@@ -81,7 +81,7 @@ func BuildWithDataDir(dataDir string) *flop.App {
 	// Likes: composite key = "userId:tweetId"
 	flop.Define(application, "likes", func(s *flop.SchemaBuilder) {
 		s.String("id").Primary() // format: userId:tweetId
-		s.Ref("userId", users, "id").Required().Index()
+		s.Ref("userId", users, "id").Required()
 		s.String("tweetId").Required().Index()
 		s.Timestamp("createdAt").DefaultNow()
 	})
@@ -89,7 +89,7 @@ func BuildWithDataDir(dataDir string) *flop.App {
 	// Retweets: composite key = "userId:tweetId"
 	flop.Define(application, "retweets", func(s *flop.SchemaBuilder) {
 		s.String("id").Primary() // format: userId:tweetId
-		s.Ref("userId", users, "id").Required().Index()
+		s.Ref("userId", users, "id").Required()
 		s.String("tweetId").Required().Index()
 		s.Timestamp("createdAt").DefaultNow()
 	})
@@ -105,8 +105,8 @@ func BuildWithDataDir(dataDir string) *flop.App {
 	// Notifications
 	flop.Define(application, "notifications", func(s *flop.SchemaBuilder) {
 		s.String("id").Primary().Autogen(`[a-z0-9]{16}`)
-		s.Ref("userId", users, "id").Required().Index()  // who receives
-		s.Ref("actorId", users, "id").Required().Index() // who caused
+		s.Ref("userId", users, "id").Required().Index() // who receives
+		s.Ref("actorId", users, "id").Required()        // who caused
 		s.Enum("type", "like", "retweet", "reply", "follow", "quote").Required()
 		s.String("tweetId") // related tweet (if applicable)
 		s.Boolean("read").Default(false)
