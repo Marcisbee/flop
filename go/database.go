@@ -523,28 +523,29 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 	}, true, nil
 }
 
-func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool) ([]map[string]any, bool, error) {
+func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int) ([]map[string]any, int, bool, error) {
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
-		return nil, false, nil
+		return nil, 0, false, nil
 	}
 
 	def := ti.GetDef()
 
-	// Wrap match to redact bcrypt fields before predicate evaluation
-	matched, err := ti.ScanFilter(func(row map[string]any) bool {
+	// ScanFilter handles pagination internally — counts all matches but only
+	// collects rows within the [offset, offset+limit) window.
+	matched, total, err := ti.ScanFilter(func(row map[string]any) bool {
 		for _, f := range def.CompiledSchema.Fields {
 			if f.Kind == schema.KindBcrypt && row[f.Name] != nil {
 				row[f.Name] = "[REDACTED]"
 			}
 		}
 		return match(row)
-	})
+	}, limit, offset)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 
-	// Sort only the matched results
+	// Sort only the page of results
 	if len(matched) > 1 && len(def.CompiledSchema.Fields) > 0 {
 		pkField := def.CompiledSchema.Fields[0].Name
 		sort.SliceStable(matched, func(i, j int) bool {
@@ -552,7 +553,7 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 		})
 	}
 
-	return matched, true, nil
+	return matched, total, true, nil
 }
 
 func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) (map[string]any, error) {

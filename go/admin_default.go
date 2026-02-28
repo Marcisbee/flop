@@ -33,9 +33,10 @@ type AdminProvider interface {
 	AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error)
 }
 
-// AdminFilterProvider scans all rows, applying a predicate to avoid loading everything into memory.
+// AdminFilterProvider scans rows with a predicate and server-side pagination.
+// It returns the page of matching rows, the total count of all matches, and whether the table was found.
 type AdminFilterProvider interface {
-	AdminFilterRows(table string, match func(map[string]any) bool) ([]map[string]any, bool, error)
+	AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int) (rows []map[string]any, total int, found bool, err error)
 }
 
 type AdminWriteProvider interface {
@@ -458,9 +459,11 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					}
 				}
 
-				var rows []map[string]any
+				offset := (page - 1) * limit
+				var pageRows []map[string]any
+				var total int
 				if filterEnabled {
-					matched, found, err := filterProvider.AdminFilterRows(tableName, matchFn)
+					matched, matchTotal, found, err := filterProvider.AdminFilterRows(tableName, matchFn, limit, offset)
 					if err != nil {
 						adminJSONError(w, err.Error(), http.StatusBadRequest)
 						return
@@ -469,7 +472,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 						adminJSONError(w, "not found", http.StatusNotFound)
 						return
 					}
-					rows = matched
+					pageRows = matched
+					total = matchTotal
 				} else {
 					result, found, err := provider.AdminRows(tableName, 1000000, 0)
 					if err != nil {
@@ -480,29 +484,20 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 						adminJSONError(w, "not found", http.StatusNotFound)
 						return
 					}
-					var filtered []map[string]any
 					for _, row := range result.Rows {
 						if matchFn(row) {
-							filtered = append(filtered, row)
+							total++
+							if total > offset && len(pageRows) < limit {
+								pageRows = append(pageRows, row)
+							}
 						}
 					}
-					rows = filtered
 				}
 
-				total := len(rows)
-				pages := (total + limit - 1) / limit
-				offset := (page - 1) * limit
-				end := offset + limit
-				if end > total {
-					end = total
-				}
-				if offset > total {
-					offset = total
-				}
-				pageRows := rows[offset:end]
 				if pageRows == nil {
 					pageRows = []map[string]any{}
 				}
+				pages := (total + limit - 1) / limit
 				adminJSONResp(w, http.StatusOK, map[string]any{
 					"rows":  pageRows,
 					"total": total,

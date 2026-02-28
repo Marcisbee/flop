@@ -1358,24 +1358,38 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 }
 
 // ScanFilter iterates all rows and returns those matching the predicate.
-func (ti *TableInstance) ScanFilter(match func(map[string]interface{}) bool) ([]map[string]interface{}, error) {
+// It counts all matches but only collects rows in the [offset, offset+limit) window.
+// Pass limit <= 0 to collect all matches (no pagination).
+// Returns (matched rows, total match count, error).
+func (ti *TableInstance) ScanFilter(match func(map[string]interface{}) bool, limit, offset int) ([]map[string]interface{}, int, error) {
 	var results []map[string]interface{}
+	total := 0
 
 	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
 			return true
 		}
-		if match(row) {
-			results = append(results, row)
+		if !match(row) {
+			return true
 		}
+		total++
+		if limit > 0 {
+			if total <= offset {
+				return true // skip rows before the page
+			}
+			if total > offset+limit {
+				return true // past the page, but keep counting for total
+			}
+		}
+		results = append(results, row)
 		return true
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return results, nil
+	return results, total, nil
 }
 
 // BuildAutocompleteEntries builds reusable autocomplete entries from this table.
