@@ -523,13 +523,30 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 	}, true, nil
 }
 
-func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int) ([]map[string]any, int, bool, error) {
+func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int, indexField, indexValue string) ([]map[string]any, int, bool, error) {
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return nil, 0, false, nil
 	}
 
 	def := ti.GetDef()
+
+	// Try index-based lookup when a simple field="value" hint is provided.
+	if indexField != "" {
+		rows, total, used := ti.LookupByField(indexField, indexValue, limit, offset)
+		if used {
+			// Redact bcrypt fields on the page of results
+			for _, row := range rows {
+				for _, f := range def.CompiledSchema.Fields {
+					if f.Kind == schema.KindBcrypt && row[f.Name] != nil {
+						row[f.Name] = "[REDACTED]"
+					}
+				}
+			}
+			return rows, total, true, nil
+		}
+		// No index available — fall through to scan
+	}
 
 	// ScanFilter handles pagination internally — counts all matches but only
 	// collects rows within the [offset, offset+limit) window.

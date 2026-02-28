@@ -304,6 +304,39 @@ func TestFilterURLDecoding(t *testing.T) {
 	}
 }
 
+func TestExtractSingleEquality(t *testing.T) {
+	tests := []struct {
+		expr      string
+		wantField string
+		wantValue string
+		wantOk    bool
+	}{
+		{`id="abc123"`, "id", "abc123", true},
+		{`name='alice'`, "name", "alice", true},
+		{`count=42`, "count", "42", true},
+		// Not simple equality — should return false
+		{`name~"alice"`, "", "", false},              // like, not eq
+		{`name!="alice"`, "", "", false},              // not-equal
+		{`a="1" && b="2"`, "", "", false},             // multiple expressions
+		{`a="1" || b="2"`, "", "", false},             // OR
+		{`(a="1")`, "", "", false},                    // nested group, not bare Expr
+		{`name>"alice"`, "", "", false},               // gt, not eq
+	}
+
+	for _, tc := range tests {
+		groups, _, err := ParseFilter(tc.expr)
+		if err != nil {
+			t.Errorf("parse error for %q: %v", tc.expr, err)
+			continue
+		}
+		field, value, ok := ExtractSingleEquality(groups)
+		if ok != tc.wantOk || field != tc.wantField || value != tc.wantValue {
+			t.Errorf("ExtractSingleEquality(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				tc.expr, field, value, ok, tc.wantField, tc.wantValue, tc.wantOk)
+		}
+	}
+}
+
 func TestFilterParseErrors(t *testing.T) {
 	bad := []string{
 		`name=`,          // missing value

@@ -133,3 +133,38 @@ func ParseAndEvalFilter(expr string) (func(map[string]interface{}) bool, error) 
 		return evalGroups(groups, row)
 	}, nil
 }
+
+// ParseFilter parses a filter expression and returns the AST and a predicate.
+func ParseFilter(expr string) (groups []ExprGroup, match func(map[string]interface{}) bool, err error) {
+	groups, err = Parse(expr)
+	if err != nil {
+		return nil, nil, err
+	}
+	match = func(row map[string]interface{}) bool {
+		return evalGroups(groups, row)
+	}
+	return groups, match, nil
+}
+
+// ExtractSingleEquality checks if the filter is a single field="value" expression
+// (no AND/OR). If so, it returns the field name and lookup value.
+// This is used to route simple lookups to index-based retrieval.
+func ExtractSingleEquality(groups []ExprGroup) (field, value string, ok bool) {
+	if len(groups) != 1 {
+		return "", "", false
+	}
+	expr, isExpr := groups[0].Item.(Expr)
+	if !isExpr {
+		return "", "", false
+	}
+	if expr.Op != SignEq {
+		return "", "", false
+	}
+	if expr.Left.Type != TokenIdentifier {
+		return "", "", false
+	}
+	if expr.Right.Type != TokenText && expr.Right.Type != TokenNumber {
+		return "", "", false
+	}
+	return expr.Left.Literal, expr.Right.Literal, true
+}

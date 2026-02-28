@@ -1392,6 +1392,59 @@ func (ti *TableInstance) ScanFilter(match func(map[string]interface{}) bool, lim
 	return results, total, nil
 }
 
+// LookupByField performs an index-based lookup for field=value.
+// It checks the primary key first, then secondary indexes.
+// Returns (rows, total, used) — used is false if no index exists for the field,
+// in which case the caller should fall back to ScanFilter.
+func (ti *TableInstance) LookupByField(field, value string, limit, offset int) ([]map[string]interface{}, int, bool) {
+	pkField := ti.def.CompiledSchema.Fields[0].Name
+
+	if field == pkField {
+		row, err := ti.Get(value)
+		if err != nil || row == nil {
+			return nil, 0, true
+		}
+		// Single PK match — total is always 1
+		if offset >= 1 {
+			return nil, 1, true
+		}
+		return []map[string]interface{}{row}, 1, true
+	}
+
+	// Check secondary index
+	indexKey := field // single-field index key
+	if _, exists := ti.indexDefsByKey[indexKey]; !exists {
+		return nil, 0, false // no index — caller should scan
+	}
+
+	pointers := ti.FindAllByIndex([]string{field}, value)
+	total := len(pointers)
+	if total == 0 {
+		return nil, 0, true
+	}
+
+	// Apply pagination over the pointer list
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if limit <= 0 || end > total {
+		end = total
+	}
+	page := pointers[start:end]
+
+	rows := make([]map[string]interface{}, 0, len(page))
+	for _, ptr := range page {
+		row, err := ti.GetByPointer(ptr)
+		if err == nil && row != nil {
+			rows = append(rows, row)
+		}
+	}
+
+	return rows, total, true
+}
+
 // BuildAutocompleteEntries builds reusable autocomplete entries from this table.
 func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, payloadFields ...string) ([]AutocompleteEntry, error) {
 	keyField = strings.TrimSpace(keyField)

@@ -35,8 +35,10 @@ type AdminProvider interface {
 
 // AdminFilterProvider scans rows with a predicate and server-side pagination.
 // It returns the page of matching rows, the total count of all matches, and whether the table was found.
+// indexField/indexValue are optional hints: when non-empty, the implementation may use
+// an index lookup instead of a full table scan (for simple field="value" filters).
 type AdminFilterProvider interface {
-	AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int) (rows []map[string]any, total int, found bool, err error)
+	AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int, indexField, indexValue string) (rows []map[string]any, total int, found bool, err error)
 }
 
 type AdminWriteProvider interface {
@@ -438,15 +440,17 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			searchExpr := r.URL.Query().Get("search")
 
 			if filterExpr != "" || searchExpr != "" {
-				// Build predicate
+				// Build predicate and optional index hint
 				var matchFn func(map[string]any) bool
+				var indexField, indexValue string
 				if filterExpr != "" {
-					fn, err := server.ParseAndEvalFilter(filterExpr)
+					groups, fn, err := server.ParseFilter(filterExpr)
 					if err != nil {
 						adminJSONError(w, "Invalid filter: "+err.Error(), http.StatusBadRequest)
 						return
 					}
 					matchFn = fn
+					indexField, indexValue, _ = server.ExtractSingleEquality(groups)
 				} else {
 					lower := strings.ToLower(searchExpr)
 					matchFn = func(row map[string]any) bool {
@@ -463,7 +467,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				var pageRows []map[string]any
 				var total int
 				if filterEnabled {
-					matched, matchTotal, found, err := filterProvider.AdminFilterRows(tableName, matchFn, limit, offset)
+					matched, matchTotal, found, err := filterProvider.AdminFilterRows(tableName, matchFn, limit, offset, indexField, indexValue)
 					if err != nil {
 						adminJSONError(w, err.Error(), http.StatusBadRequest)
 						return
