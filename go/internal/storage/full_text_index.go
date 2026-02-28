@@ -7,16 +7,21 @@ import (
 	"unicode"
 )
 
-// FullTextIndex is an in-memory inverted index optimized for low memory:
-// token -> sorted doc IDs, with doc ID -> primary key mapping.
+// FullTextIndex is an in-memory inverted index optimized for memory:
+// tokenID -> sorted doc IDs, with token dictionary and docID -> primary key mapping.
 type FullTextIndex struct {
 	mu sync.RWMutex
 
-	postings map[string][]uint32
-	docTerms map[uint32][]string
+	postings map[uint32][]uint32
+	docTerms map[uint32][]uint32
 	docByPK  map[string]uint32
 	pkByDoc  map[uint32]string
-	nextDoc  uint32
+
+	tokenIDByText map[string]uint32
+	tokenTextByID map[uint32]string
+
+	nextDocID   uint32
+	nextTokenID uint32
 }
 
 type FullTextStats struct {
@@ -28,11 +33,14 @@ type FullTextStats struct {
 
 func NewFullTextIndex() *FullTextIndex {
 	return &FullTextIndex{
-		postings: make(map[string][]uint32),
-		docTerms: make(map[uint32][]string),
-		docByPK:  make(map[string]uint32),
-		pkByDoc:  make(map[uint32]string),
-		nextDoc:  1,
+		postings:      make(map[uint32][]uint32),
+		docTerms:      make(map[uint32][]uint32),
+		docByPK:       make(map[string]uint32),
+		pkByDoc:       make(map[uint32]string),
+		tokenIDByText: make(map[string]uint32),
+		tokenTextByID: make(map[uint32]string),
+		nextDocID:     1,
+		nextTokenID:   1,
 	}
 }
 
@@ -44,22 +52,22 @@ func (f *FullTextIndex) Stats() FullTextStats {
 
 	var postingEntries int
 	var payload uint64
-	for token, docs := range f.postings {
+	for tokenID, docs := range f.postings {
 		postingEntries += len(docs)
-		payload += uint64(len(token) + 4*len(docs))
-	}
-	for docID, terms := range f.docTerms {
-		_ = docID
-		for _, term := range terms {
+		payload += uint64(4 * len(docs))
+		if term, ok := f.tokenTextByID[tokenID]; ok {
 			payload += uint64(len(term))
 		}
+	}
+	for _, termIDs := range f.docTerms {
+		payload += uint64(4 * len(termIDs))
 	}
 	for pk := range f.docByPK {
 		payload += uint64(len(pk) + 4)
 	}
 
 	return FullTextStats{
-		TokenCount:            len(f.postings),
+		TokenCount:            len(f.tokenIDByText),
 		DocCount:              len(f.docByPK),
 		PostingEntries:        postingEntries,
 		EstimatedPayloadBytes: payload,
@@ -79,18 +87,21 @@ func (f *FullTextIndex) Index(pk string, texts ...string) {
 
 	docID, exists := f.docByPK[pk]
 	if !exists {
-		docID = f.nextDoc
-		f.nextDoc++
+		docID = f.nextDocID
+		f.nextDocID++
 		f.docByPK[pk] = docID
 		f.pkByDoc[docID] = pk
 	}
 
 	f.removeDocTokensLocked(docID)
-	f.docTerms[docID] = tokens
 
+	tokenIDs := make([]uint32, 0, len(tokens))
 	for _, token := range tokens {
-		f.postings[token] = addSortedUnique(f.postings[token], docID)
+		tokID := f.internTokenIDLocked(token)
+		tokenIDs = append(tokenIDs, tokID)
+		f.postings[tokID] = addSortedUnique(f.postings[tokID], docID)
 	}
+	f.docTerms[docID] = tokenIDs
 }
 
 func (f *FullTextIndex) Delete(pk string) {
@@ -116,11 +127,14 @@ func (f *FullTextIndex) Delete(pk string) {
 func (f *FullTextIndex) Clear() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.postings = make(map[string][]uint32)
-	f.docTerms = make(map[uint32][]string)
+	f.postings = make(map[uint32][]uint32)
+	f.docTerms = make(map[uint32][]uint32)
 	f.docByPK = make(map[string]uint32)
 	f.pkByDoc = make(map[uint32]string)
-	f.nextDoc = 1
+	f.tokenIDByText = make(map[string]uint32)
+	f.tokenTextByID = make(map[uint32]string)
+	f.nextDocID = 1
+	f.nextTokenID = 1
 }
 
 // Search returns primary keys that match all query tokens.
@@ -135,7 +149,11 @@ func (f *FullTextIndex) Search(query string, limit int) []string {
 
 	lists := make([][]uint32, 0, len(tokens))
 	for _, token := range tokens {
-		list := f.postings[token]
+		tokenID, ok := f.tokenIDByText[token]
+		if !ok {
+			return nil
+		}
+		list := f.postings[tokenID]
 		if len(list) == 0 {
 			return nil
 		}
@@ -168,18 +186,33 @@ func (f *FullTextIndex) Search(query string, limit int) []string {
 	return out
 }
 
+func (f *FullTextIndex) internTokenIDLocked(token string) uint32 {
+	if id, ok := f.tokenIDByText[token]; ok {
+		return id
+	}
+	id := f.nextTokenID
+	f.nextTokenID++
+	f.tokenIDByText[token] = id
+	f.tokenTextByID[id] = token
+	return id
+}
+
 func (f *FullTextIndex) removeDocTokensLocked(docID uint32) {
-	oldTokens := f.docTerms[docID]
-	if len(oldTokens) == 0 {
+	oldTerms := f.docTerms[docID]
+	if len(oldTerms) == 0 {
 		return
 	}
-	for _, token := range oldTokens {
-		list := removeSortedValue(f.postings[token], docID)
+	for _, termID := range oldTerms {
+		list := removeSortedValue(f.postings[termID], docID)
 		if len(list) == 0 {
-			delete(f.postings, token)
+			delete(f.postings, termID)
+			if token := f.tokenTextByID[termID]; token != "" {
+				delete(f.tokenTextByID, termID)
+				delete(f.tokenIDByText, token)
+			}
 			continue
 		}
-		f.postings[token] = list
+		f.postings[termID] = list
 	}
 }
 
