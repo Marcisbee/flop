@@ -1,5 +1,14 @@
 const API_BASE = '';
 
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+    this.name = 'ApiError';
+  }
+}
+
 function getToken(): string | null {
   return localStorage.getItem('chirp_token');
 }
@@ -18,7 +27,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   };
   const res = await fetch(API_BASE + url, { ...options, headers });
   const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `Request failed: ${res.status}`);
+  if (!res.ok) throw new ApiError(json.error || `Request failed: ${res.status}`, res.status);
   return json;
 }
 

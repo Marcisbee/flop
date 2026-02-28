@@ -43,7 +43,13 @@ function useAuth() {
     }
     api.getMe()
       .then(res => setUser(res.user))
-      .catch(() => { api.clearToken(); })
+      .catch((err: any) => {
+        // Only clear token on actual auth failure; transient/network errors should not log user out.
+        if (err && (err.status === 401 || err.status === 403)) {
+          api.clearToken();
+          setUser(null);
+        }
+      })
       .finally(() => setLoading(false));
   }, []);
 

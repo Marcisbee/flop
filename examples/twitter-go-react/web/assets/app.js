@@ -21723,6 +21723,13 @@ var import_client = __toESM(require_client());
 
 // web/src/api.ts
 var API_BASE = "";
+var ApiError = class extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+    this.name = "ApiError";
+  }
+};
 function getToken() {
   return localStorage.getItem("chirp_token");
 }
@@ -21739,7 +21746,7 @@ async function request(url, options = {}) {
   };
   const res = await fetch(API_BASE + url, { ...options, headers });
   const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `Request failed: ${res.status}`);
+  if (!res.ok) throw new ApiError(json.error || `Request failed: ${res.status}`, res.status);
   return json;
 }
 async function register(data) {
@@ -22093,8 +22100,11 @@ function useAuth() {
       setLoading(false);
       return;
     }
-    getMe().then((res) => setUser(res.user)).catch(() => {
-      clearToken();
+    getMe().then((res) => setUser(res.user)).catch((err) => {
+      if (err && (err.status === 401 || err.status === 403)) {
+        clearToken();
+        setUser(null);
+      }
     }).finally(() => setLoading(false));
   }, []);
   const loginUser = (0, import_react2.useCallback)(async (email, password) => {
