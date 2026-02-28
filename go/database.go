@@ -523,6 +523,38 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 	}, true, nil
 }
 
+func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool) ([]map[string]any, bool, error) {
+	ti := p.DB.db.GetTable(table)
+	if ti == nil {
+		return nil, false, nil
+	}
+
+	def := ti.GetDef()
+
+	// Wrap match to redact bcrypt fields before predicate evaluation
+	matched, err := ti.ScanFilter(func(row map[string]any) bool {
+		for _, f := range def.CompiledSchema.Fields {
+			if f.Kind == schema.KindBcrypt && row[f.Name] != nil {
+				row[f.Name] = "[REDACTED]"
+			}
+		}
+		return match(row)
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Sort only the matched results
+	if len(matched) > 1 && len(def.CompiledSchema.Fields) > 0 {
+		pkField := def.CompiledSchema.Fields[0].Name
+		sort.SliceStable(matched, func(i, j int) bool {
+			return fmt.Sprint(matched[i][pkField]) < fmt.Sprint(matched[j][pkField])
+		})
+	}
+
+	return matched, true, nil
+}
+
 func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) (map[string]any, error) {
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {

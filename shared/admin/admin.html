@@ -106,7 +106,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .search-box{display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;padding:0 8px}
 .search-box:focus-within{border-color:var(--accent)}
 .search-box svg{color:var(--text-faint);flex-shrink:0}
-.search-box input{background:none;border:none;color:var(--text);font-size:13px;padding:5px 0;outline:none;width:160px}
+.search-box input{background:none;border:none;color:var(--text);font-size:13px;padding:5px 0;outline:none;width:220px}
+.filter-help{color:var(--text-ghost);cursor:help;font-size:11px;user-select:none;flex-shrink:0}
+.btn-filter{background:var(--accent);border:none;border-radius:3px;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;flex-shrink:0}
+.btn-filter:hover{background:var(--accent-hover)}
 
 /* Buttons */
 .btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:12px;cursor:pointer;white-space:nowrap}
@@ -482,7 +485,6 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
   const [showCreate, setShowCreate] = useState(false);
   const [createErr, setCreateErr] = useState('');
   const [search, setSearch] = useState('');
-  const searchTimer = useRef(null);
   const [searchQuery, setSearchQuery] = useState('');
   const formRef = useRef({});
 
@@ -492,7 +494,10 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     const pg = p || page;
     const sq = q !== undefined ? q : searchQuery;
     const params = new URLSearchParams({ page: pg, limit: 50 });
-    if (sq) params.set('search', sq);
+    if (sq) {
+      const isFilter = /[=<>~]|!=|!~/.test(sq);
+      params.set(isFilter ? 'filter' : 'search', sq);
+    }
     try {
       const data = await api('/tables/' + tableName + '/rows?' + params);
       if (data) {
@@ -500,7 +505,9 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
         setTotalPages(data.pages);
         setTotal(data.total);
       }
-    } catch {}
+    } catch (err) {
+      if (err && err.message) showToast(err.message, 'error');
+    }
   }, [tableName, page, searchQuery]);
 
   useEffect(() => {
@@ -522,15 +529,18 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     return () => clearTimeout(sseReloadTimer.current);
   }, [sseSignal]);
 
+  const applyFilter = useCallback(() => {
+    setSearchQuery(search);
+    setPage(1);
+  }, [search]);
+
   const onSearchInput = useCallback((e) => {
-    const v = e.target.value;
-    setSearch(v);
-    clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => {
-      setSearchQuery(v);
-      setPage(1);
-    }, 300);
+    setSearch(e.target.value);
   }, []);
+
+  const onSearchKey = useCallback((e) => {
+    if (e.key === 'Enter') { e.preventDefault(); applyFilter(); }
+  }, [applyFilter]);
 
   const commitEdit = useCallback(async (pk, col, newVal, oldVal) => {
     setEditing(null);
@@ -622,7 +632,9 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
         <div class="panel-actions">
           <div class="search-box">
             ${icons.search}
-            <input type="text" placeholder="Search..." value=${search} onInput=${onSearchInput} />
+            <input type="text" placeholder='name="..." count>=5' value=${search} onInput=${onSearchInput} onKeyDown=${onSearchKey} />
+            <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search all string fields">?</span>
+            <button class="btn-filter" onClick=${applyFilter}>${icons.chevRight}</button>
           </div>
           <button class="btn btn-primary" onClick=${() => setShowCreate(!showCreate)}>
             ${icons.plus} New Row

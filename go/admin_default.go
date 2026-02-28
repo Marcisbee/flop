@@ -33,6 +33,11 @@ type AdminProvider interface {
 	AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error)
 }
 
+// AdminFilterProvider scans all rows, applying a predicate to avoid loading everything into memory.
+type AdminFilterProvider interface {
+	AdminFilterRows(table string, match func(map[string]any) bool) ([]map[string]any, bool, error)
+}
+
 type AdminWriteProvider interface {
 	AdminCreateRow(table string, data map[string]any) (map[string]any, error)
 	AdminUpdateRow(table, pk string, fields map[string]any) error
@@ -104,6 +109,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 	authProvider, authEnabled := provider.(AdminAuthProvider)
 	writeProvider, writeEnabled := provider.(AdminWriteProvider)
 	sseProvider, sseEnabled := provider.(AdminSSEProvider)
+	filterProvider, filterEnabled := provider.(AdminFilterProvider)
 
 	// Setup provider — generates a one-time token when no superadmin exists.
 	setupProvider, setupCapable := provider.(AdminSetupProvider)
@@ -426,6 +432,87 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			if page < 1 {
 				page = 1
 			}
+
+			filterExpr := r.URL.Query().Get("filter")
+			searchExpr := r.URL.Query().Get("search")
+
+			if filterExpr != "" || searchExpr != "" {
+				// Build predicate
+				var matchFn func(map[string]any) bool
+				if filterExpr != "" {
+					fn, err := server.ParseAndEvalFilter(filterExpr)
+					if err != nil {
+						adminJSONError(w, "Invalid filter: "+err.Error(), http.StatusBadRequest)
+						return
+					}
+					matchFn = fn
+				} else {
+					lower := strings.ToLower(searchExpr)
+					matchFn = func(row map[string]any) bool {
+						for _, v := range row {
+							if s, ok := v.(string); ok && strings.Contains(strings.ToLower(s), lower) {
+								return true
+							}
+						}
+						return false
+					}
+				}
+
+				var rows []map[string]any
+				if filterEnabled {
+					matched, found, err := filterProvider.AdminFilterRows(tableName, matchFn)
+					if err != nil {
+						adminJSONError(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					if !found {
+						adminJSONError(w, "not found", http.StatusNotFound)
+						return
+					}
+					rows = matched
+				} else {
+					result, found, err := provider.AdminRows(tableName, 1000000, 0)
+					if err != nil {
+						adminJSONError(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					if !found {
+						adminJSONError(w, "not found", http.StatusNotFound)
+						return
+					}
+					var filtered []map[string]any
+					for _, row := range result.Rows {
+						if matchFn(row) {
+							filtered = append(filtered, row)
+						}
+					}
+					rows = filtered
+				}
+
+				total := len(rows)
+				pages := (total + limit - 1) / limit
+				offset := (page - 1) * limit
+				end := offset + limit
+				if end > total {
+					end = total
+				}
+				if offset > total {
+					offset = total
+				}
+				pageRows := rows[offset:end]
+				if pageRows == nil {
+					pageRows = []map[string]any{}
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"rows":  pageRows,
+					"total": total,
+					"page":  page,
+					"pages": pages,
+					"limit": limit,
+				})
+				return
+			}
+
 			offset := (page - 1) * limit
 			result, found, err := provider.AdminRows(tableName, limit, offset)
 			if err != nil {

@@ -1357,6 +1357,27 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 	return results, nil
 }
 
+// ScanFilter iterates all rows and returns those matching the predicate.
+func (ti *TableInstance) ScanFilter(match func(map[string]interface{}) bool) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
+		if err != nil {
+			return true
+		}
+		if match(row) {
+			results = append(results, row)
+		}
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
 // BuildAutocompleteEntries builds reusable autocomplete entries from this table.
 func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, payloadFields ...string) ([]AutocompleteEntry, error) {
 	keyField = strings.TrimSpace(keyField)

@@ -928,6 +928,7 @@ func (h *Handler) handleListRows(w http.ResponseWriter, r *http.Request, tableNa
 	page := intParam(q.Get("page"), 1)
 	limit := intParam(q.Get("limit"), 50)
 	search := q.Get("search")
+	filter := q.Get("filter")
 	offset := (page - 1) * limit
 
 	rows, err := table.Scan(10000, 0)
@@ -967,8 +968,21 @@ func (h *Handler) handleListRows(w http.ResponseWriter, r *http.Request, tableNa
 		})
 	}
 
-	// Search filter
-	if search != "" {
+	// Filter or search
+	if filter != "" {
+		matchFn, err := ParseAndEvalFilter(filter)
+		if err != nil {
+			jsonError(w, "Invalid filter: "+err.Error(), 400)
+			return
+		}
+		var filtered []map[string]interface{}
+		for _, row := range rows {
+			if matchFn(row) {
+				filtered = append(filtered, row)
+			}
+		}
+		rows = filtered
+	} else if search != "" {
 		lower := strings.ToLower(search)
 		var filtered []map[string]interface{}
 		for _, row := range rows {
