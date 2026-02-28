@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/marcisbee/flop/internal/server"
 )
@@ -83,6 +84,11 @@ type AdminSSEProvider interface {
 	AdminSSE(w http.ResponseWriter, r *http.Request)
 }
 
+// AdminAnalyticsProvider enables built-in request analytics APIs in admin.
+type AdminAnalyticsProvider interface {
+	AdminAnalytics() *server.RequestAnalytics
+}
+
 // AdminConfig configures the default admin handler.
 type AdminConfig struct {
 	// SetupToken is populated automatically when AdminSetupProvider is
@@ -113,6 +119,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 	writeProvider, writeEnabled := provider.(AdminWriteProvider)
 	sseProvider, sseEnabled := provider.(AdminSSEProvider)
 	filterProvider, filterEnabled := provider.(AdminFilterProvider)
+	analyticsProvider, analyticsCapable := provider.(AdminAnalyticsProvider)
 
 	// Setup provider — generates a one-time token when no superadmin exists.
 	setupProvider, setupCapable := provider.(AdminSetupProvider)
@@ -123,6 +130,13 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			_, _ = rand.Read(b)
 			cfg.SetupToken = hex.EncodeToString(b)
 		}
+	}
+
+	getAnalytics := func() *server.RequestAnalytics {
+		if !analyticsCapable {
+			return nil
+		}
+		return analyticsProvider.AdminAnalytics()
 	}
 
 	// When auth is disabled, inject a script that pre-sets tokens in
@@ -329,6 +343,78 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				<-r.Context().Done()
 			}
 			return
+		}
+
+		// Request analytics APIs
+		if strings.HasPrefix(path, "/_/api/analytics/") {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			analytics := getAnalytics()
+			if analytics == nil {
+				adminJSONError(w, "analytics unavailable", http.StatusNotImplemented)
+				return
+			}
+
+			switch path {
+			case "/_/api/analytics/config":
+				if r.Method == http.MethodGet {
+					adminJSONResp(w, http.StatusOK, map[string]any{
+						"ok":             true,
+						"enabled":        true,
+						"retentionHours": analytics.Retention().Hours(),
+						"droppedEvents":  analytics.DroppedEvents(),
+					})
+					return
+				}
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+
+			case "/_/api/analytics/logs":
+				if r.Method != http.MethodGet {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				page := parseIntOr(r.URL.Query().Get("page"), 1)
+				limit := clampInt(parseIntOr(r.URL.Query().Get("limit"), 50), 1, 500)
+				rows, total, err := analytics.QueryLogs(page, limit, r.URL.Query().Get("search"), r.URL.Query().Get("filter"))
+				if err != nil {
+					adminJSONError(w, "Invalid filter: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+				pages := 0
+				if total > 0 {
+					pages = (total + limit - 1) / limit
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"rows":           rows,
+					"total":          total,
+					"page":           page,
+					"pages":          pages,
+					"limit":          limit,
+					"retentionHours": analytics.Retention().Hours(),
+					"droppedEvents":  analytics.DroppedEvents(),
+				})
+				return
+
+			case "/_/api/analytics/timeseries":
+				if r.Method != http.MethodGet {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				window := parseAdminDuration(r.URL.Query().Get("window"), 24*time.Hour)
+				if window < time.Minute {
+					window = time.Minute
+				}
+				data := analytics.QuerySeries(window, strings.TrimSpace(r.URL.Query().Get("routeType")), strings.TrimSpace(r.URL.Query().Get("routeName")))
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"ok":     true,
+					"window": window.String(),
+					"data":   data,
+				})
+				return
+			}
 		}
 
 		if path == "/_" || path == "/_/" {
@@ -594,6 +680,25 @@ func parseIntOr(raw string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func parseAdminDuration(raw string, fallback time.Duration) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	if strings.HasSuffix(raw, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(raw, "d"))
+		if err != nil || days <= 0 {
+			return fallback
+		}
+		return time.Duration(days) * 24 * time.Hour
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
 }
 
 func clampInt(v, minV, maxV int) int {

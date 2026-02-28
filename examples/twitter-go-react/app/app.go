@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/marcisbee/flop"
 )
@@ -30,6 +31,7 @@ func BuildWithDataDir(dataDir string) *flop.App {
 		DataDir:               dataDir,
 		SyncMode:              "normal",
 		AsyncSecondaryIndexes: true,
+		RequestLogRetention:   7 * 24 * time.Hour,
 	})
 
 	users := flop.Define(application, "users", func(s *flop.SchemaBuilder) {
@@ -51,8 +53,8 @@ func BuildWithDataDir(dataDir string) *flop.App {
 		s.String("id").Primary().Autogen(`[a-z0-9]{16}`)
 		s.Ref("authorId", users, "id").Required().Index()
 		s.String("content").Required().MaxLen(280).FullText()
-		s.String("replyToId").Index()       // tweet id this is replying to
-		s.String("quoteOfId").Index()        // tweet id this is quoting (quote retweet)
+		s.String("replyToId").Index() // tweet id this is replying to
+		s.String("quoteOfId").Index() // tweet id this is quoting (quote retweet)
 		s.Cached("replyCount", flop.Int).
 			OnChange("tweets", "replyToId").
 			Compute(func(row flop.Row, db *flop.Database) any {
@@ -103,10 +105,10 @@ func BuildWithDataDir(dataDir string) *flop.App {
 	// Notifications
 	flop.Define(application, "notifications", func(s *flop.SchemaBuilder) {
 		s.String("id").Primary().Autogen(`[a-z0-9]{16}`)
-		s.Ref("userId", users, "id").Required().Index()   // who receives
-		s.Ref("actorId", users, "id").Required().Index()   // who caused
+		s.Ref("userId", users, "id").Required().Index()  // who receives
+		s.Ref("actorId", users, "id").Required().Index() // who caused
 		s.Enum("type", "like", "retweet", "reply", "follow", "quote").Required()
-		s.String("tweetId")           // related tweet (if applicable)
+		s.String("tweetId") // related tweet (if applicable)
 		s.Boolean("read").Default(false)
 		s.Timestamp("createdAt").DefaultNow()
 	})
@@ -118,20 +120,20 @@ func BuildWithDataDir(dataDir string) *flop.App {
 
 // TweetWithAuthor enriches a tweet row with author data.
 type TweetWithAuthor struct {
-	ID           string  `json:"id"`
-	AuthorID     string  `json:"authorId"`
-	Content      string  `json:"content"`
-	ReplyToID    string  `json:"replyToId,omitempty"`
-	QuoteOfID    string  `json:"quoteOfId,omitempty"`
-	ReplyCount   int     `json:"replyCount"`
-	RetweetCount int     `json:"retweetCount"`
-	LikeCount    int     `json:"likeCount"`
-	QuoteCount   int     `json:"quoteCount"`
-	CreatedAt    float64 `json:"createdAt"`
-	Author       *UserPublic    `json:"author,omitempty"`
+	ID           string           `json:"id"`
+	AuthorID     string           `json:"authorId"`
+	Content      string           `json:"content"`
+	ReplyToID    string           `json:"replyToId,omitempty"`
+	QuoteOfID    string           `json:"quoteOfId,omitempty"`
+	ReplyCount   int              `json:"replyCount"`
+	RetweetCount int              `json:"retweetCount"`
+	LikeCount    int              `json:"likeCount"`
+	QuoteCount   int              `json:"quoteCount"`
+	CreatedAt    float64          `json:"createdAt"`
+	Author       *UserPublic      `json:"author,omitempty"`
 	QuotedTweet  *TweetWithAuthor `json:"quotedTweet,omitempty"`
-	Liked        bool   `json:"liked"`
-	Retweeted    bool   `json:"retweeted"`
+	Liked        bool             `json:"liked"`
+	Retweeted    bool             `json:"retweeted"`
 }
 
 type UserPublic struct {

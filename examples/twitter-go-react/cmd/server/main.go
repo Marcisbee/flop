@@ -619,7 +619,7 @@ func main() {
 	addr := ":1986"
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      adminProvider.WrapWithAnalytics(mux),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,

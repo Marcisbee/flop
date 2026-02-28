@@ -1,12 +1,17 @@
 package flop
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
@@ -16,9 +21,12 @@ import (
 
 // Database wraps the internal engine and exposes table operations.
 type Database struct {
-	db          *engine.Database
-	authService *server.AuthService
-	jwtSecret   string
+	db                  *engine.Database
+	authService         *server.AuthService
+	jwtSecret           string
+	requestLogRetention time.Duration
+	analyticsMu         sync.Mutex
+	analytics           *server.RequestAnalytics
 }
 
 // TableInstance wraps internal engine table and provides CRUD operations.
@@ -52,7 +60,11 @@ func (a *App) Open() (*Database, error) {
 		return nil, err
 	}
 
-	d := &Database{db: db}
+	retention := a.config.RequestLogRetention
+	if retention <= 0 {
+		retention = server.DefaultRequestLogRetention
+	}
+	d := &Database{db: db, requestLogRetention: retention}
 
 	// Set up auth service if there's an auth table
 	authTable := db.GetAuthTable()
@@ -165,6 +177,21 @@ func (d *Database) Close() error {
 		}
 	}
 	return nil
+}
+
+// RequestAnalytics returns the process-local analytics collector for this DB.
+// Data is persisted under dataDir/_system/request_logs.ndjson.
+func (d *Database) RequestAnalytics() *server.RequestAnalytics {
+	if d == nil || d.db == nil {
+		return nil
+	}
+	d.analyticsMu.Lock()
+	defer d.analyticsMu.Unlock()
+	if d.analytics == nil {
+		path := filepath.Join(d.db.GetDataDir(), "_system", "request_logs.ndjson")
+		d.analytics = server.NewRequestAnalyticsWithStorage(d.requestLogRetention, path)
+	}
+	return d.analytics
 }
 
 // Insert inserts a row into the table. Returns the inserted row
@@ -610,6 +637,136 @@ func (p *EngineAdminProvider) secret() string {
 		return p.JWTSecret
 	}
 	return p.DB.jwtSecret
+}
+
+// AdminAnalytics returns the analytics collector used by admin analytics APIs.
+func (p *EngineAdminProvider) AdminAnalytics() *server.RequestAnalytics {
+	if p == nil || p.DB == nil {
+		return nil
+	}
+	return p.DB.RequestAnalytics()
+}
+
+// WrapWithAnalytics records request timing/error telemetry while preserving the wrapped handler behavior.
+func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler {
+	if next == nil {
+		next = http.NewServeMux()
+	}
+	analytics := p.AdminAnalytics()
+	if analytics == nil {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+
+		path := r.URL.Path
+		// Skip analytics endpoints to avoid noisy self-observation loops.
+		if strings.HasPrefix(path, "/_/api/analytics/") {
+			return
+		}
+		if !strings.HasPrefix(path, "/api/") {
+			return
+		}
+
+		routeType, routeName := classifyAnalyticsRoute(path)
+		transport := "http"
+		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+			transport = "sse"
+		}
+		userID := ""
+		token := extractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
+		if token != "" {
+			payload := server.VerifyJWT(token, p.secret())
+			if payload != nil {
+				userID = payload.Sub
+			}
+		}
+
+		analytics.Record(server.AnalyticsEvent{
+			Timestamp:    time.Now(),
+			RouteType:    routeType,
+			RouteName:    routeName,
+			Method:       r.Method,
+			Path:         path,
+			Transport:    transport,
+			Duration:     time.Since(start),
+			OK:           rec.status < 400,
+			StatusCode:   rec.status,
+			ErrorMessage: rec.errorMessage,
+			UserID:       userID,
+			Details: map[string]any{
+				"queryBytes": len(r.URL.RawQuery),
+				"hasAuth":    token != "",
+				"source":     "go-middleware",
+			},
+		})
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status       int
+	errorMessage string
+}
+
+func (rw *statusRecorder) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *statusRecorder) Write(b []byte) (int, error) {
+	if rw.status == 0 {
+		rw.status = http.StatusOK
+	}
+	if rw.status >= 400 && rw.errorMessage == "" {
+		var payload map[string]any
+		if err := json.Unmarshal(b, &payload); err == nil {
+			if msg, ok := payload["error"].(string); ok {
+				rw.errorMessage = msg
+			}
+		}
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
+func (rw *statusRecorder) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("hijacker unsupported")
+}
+
+func (rw *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	if p, ok := rw.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+func (rw *statusRecorder) ReadFrom(r io.Reader) (int64, error) {
+	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(rw.ResponseWriter, r)
+}
+
+func classifyAnalyticsRoute(path string) (routeType string, routeName string) {
+	if strings.HasPrefix(path, "/api/view/") {
+		return "view", strings.TrimPrefix(path, "/api/view/")
+	}
+	if strings.HasPrefix(path, "/api/reduce/") {
+		return "reducer", strings.TrimPrefix(path, "/api/reduce/")
+	}
+	return "request", strings.TrimPrefix(path, "/api/")
 }
 
 func (p *EngineAdminProvider) AdminLogin(email, password string) (string, string, error) {

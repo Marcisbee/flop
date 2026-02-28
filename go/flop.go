@@ -18,9 +18,10 @@ import (
 var ErrNotImplemented = errors.New("flop: not implemented")
 
 type Config struct {
-	DataDir               string `json:"dataDir,omitempty"`
-	SyncMode              string `json:"syncMode,omitempty"`
-	AsyncSecondaryIndexes bool   `json:"asyncSecondaryIndexes,omitempty"`
+	DataDir               string        `json:"dataDir,omitempty"`
+	SyncMode              string        `json:"syncMode,omitempty"`
+	AsyncSecondaryIndexes bool          `json:"asyncSecondaryIndexes,omitempty"`
+	RequestLogRetention   time.Duration `json:"-"`
 }
 
 // CachedTypeHint identifies the storage type for a cached field.

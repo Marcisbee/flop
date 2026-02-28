@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,9 +21,10 @@ import (
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Port      int
-	JWTSecret string
-	StaticDir string
+	Port                int
+	JWTSecret           string
+	StaticDir           string
+	RequestLogRetention time.Duration
 }
 
 // HandlerCaller calls JS view/reducer handlers.
@@ -42,6 +44,8 @@ type Handler struct {
 
 	clientJS  []byte
 	clientCSS []byte
+
+	analytics *RequestAnalytics
 }
 
 const sseEventBufferSize = 4096
@@ -59,6 +63,11 @@ func NewHandler(
 	setupToken string,
 	clientJS, clientCSS []byte,
 ) *Handler {
+	retention := config.RequestLogRetention
+	if retention <= 0 {
+		retention = DefaultRequestLogRetention
+	}
+	analyticsPath := filepath.Join(db.GetDataDir(), "_system", "request_logs.ndjson")
 	return &Handler{
 		db:          db,
 		caller:      caller,
@@ -69,6 +78,7 @@ func NewHandler(
 		setupToken:  setupToken,
 		clientJS:    clientJS,
 		clientCSS:   clientCSS,
+		analytics:   NewRequestAnalyticsWithStorage(retention, analyticsPath),
 	}
 }
 
@@ -194,7 +204,7 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			jsonError(w, "Failed to read body", 400)
 			return
 		}
-		h.callHandler(w, "reducer", route.Name, string(body), auth)
+		h.callHandler(w, r, route, string(body), auth, "http")
 		return
 	}
 
@@ -206,21 +216,35 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			}
 		}
 		paramsJSON, _ := json.Marshal(params)
-		h.callHandler(w, "view", route.Name, string(paramsJSON), auth)
+		h.callHandler(w, r, route, string(paramsJSON), auth, "http")
 		return
 	}
 
 	jsonError(w, "Not found", 404)
 }
 
-func (h *Handler) callHandler(w http.ResponseWriter, handlerType, name, paramsJSON string, auth *schema.AuthContext) {
-	authJSON := "null"
-	if auth != nil {
-		b, _ := json.Marshal(auth)
-		authJSON = string(b)
+func (h *Handler) callHandler(w http.ResponseWriter, r *http.Request, route *RouteInfo, paramsJSON string, auth *schema.AuthContext, transport string) {
+	method := ""
+	path := ""
+	handlerType := ""
+	name := ""
+	if route != nil {
+		method = route.Method
+		path = route.Path
+		handlerType = route.Type
+		name = route.Name
+	}
+	if method == "" && r != nil {
+		method = r.Method
+	}
+	if handlerType == "" {
+		handlerType = "view"
+	}
+	if path == "" {
+		path = "/api/" + handlerType + "/" + name
 	}
 
-	result, err := h.caller.CallHandler(handlerType, name, paramsJSON, authJSON)
+	result, err := h.executeHandler(handlerType, name, paramsJSON, auth, method, path, transport, r)
 	if err != nil {
 		jsonError(w, err.Error(), 400)
 		return
@@ -228,6 +252,47 @@ func (h *Handler) callHandler(w http.ResponseWriter, handlerType, name, paramsJS
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"ok":true,"data":%s}`, result)
+}
+
+func (h *Handler) executeHandler(
+	handlerType, name, paramsJSON string,
+	auth *schema.AuthContext,
+	method, path, transport string,
+	req *http.Request,
+) (string, error) {
+	authJSON := "null"
+	if auth != nil {
+		b, _ := json.Marshal(auth)
+		authJSON = string(b)
+	}
+
+	start := time.Now()
+	result, err := h.caller.CallHandler(handlerType, name, paramsJSON, authJSON)
+	if h.analytics != nil {
+		details := map[string]interface{}{
+			"transport":  transport,
+			"paramBytes": len(paramsJSON),
+			"hasAuth":    auth != nil,
+		}
+		if req != nil {
+			details["queryBytes"] = len(req.URL.RawQuery)
+		}
+		h.analytics.Record(AnalyticsEvent{
+			Timestamp:    time.Now(),
+			RouteType:    handlerType,
+			RouteName:    name,
+			Method:       method,
+			Path:         path,
+			Transport:    transport,
+			Duration:     time.Since(start),
+			OK:           err == nil,
+			StatusCode:   ternaryStatus(err == nil, 200, 400),
+			ErrorMessage: ternaryError(err),
+			UserID:       ternaryUserID(auth),
+			Details:      details,
+		})
+	}
+	return result, err
 }
 
 func (h *Handler) handleSchema(w http.ResponseWriter) {
@@ -329,13 +394,8 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *Route
 		}
 	}
 	paramsJSON, _ := json.Marshal(params)
-	authJSON := "null"
-	if auth != nil {
-		b, _ := json.Marshal(auth)
-		authJSON = string(b)
-	}
 
-	result, err := h.caller.CallHandler("view", route.Name, string(paramsJSON), authJSON)
+	result, err := h.executeHandler("view", route.Name, string(paramsJSON), auth, "GET", route.Path, "sse", r)
 	if err != nil {
 		writeEvent("error", fmt.Sprintf(`{"error":%q}`, err.Error()))
 	} else {
@@ -442,12 +502,6 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	authJSON := "null"
-	if auth != nil {
-		b, _ := json.Marshal(auth)
-		authJSON = string(b)
-	}
-
 	// Send snapshots for each view
 	type snapshotResult struct {
 		name   string
@@ -477,13 +531,14 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 		paramsJSON, _ := json.Marshal(params)
 		scheduled++
 
-		go func(viewName, pJSON string) {
-			res, err := h.caller.CallHandler("view", viewName, pJSON, authJSON)
+		routePath := route.Path
+		go func(viewName, pJSON, p string) {
+			res, err := h.executeHandler("view", viewName, pJSON, auth, "GET", p, "sse-multiplex", r)
 			select {
 			case results <- snapshotResult{name: viewName, result: res, err: err}:
 			case <-r.Context().Done():
 			}
-		}(name, string(paramsJSON))
+		}(name, string(paramsJSON), routePath)
 	}
 
 	for i := 0; i < scheduled; i++ {
@@ -774,6 +829,28 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 	// SSE events
 	if path == "/_/api/events" && r.Method == "GET" {
 		h.handleAdminSSE(w, r)
+		return
+	}
+
+	// Analytics config
+	if path == "/_/api/analytics/config" {
+		if r.Method == "GET" {
+			h.handleAnalyticsConfig(w)
+			return
+		}
+		jsonError(w, "Method not allowed", 405)
+		return
+	}
+
+	// Analytics logs
+	if path == "/_/api/analytics/logs" && r.Method == "GET" {
+		h.handleAnalyticsLogs(w, r)
+		return
+	}
+
+	// Analytics timeseries
+	if path == "/_/api/analytics/timeseries" && r.Method == "GET" {
+		h.handleAnalyticsTimeseries(w, r)
 		return
 	}
 
@@ -1282,6 +1359,75 @@ func (h *Handler) handleAdminSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) handleAnalyticsConfig(w http.ResponseWriter) {
+	if h.analytics == nil {
+		jsonError(w, "Analytics unavailable", 501)
+		return
+	}
+	retention := h.analytics.Retention()
+	jsonResponse(w, map[string]interface{}{
+		"ok":             true,
+		"enabled":        true,
+		"retentionHours": retention.Hours(),
+		"droppedEvents":  h.analytics.DroppedEvents(),
+	})
+}
+
+func (h *Handler) handleAnalyticsLogs(w http.ResponseWriter, r *http.Request) {
+	if h.analytics == nil {
+		jsonError(w, "Analytics unavailable", 501)
+		return
+	}
+
+	q := r.URL.Query()
+	page := intParam(q.Get("page"), 1)
+	limit := intParam(q.Get("limit"), 50)
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	rows, total, err := h.analytics.QueryLogs(page, limit, q.Get("search"), q.Get("filter"))
+	if err != nil {
+		jsonError(w, "Invalid filter: "+err.Error(), 400)
+		return
+	}
+	pages := 0
+	if total > 0 {
+		pages = (total + limit - 1) / limit
+	}
+
+	jsonResponse(w, map[string]interface{}{
+		"rows":           rows,
+		"total":          total,
+		"page":           page,
+		"pages":          pages,
+		"limit":          limit,
+		"retentionHours": h.analytics.Retention().Hours(),
+		"droppedEvents":  h.analytics.DroppedEvents(),
+	})
+}
+
+func (h *Handler) handleAnalyticsTimeseries(w http.ResponseWriter, r *http.Request) {
+	if h.analytics == nil {
+		jsonError(w, "Analytics unavailable", 501)
+		return
+	}
+	q := r.URL.Query()
+	window := parseWindowDuration(q.Get("window"), 24*time.Hour)
+	if window < time.Minute {
+		window = time.Minute
+	}
+	series := h.analytics.QuerySeries(window, strings.TrimSpace(q.Get("routeType")), strings.TrimSpace(q.Get("routeName")))
+	jsonResponse(w, map[string]interface{}{
+		"ok":     true,
+		"window": window.String(),
+		"data":   series,
+	})
+}
+
 func (h *Handler) findRoute(path string) *RouteInfo {
 	for i := range h.routes {
 		if h.routes[i].Path == path {
@@ -1389,6 +1535,46 @@ func intParam(s string, defaultVal int) int {
 		return defaultVal
 	}
 	return n
+}
+
+func parseWindowDuration(raw string, fallback time.Duration) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	if strings.HasSuffix(raw, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(raw, "d"))
+		if err != nil || days <= 0 {
+			return fallback
+		}
+		return time.Duration(days) * 24 * time.Hour
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
+}
+
+func ternaryStatus(ok bool, success, failure int) int {
+	if ok {
+		return success
+	}
+	return failure
+}
+
+func ternaryError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func ternaryUserID(auth *schema.AuthContext) string {
+	if auth == nil {
+		return ""
+	}
+	return auth.ID
 }
 
 func patternToRegex(pattern string) string {
