@@ -184,11 +184,12 @@ select.cell-editor{appearance:auto}
 .analytics-route-list{display:flex;flex-wrap:wrap;gap:6px}
 .analytics-route-chip{font-size:11px;padding:2px 6px;border:1px solid var(--border-input);border-radius:999px;background:var(--bg-input);color:var(--text-muted);cursor:pointer}
 .analytics-route-chip.active{border-color:var(--accent);color:var(--text-heading)}
-.analytics-logs{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.analytics-logs{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .analytics-empty{padding:24px;color:var(--text-muted);text-align:center}
 .observe-panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
 .observe-body{flex:1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
-.observe-table-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.observe-table-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.panel-table-scroll{flex:1;min-height:0;max-height:min(52vh,560px);overflow:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 .mono-sm{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px}
 
 /* File fields */
@@ -1220,7 +1221,7 @@ function AnalyticsPanel() {
             </div>
           </div>
 
-          <div class="table-container">
+          <div class="table-container panel-table-scroll">
             <table>
               <thead>
                 <tr>
@@ -1351,7 +1352,7 @@ function ObservePanel() {
             </div>
             <div class="panel-meta">snapshot ${fmtTime(report?.generatedAtUnixMilli)}</div>
           </div>
-          <div class="table-container">
+          <div class="table-container panel-table-scroll">
             <table>
               <thead>
                 <tr>
