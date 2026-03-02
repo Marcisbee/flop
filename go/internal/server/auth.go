@@ -14,6 +14,7 @@ import (
 
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/schema"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -142,7 +143,53 @@ func ExtractBearerToken(authHeader, queryToken string) string {
 	return queryToken
 }
 
-// --- Password Hashing (PBKDF2) ---
+// --- Password Hashing (Multi-Format) ---
+
+// PasswordVerifier checks if a plaintext password matches a stored hash.
+type PasswordVerifier interface {
+	// Prefix returns the hash prefix this verifier handles (e.g. "$pbkdf2$", "$2a$").
+	Prefix() string
+	// Verify checks the password against the hash. Returns true if valid.
+	Verify(password, hash string) bool
+}
+
+var (
+	passwordVerifiersMu sync.RWMutex
+	passwordVerifiers   = []PasswordVerifier{&pbkdf2Verifier{}, &bcryptVerifier{}}
+)
+
+// RegisterPasswordVerifier adds a custom password verifier for a specific hash format.
+func RegisterPasswordVerifier(v PasswordVerifier) {
+	passwordVerifiersMu.Lock()
+	passwordVerifiers = append(passwordVerifiers, v)
+	passwordVerifiersMu.Unlock()
+}
+
+// pbkdf2Verifier handles $pbkdf2$salt$hash format.
+type pbkdf2Verifier struct{}
+
+func (v *pbkdf2Verifier) Prefix() string { return "$pbkdf2$" }
+func (v *pbkdf2Verifier) Verify(password, hash string) bool {
+	parts := strings.Split(hash, "$")
+	if len(parts) != 4 || parts[1] != "pbkdf2" {
+		return false
+	}
+	salt, err := hex.DecodeString(parts[2])
+	if err != nil {
+		return false
+	}
+	derived := pbkdf2.Key([]byte(password), salt, 10000, 32, sha256.New)
+	hashHex := hex.EncodeToString(derived)
+	return hmac.Equal([]byte(hashHex), []byte(parts[3]))
+}
+
+// bcryptVerifier handles $2a$, $2b$, $2y$ bcrypt formats.
+type bcryptVerifier struct{}
+
+func (v *bcryptVerifier) Prefix() string { return "$2" }
+func (v *bcryptVerifier) Verify(password, hash string) bool {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+}
 
 // HashPassword hashes a password using PBKDF2-SHA256.
 func HashPassword(password string) (string, error) {
@@ -157,21 +204,77 @@ func HashPassword(password string) (string, error) {
 	return fmt.Sprintf("$pbkdf2$%s$%s", saltHex, hashHex), nil
 }
 
-// VerifyPassword checks a password against a PBKDF2 hash.
+// VerifyPassword checks a password against a hash using registered verifiers.
+// Supports PBKDF2 and bcrypt by default. Register custom verifiers with RegisterPasswordVerifier.
 func VerifyPassword(password, hash string) bool {
-	parts := strings.Split(hash, "$")
-	if len(parts) != 4 || parts[1] != "pbkdf2" {
-		return false
+	passwordVerifiersMu.RLock()
+	verifiers := passwordVerifiers
+	passwordVerifiersMu.RUnlock()
+
+	for _, v := range verifiers {
+		if strings.HasPrefix(hash, v.Prefix()) {
+			return v.Verify(password, hash)
+		}
+	}
+	return false
+}
+
+// --- Purpose JWTs (verification, email change, password reset) ---
+
+// PurposePayload is used for single-use verification tokens.
+type PurposePayload struct {
+	Sub      string `json:"sub"`
+	Email    string `json:"email,omitempty"`
+	NewEmail string `json:"newEmail,omitempty"`
+	Purpose  string `json:"purpose"`
+	Iat      int64  `json:"iat"`
+	Exp      int64  `json:"exp"`
+}
+
+const (
+	PasswordResetTTL int64 = 3600  // 1 hour
+	VerificationTTL  int64 = 86400 // 24 hours
+	EmailChangeTTL   int64 = 86400 // 24 hours
+)
+
+// CreatePurposeJWT creates a signed JWT for verification/reset purposes.
+func CreatePurposeJWT(payload *PurposePayload, secret string) string {
+	header := base64urlEncode([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	bodyJSON, _ := json.Marshal(payload)
+	body := base64urlEncode(bodyJSON)
+	signature := hmacSign(header+"."+body, secret)
+	return header + "." + body + "." + signature
+}
+
+// VerifyPurposeJWT verifies and decodes a purpose JWT token.
+// Returns nil if invalid or expired. Does not use the JWT cache.
+func VerifyPurposeJWT(token, secret string) *PurposePayload {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil
 	}
 
-	salt, err := hex.DecodeString(parts[2])
+	expected := hmacSign(parts[0]+"."+parts[1], secret)
+	if !hmac.Equal([]byte(parts[2]), []byte(expected)) {
+		return nil
+	}
+
+	bodyBytes, err := base64urlDecode(parts[1])
 	if err != nil {
-		return false
+		return nil
 	}
 
-	derived := pbkdf2.Key([]byte(password), salt, 10000, 32, sha256.New)
-	hashHex := hex.EncodeToString(derived)
-	return hmac.Equal([]byte(hashHex), []byte(parts[3]))
+	var payload PurposePayload
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		return nil
+	}
+
+	now := time.Now().Unix()
+	if payload.Exp > 0 && payload.Exp < now {
+		return nil
+	}
+
+	return &payload
 }
 
 // --- AuthService ---
@@ -328,6 +431,134 @@ func (as *AuthService) SetRoles(userID string, roles []string) error {
 func (as *AuthService) AuthSchemaFields() []schema.CompiledField {
 	def := as.authTable.GetDef()
 	return def.CompiledSchema.Fields
+}
+
+// ChangePassword verifies the old password and sets a new one.
+// The new password is always hashed with PBKDF2, migrating any legacy hash format.
+func (as *AuthService) ChangePassword(userID, oldPassword, newPassword string) error {
+	user, err := as.authTable.Get(userID)
+	if err != nil || user == nil {
+		return fmt.Errorf("user not found")
+	}
+	if !VerifyPassword(oldPassword, toString(user["password"])) {
+		return fmt.Errorf("invalid current password")
+	}
+	hashed, err := HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	_, err = as.authTable.Update(userID, map[string]interface{}{"password": hashed}, nil)
+	return err
+}
+
+// RequestEmailChange generates a token to confirm an email change.
+// The caller's password must be verified for security.
+func (as *AuthService) RequestEmailChange(userID, newEmail, password string) (string, error) {
+	user, err := as.authTable.Get(userID)
+	if err != nil || user == nil {
+		return "", fmt.Errorf("user not found")
+	}
+	if !VerifyPassword(password, toString(user["password"])) {
+		return "", fmt.Errorf("invalid password")
+	}
+	existing := as.findByEmail(newEmail)
+	if existing != nil {
+		return "", fmt.Errorf("email already in use")
+	}
+	token := CreatePurposeJWT(&PurposePayload{
+		Sub:      userID,
+		Email:    toString(user["email"]),
+		NewEmail: newEmail,
+		Purpose:  "email-change",
+		Iat:      time.Now().Unix(),
+		Exp:      time.Now().Unix() + EmailChangeTTL,
+	}, as.secret)
+	return token, nil
+}
+
+// ConfirmEmailChange verifies the token and updates the user's email.
+// Returns a new auth token with the updated email.
+func (as *AuthService) ConfirmEmailChange(token string) (string, error) {
+	payload := VerifyPurposeJWT(token, as.secret)
+	if payload == nil || payload.Purpose != "email-change" {
+		return "", fmt.Errorf("invalid or expired token")
+	}
+	existing := as.findByEmail(payload.NewEmail)
+	if existing != nil {
+		return "", fmt.Errorf("email already in use")
+	}
+	_, err := as.authTable.Update(payload.Sub, map[string]interface{}{
+		"email": payload.NewEmail,
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	user, _ := as.authTable.Get(payload.Sub)
+	roles := toStringSlice(user["roles"])
+	newToken := as.issueToken(payload.Sub, payload.NewEmail, toString(user["name"]), roles)
+	return newToken, nil
+}
+
+// RequestVerification generates a token to confirm a user's email address.
+func (as *AuthService) RequestVerification(userID string) (string, error) {
+	user, err := as.authTable.Get(userID)
+	if err != nil || user == nil {
+		return "", fmt.Errorf("user not found")
+	}
+	token := CreatePurposeJWT(&PurposePayload{
+		Sub:     userID,
+		Email:   toString(user["email"]),
+		Purpose: "verification",
+		Iat:     time.Now().Unix(),
+		Exp:     time.Now().Unix() + VerificationTTL,
+	}, as.secret)
+	return token, nil
+}
+
+// ConfirmVerification verifies the token and marks the user as verified.
+func (as *AuthService) ConfirmVerification(token string) error {
+	payload := VerifyPurposeJWT(token, as.secret)
+	if payload == nil || payload.Purpose != "verification" {
+		return fmt.Errorf("invalid or expired token")
+	}
+	_, err := as.authTable.Update(payload.Sub, map[string]interface{}{
+		"verified": true,
+	}, nil)
+	return err
+}
+
+// RequestPasswordReset generates a token for resetting a user's password.
+// Returns empty string (no error) if email not found to prevent user enumeration.
+func (as *AuthService) RequestPasswordReset(email string) (string, error) {
+	user := as.findByEmail(email)
+	if user == nil {
+		return "", nil
+	}
+	pk := as.getPK(user)
+	token := CreatePurposeJWT(&PurposePayload{
+		Sub:     pk,
+		Email:   email,
+		Purpose: "password-reset",
+		Iat:     time.Now().Unix(),
+		Exp:     time.Now().Unix() + PasswordResetTTL,
+	}, as.secret)
+	return token, nil
+}
+
+// ConfirmPasswordReset verifies the token and sets a new password.
+func (as *AuthService) ConfirmPasswordReset(token, newPassword string) error {
+	payload := VerifyPurposeJWT(token, as.secret)
+	if payload == nil || payload.Purpose != "password-reset" {
+		return fmt.Errorf("invalid or expired token")
+	}
+	hashed, err := HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	_, err = as.authTable.Update(payload.Sub, map[string]interface{}{
+		"password": hashed,
+	}, nil)
+	return err
 }
 
 func (as *AuthService) findByEmail(email string) map[string]interface{} {

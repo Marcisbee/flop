@@ -611,14 +611,10 @@ func appendCompositePart(b *strings.Builder, v interface{}) {
 	}
 }
 
-// parseUUIDIndexKey recognizes either raw 16-byte keys or canonical
-// UUID text keys (8-4-4-4-12) and returns a fixed-size binary key.
+// parseUUIDIndexKey recognizes canonical UUID text keys (8-4-4-4-12)
+// and returns a fixed-size binary key for compact storage.
 func parseUUIDIndexKey(key string) ([16]byte, bool) {
 	var out [16]byte
-	if len(key) == 16 {
-		copy(out[:], key)
-		return out, true
-	}
 	if len(key) != 36 || strings.IndexByte(key, 0) >= 0 {
 		return out, false
 	}
@@ -650,10 +646,6 @@ func parseUUIDIndexKey(key string) ([16]byte, bool) {
 
 func parseUUIDIndexKeyBytes(key []byte) ([16]byte, bool) {
 	var out [16]byte
-	if len(key) == 16 {
-		copy(out[:], key)
-		return out, true
-	}
 	if len(key) != 36 {
 		return out, false
 	}

@@ -23,6 +23,7 @@ type Config struct {
 	AsyncSecondaryIndexes bool          `json:"asyncSecondaryIndexes,omitempty"`
 	RequestLogRetention   time.Duration `json:"-"`
 	EnablePprof           bool          `json:"-"`
+	SMTP                  *SMTPConfig   `json:"-"`
 }
 
 // CachedTypeHint identifies the storage type for a cached field.
@@ -46,6 +47,12 @@ func (r Row) ID() string { return r.pk }
 // Get returns the value of a field.
 func (r Row) Get(field string) any { return r.data[field] }
 
+// cronSpec holds a cron expression and handler registered before Open().
+type cronSpec struct {
+	Expr string
+	Fn   func(*Database)
+}
+
 // App is the top-level runtime registry.
 // In this phase, it stores typed metadata used for generation and future runtime wiring.
 type App struct {
@@ -55,6 +62,20 @@ type App struct {
 	reducers []endpointSpec
 	layouts  []layoutSpec
 	pages    []pageSpec
+	crons    []cronSpec
+}
+
+// Cron registers a cron job that runs on the given schedule after Open().
+// The expression uses standard 5-field cron format: minute hour day-of-month month day-of-week.
+// Examples: "* * * * *" (every minute), "*/5 * * * *" (every 5 min), "0 0 * * *" (daily at midnight).
+func (a *App) Cron(expr string, fn func(*Database)) {
+	if a == nil {
+		panic("flop: app is nil")
+	}
+	if fn == nil {
+		panic("flop: cron handler is nil")
+	}
+	a.crons = append(a.crons, cronSpec{Expr: expr, Fn: fn})
 }
 
 func New(config Config) *App {
@@ -196,6 +217,12 @@ func (fb *FieldBuilder[T]) FileSingle(mime ...string) *FieldBuilder[T] {
 func (fb *FieldBuilder[T]) FileMulti(mime ...string) *FieldBuilder[T] {
 	fb.spec.Kind = "fileMulti"
 	fb.spec.MimeTypes = append([]string(nil), mime...)
+	return fb
+}
+
+// Thumbs defines allowed thumbnail sizes for file fields (AutoTable API).
+func (fb *FieldBuilder[T]) Thumbs(sizes ...string) *FieldBuilder[T] {
+	fb.spec.ThumbSizes = append(fb.spec.ThumbSizes[:0:0], sizes...)
 	return fb
 }
 
@@ -524,8 +551,22 @@ func (b *RefMultiFieldRules) Virtual() *RefMultiFieldRules      { b.spec.Virtual
 func (b *FileSingleFieldRules) Required() *FileSingleFieldRules { b.spec.Required = true; return b }
 func (b *FileSingleFieldRules) Virtual() *FileSingleFieldRules  { b.spec.Virtual = true; return b }
 
+// Thumbs defines allowed thumbnail sizes for image file fields.
+// Format: "WxH" where W or H can be 0 for aspect-ratio preservation.
+// Example: Thumbs("160x160", "80x80") or Thumbs("1200x0") for max-width.
+func (b *FileSingleFieldRules) Thumbs(sizes ...string) *FileSingleFieldRules {
+	b.spec.ThumbSizes = append(b.spec.ThumbSizes[:0:0], sizes...)
+	return b
+}
+
 func (b *FileMultiFieldRules) Required() *FileMultiFieldRules { b.spec.Required = true; return b }
 func (b *FileMultiFieldRules) Virtual() *FileMultiFieldRules  { b.spec.Virtual = true; return b }
+
+// Thumbs defines allowed thumbnail sizes for image file fields.
+func (b *FileMultiFieldRules) Thumbs(sizes ...string) *FileMultiFieldRules {
+	b.spec.ThumbSizes = append(b.spec.ThumbSizes[:0:0], sizes...)
+	return b
+}
 
 func (b *SetFieldRules) Required() *SetFieldRules     { b.spec.Required = true; return b }
 func (b *SetFieldRules) Default(v any) *SetFieldRules { b.spec.Default = v; return b }
@@ -896,6 +937,7 @@ type FieldSpec struct {
 	RelationTable   string   `json:"relationTable,omitempty"`
 	RelationField   string   `json:"relationField,omitempty"`
 	MimeTypes       []string `json:"mimeTypes,omitempty"`
+	ThumbSizes      []string `json:"thumbSizes,omitempty"`
 	MinLen          *int     `json:"minLen,omitempty"`
 	MaxLen          *int     `json:"maxLen,omitempty"`
 	Min             *float64 `json:"min,omitempty"`
@@ -1089,6 +1131,7 @@ type fieldSpec struct {
 	RelationTable    string
 	RelationField    string
 	MimeTypes        []string
+	ThumbSizes       []string
 	MinLen           *int
 	MaxLen           *int
 	Min              *float64
@@ -1122,6 +1165,7 @@ func (fs *fieldSpec) toPublic() FieldSpec {
 		RelationTable:   fs.RelationTable,
 		RelationField:   fs.RelationField,
 		MimeTypes:       append([]string(nil), fs.MimeTypes...),
+		ThumbSizes:      append([]string(nil), fs.ThumbSizes...),
 		MinLen:          copyIntPtr(fs.MinLen),
 		MaxLen:          copyIntPtr(fs.MaxLen),
 		Min:             copyFloatPtr(fs.Min),

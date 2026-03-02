@@ -791,7 +791,32 @@ func HashPassword(password string) (string, error) {
 	return server.HashPassword(password)
 }
 
-// VerifyPassword checks a password against a PBKDF2 hash.
+// VerifyPassword checks a password against a hash using registered verifiers.
+// Supports PBKDF2 and bcrypt by default.
 func VerifyPassword(password, hash string) bool {
 	return server.VerifyPassword(password, hash)
 }
+
+// PasswordVerifier checks if a plaintext password matches a stored hash.
+type PasswordVerifier = server.PasswordVerifier
+
+// RegisterPasswordVerifier adds a custom password verifier for a specific hash format.
+func RegisterPasswordVerifier(v PasswordVerifier) {
+	server.RegisterPasswordVerifier(v)
+}
+
+// PurposePayload is used for single-use verification tokens.
+type PurposePayload = server.PurposePayload
+
+// CreatePurposeJWT creates a signed JWT for verification/reset purposes.
+func CreatePurposeJWT(payload *PurposePayload, secret string) string {
+	return server.CreatePurposeJWT(payload, secret)
+}
+
+// VerifyPurposeJWT verifies and decodes a purpose JWT token.
+func VerifyPurposeJWT(token, secret string) *PurposePayload {
+	return server.VerifyPurposeJWT(token, secret)
+}
+
+// SMTPConfig holds SMTP server settings for sending emails.
+type SMTPConfig = server.SMTPConfig

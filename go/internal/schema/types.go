@@ -78,7 +78,8 @@ type CompiledField struct {
 	MimeTypes        []string
 	EnumValues       []string
 	VectorDimensions int
-	Cached           bool // engine-managed computed field
+	Cached           bool     // engine-managed computed field
+	ThumbSizes       []string // allowed thumbnail sizes, e.g. "160x160", "1200x0"
 }
 
 // CompiledSchema is the in-memory representation of a table schema.
@@ -193,7 +194,7 @@ type FileRef struct {
 
 // Page format constants.
 const (
-	PageSize       = 4096
+	PageSize       = 65535
 	FileHeaderSize = 64
 	PageHeaderSize = 12
 	SlotSize       = 4 // offset(2) + length(2)

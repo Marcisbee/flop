@@ -237,6 +237,7 @@ func main() {
 		nil,
 		nil,
 		srv.auth,
+		nil,
 		server.ServerConfig{JWTSecret: secret},
 		setupToken,
 		nil,

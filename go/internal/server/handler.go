@@ -40,6 +40,7 @@ type Handler struct {
 	routes      []RouteInfo
 	pageRoutes  []FlatRoute
 	authService *AuthService
+	mailer      *Mailer
 	config      ServerConfig
 	setupToken  string
 
@@ -60,6 +61,7 @@ func NewHandler(
 	routes []RouteInfo,
 	pageRoutes []FlatRoute,
 	authService *AuthService,
+	mailer *Mailer,
 	config ServerConfig,
 	setupToken string,
 	clientJS, clientCSS []byte,
@@ -75,6 +77,7 @@ func NewHandler(
 		routes:      routes,
 		pageRoutes:  pageRoutes,
 		authService: authService,
+		mailer:      mailer,
 		config:      config,
 		setupToken:  setupToken,
 		clientJS:    clientJS,
@@ -150,8 +153,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request, path string) {
 	// File serving
 	if strings.HasPrefix(path, "/api/files/") {
-		filePath := filepath.Join(h.db.GetDataDir(), strings.Replace(path, "/api/files/", "/_files/", 1))
-		http.ServeFile(w, r, filePath)
+		h.handleFileServing(w, r, path)
 		return
 	}
 
@@ -222,6 +224,70 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 	}
 
 	jsonError(w, "Not found", 404)
+}
+
+// handleFileServing serves file assets with optional on-demand thumbnail generation.
+// URL: /api/files/{table}/{rowID}/{field}/{filename}?thumb=WxH
+func (h *Handler) handleFileServing(w http.ResponseWriter, r *http.Request, path string) {
+	// Strip /api/files/ prefix and parse parts
+	rel := strings.TrimPrefix(path, "/api/files/")
+	parts := strings.SplitN(rel, "/", 4)
+
+	thumbParam := r.URL.Query().Get("thumb")
+
+	// No thumbnail requested — serve original file
+	if thumbParam == "" || len(parts) < 4 {
+		filePath := filepath.Join(h.db.GetDataDir(), "_files", rel)
+		http.ServeFile(w, r, filePath)
+		return
+	}
+
+	tableName, rowID, fieldName, filename := parts[0], parts[1], parts[2], parts[3]
+
+	// Find the table and field to check allowed thumb sizes
+	ti := h.db.GetTable(tableName)
+	if ti == nil {
+		jsonError(w, "table not found", 404)
+		return
+	}
+	def := ti.GetDef()
+	cf := def.CompiledSchema.FieldMap[fieldName]
+	if cf == nil || len(cf.ThumbSizes) == 0 {
+		jsonError(w, "thumbnails not configured for this field", 400)
+		return
+	}
+	if !IsThumbAllowed(thumbParam, cf.ThumbSizes) {
+		jsonError(w, "thumb size not allowed: "+thumbParam, 400)
+		return
+	}
+
+	size, err := ParseThumbSize(thumbParam)
+	if err != nil {
+		jsonError(w, err.Error(), 400)
+		return
+	}
+
+	thumbPath := ThumbPath(h.db.GetDataDir(), tableName, rowID, fieldName, filename, size)
+
+	// Serve cached thumbnail if it exists
+	if _, statErr := os.Stat(thumbPath); statErr == nil {
+		http.ServeFile(w, r, thumbPath)
+		return
+	}
+
+	// Generate thumbnail from original
+	srcPath := filepath.Join(h.db.GetDataDir(), "_files", tableName, rowID, fieldName, filename)
+	if _, statErr := os.Stat(srcPath); os.IsNotExist(statErr) {
+		jsonError(w, "file not found", 404)
+		return
+	}
+
+	if err := GenerateThumb(srcPath, thumbPath, size); err != nil {
+		jsonError(w, "thumbnail generation failed: "+err.Error(), 500)
+		return
+	}
+
+	http.ServeFile(w, r, thumbPath)
 }
 
 func (h *Handler) callHandler(w http.ResponseWriter, r *http.Request, route *RouteInfo, paramsJSON string, auth *schema.AuthContext, transport string) {
@@ -361,6 +427,123 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 			return
 		}
 		jsonResponse(w, map[string]interface{}{"token": token})
+
+	case "/api/auth/change-password":
+		token := ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
+		payload := VerifyJWT(token, h.config.JWTSecret)
+		if payload == nil {
+			jsonError(w, "Authentication required", 401)
+			return
+		}
+		oldPassword, _ := body["oldPassword"].(string)
+		newPassword, _ := body["newPassword"].(string)
+		if oldPassword == "" || newPassword == "" {
+			jsonError(w, "Old and new password required", 400)
+			return
+		}
+		if err := h.authService.ChangePassword(payload.Sub, oldPassword, newPassword); err != nil {
+			jsonError(w, err.Error(), 400)
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"ok": true})
+
+	case "/api/auth/request-email-change":
+		token := ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
+		payload := VerifyJWT(token, h.config.JWTSecret)
+		if payload == nil {
+			jsonError(w, "Authentication required", 401)
+			return
+		}
+		newEmail, _ := body["newEmail"].(string)
+		password, _ := body["password"].(string)
+		if newEmail == "" || password == "" {
+			jsonError(w, "New email and password required", 400)
+			return
+		}
+		changeToken, err := h.authService.RequestEmailChange(payload.Sub, newEmail, password)
+		if err != nil {
+			jsonError(w, err.Error(), 400)
+			return
+		}
+		if h.mailer != nil {
+			htmlBody, _ := h.mailer.RenderTemplate("email-change", EmailTemplateData{Email: newEmail, Token: changeToken})
+			go h.mailer.Send(newEmail, "Confirm email change", htmlBody)
+		}
+		jsonResponse(w, map[string]interface{}{"ok": true, "token": changeToken})
+
+	case "/api/auth/confirm-email-change":
+		changeToken, _ := body["token"].(string)
+		if changeToken == "" {
+			jsonError(w, "Token required", 400)
+			return
+		}
+		newAuthToken, err := h.authService.ConfirmEmailChange(changeToken)
+		if err != nil {
+			jsonError(w, err.Error(), 400)
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"ok": true, "token": newAuthToken})
+
+	case "/api/auth/request-verification":
+		token := ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
+		payload := VerifyJWT(token, h.config.JWTSecret)
+		if payload == nil {
+			jsonError(w, "Authentication required", 401)
+			return
+		}
+		verifyToken, err := h.authService.RequestVerification(payload.Sub)
+		if err != nil {
+			jsonError(w, err.Error(), 400)
+			return
+		}
+		if h.mailer != nil {
+			htmlBody, _ := h.mailer.RenderTemplate("verification", EmailTemplateData{Email: payload.Email, Token: verifyToken})
+			go h.mailer.Send(payload.Email, "Verify your email", htmlBody)
+		}
+		jsonResponse(w, map[string]interface{}{"ok": true, "token": verifyToken})
+
+	case "/api/auth/confirm-verification":
+		verifyToken, _ := body["token"].(string)
+		if verifyToken == "" {
+			jsonError(w, "Token required", 400)
+			return
+		}
+		if err := h.authService.ConfirmVerification(verifyToken); err != nil {
+			jsonError(w, err.Error(), 400)
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"ok": true})
+
+	case "/api/auth/request-password-reset":
+		email, _ := body["email"].(string)
+		if email == "" {
+			jsonError(w, "Email required", 400)
+			return
+		}
+		resetToken, _ := h.authService.RequestPasswordReset(email)
+		if resetToken != "" && h.mailer != nil {
+			htmlBody, _ := h.mailer.RenderTemplate("password-reset", EmailTemplateData{Email: email, Token: resetToken})
+			go h.mailer.Send(email, "Reset your password", htmlBody)
+		}
+		// Always return ok to prevent user enumeration
+		resp := map[string]interface{}{"ok": true}
+		if resetToken != "" {
+			resp["token"] = resetToken
+		}
+		jsonResponse(w, resp)
+
+	case "/api/auth/confirm-password-reset":
+		resetToken, _ := body["token"].(string)
+		newPassword, _ := body["password"].(string)
+		if resetToken == "" || newPassword == "" {
+			jsonError(w, "Token and password required", 400)
+			return
+		}
+		if err := h.authService.ConfirmPasswordReset(resetToken, newPassword); err != nil {
+			jsonError(w, err.Error(), 400)
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"ok": true})
 
 	default:
 		jsonError(w, "Unknown auth endpoint", 404)

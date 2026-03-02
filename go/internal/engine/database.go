@@ -1409,6 +1409,7 @@ func (ti *TableInstance) SecondaryIndexesReady() bool {
 	return ti.secondaryIndexesReady()
 }
 
+
 // Scan returns rows with limit/offset.
 func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, error) {
 	if limit <= 0 {

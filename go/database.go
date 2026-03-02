@@ -3,8 +3,10 @@ package flop
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marcisbee/flop/internal/cron"
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/server"
@@ -23,11 +26,13 @@ import (
 type Database struct {
 	db                  *engine.Database
 	authService         *server.AuthService
+	mailer              *server.Mailer
 	jwtSecret           string
 	requestLogRetention time.Duration
 	enablePprof         bool
 	analyticsMu         sync.Mutex
 	analytics           *server.RequestAnalytics
+	cronRunner          *cron.Runner
 }
 
 // TableInstance wraps internal engine table and provides CRUD operations.
@@ -79,10 +84,47 @@ func (a *App) Open() (*Database, error) {
 		d.authService = server.NewAuthService(authTable, secret)
 	}
 
+	// Set up mailer if SMTP configured
+	if a.config.SMTP != nil {
+		d.mailer = server.NewMailer(server.SMTPConfig{
+			Host:     a.config.SMTP.Host,
+			Port:     a.config.SMTP.Port,
+			Username: a.config.SMTP.Username,
+			Password: a.config.SMTP.Password,
+			From:     a.config.SMTP.From,
+		})
+	}
+
 	// Wire up cached field triggers
 	a.wireCachedFields(d)
 
+	// Start cron jobs
+	if len(a.crons) > 0 {
+		jobs := make([]cron.Job, 0, len(a.crons))
+		for _, cs := range a.crons {
+			sched, err := cron.Parse(cs.Expr)
+			if err != nil {
+				return nil, fmt.Errorf("flop: invalid cron expression %q: %w", cs.Expr, err)
+			}
+			fn := cs.Fn
+			db := d
+			jobs = append(jobs, cron.Job{
+				Schedule: sched,
+				Fn:       func() { fn(db) },
+			})
+		}
+		d.cronRunner = cron.Start(context.Background(), jobs)
+	}
+
 	return d, nil
+}
+
+// SetEmailTemplate overrides a named email template used by auth flows.
+// Supported names: "verification", "email-change", "password-reset".
+func (d *Database) SetEmailTemplate(name string, tmpl *template.Template) {
+	if d.mailer != nil {
+		d.mailer.SetTemplate(name, tmpl)
+	}
 }
 
 // wireCachedFields registers PubSub subscribers for cached field triggers
@@ -174,8 +216,11 @@ func (d *Database) Checkpoint() error {
 	return nil
 }
 
-// Close closes the database.
+// Close closes the database and stops cron jobs.
 func (d *Database) Close() error {
+	if d.cronRunner != nil {
+		d.cronRunner.Stop()
+	}
 	for _, t := range d.db.Tables {
 		if err := t.Close(); err != nil {
 			return err
@@ -397,6 +442,7 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 				RefTableName:     fs.RefTable,
 				RefField:         fs.RefField,
 				MimeTypes:        append([]string(nil), fs.MimeTypes...),
+				ThumbSizes:       append([]string(nil), fs.ThumbSizes...),
 				Cached:           fs.Cached,
 			}
 			fieldByJSON[fs.JSONName] = fs
