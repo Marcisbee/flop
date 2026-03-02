@@ -385,14 +385,26 @@ function Toasts() {
 // ── Components ──
 
 function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnabled, onSelect, onSelectAnalytics, onSelectObserve, onBackup, onRestore, onLogout }) {
+  const [tableSearch, setTableSearch] = useState('');
+  
+  const filteredTables = useMemo(() => {
+    const q = tableSearch.trim().toLowerCase();
+    if (!q) return tables;
+    return tables.filter(t => t.name.toLowerCase().includes(q));
+  }, [tables, tableSearch]);
+
   return html`
     <div class="sidebar">
       <div class="sidebar-header">
         <div class="logo-sm">${icons.db}<span>flop</span></div>
       </div>
-      <div class="sidebar-section-label">TABLES</div>
+      <div style="padding:8px;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;margin:8px;">
+        ${icons.search}
+        <input type="text" placeholder="Filter tables..." value=${tableSearch} onInput=${e => setTableSearch(e.target.value)} style="background:none;border:none;color:var(--text);font-size:12px;padding:4px 0;outline:none;width:100%;" />
+      </div>
+      <div class="sidebar-section-label">TABLES ${tableSearch && html`<span style="color:var(--text-dimmed);font-weight:400">(${filteredTables.length}/${tables.length})</span>`}</div>
       <div class="sidebar-tables">
-        ${tables.map(t => html`
+        ${filteredTables.map(t => html`
           <button
             key=${t.name}
             class=${"sidebar-item" + (viewMode === 'table' && t.name === currentTable ? " active" : "")}
@@ -403,6 +415,7 @@ function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnab
             <span class="sidebar-item-count">${t.rowCount}</span>
           </button>
         `)}
+        ${filteredTables.length === 0 && html`<div style="padding:8px 16px;color:var(--text-dimmed);font-size:12px;">No tables match "${tableSearch}"</div>`}
         ${analyticsEnabled && html`
           <div class="sidebar-section-label" style="padding:10px 8px 4px">OBSERVE</div>
           <button
