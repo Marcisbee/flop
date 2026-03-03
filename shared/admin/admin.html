@@ -492,22 +492,25 @@ function parseEditorInput(field, input) {
   return input;
 }
 
-function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) {
+function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, onClose, onSave, onCreate, onReload }) {
+  const isCreate = mode === 'create';
   const pkField = cols[0];
   const pk = row ? row[pkField] : '';
   const [form, setForm] = useState({});
+  const [pendingFiles, setPendingFiles] = useState({});
   const [refOptions, setRefOptions] = useState({});
   const [saving, setSaving] = useState(false);
   const [uploadingCol, setUploadingCol] = useState('');
 
   useEffect(() => {
-    if (!row || !schema) return;
+    if (!schema) return;
     const next = {};
     for (const col of cols) {
-      next[col] = valueToEditorInput(schema[col], row[col]);
+      next[col] = isCreate ? '' : valueToEditorInput(schema[col], row ? row[col] : null);
     }
     setForm(next);
-  }, [row, schema, cols, pk]);
+    setPendingFiles({});
+  }, [row, schema, cols, isCreate]);
 
   useEffect(() => {
     if (!schema) return;
@@ -522,14 +525,38 @@ function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) 
       setRefOptions(map);
     });
     return () => { alive = false; };
-  }, [schema, pk]);
+  }, [schema]);
 
   const setCol = useCallback((col, value) => {
     setForm(prev => ({ ...prev, [col]: value }));
   }, []);
 
   const doSave = useCallback(async () => {
-    if (!schema || !row) return;
+    if (!schema) return;
+
+    if (isCreate) {
+      const data = {};
+      for (const col of cols) {
+        if (isAutoField(schema, col)) continue;
+        const f = schema[col];
+        if (f && f.cached) continue;
+        if (f && (f.type === 'fileSingle' || f.type === 'fileMulti')) continue;
+        const raw = form[col] ?? '';
+        if (raw === '') continue;
+        data[col] = parseEditorInput(f, raw);
+      }
+      setSaving(true);
+      try {
+        await onCreate(data, pendingFiles);
+      } catch (err) {
+        // Errors are handled by submitCreate (toast + inline message).
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
+    if (!row) return;
     const payload = {};
     for (const col of cols) {
       if (isAutoField(schema, col) || isReadOnly(schema, col)) continue;
@@ -546,15 +573,22 @@ function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) 
     setSaving(true);
     try {
       await onSave(String(pk), payload);
-      showToast('Row updated');
     } catch (err) {
       showToast(err.message || 'Update failed', 'error');
     } finally {
       setSaving(false);
     }
-  }, [schema, row, cols, form, pk, onSave]);
+  }, [schema, row, cols, form, pk, onSave, isCreate, onCreate, pendingFiles]);
 
-  const onUploadFile = useCallback(async (col, field, e) => {
+  const onUploadFile = useCallback(async (col, e) => {
+    if (isCreate) {
+      const f = e.target.files[0];
+      if (!f) return;
+      setPendingFiles(prev => ({ ...prev, [col]: f }));
+      setCol(col, f.name);
+      if (e.target) e.target.value = '';
+      return;
+    }
     const f = e.target.files[0];
     if (!f) return;
     setUploadingCol(col);
@@ -569,9 +603,18 @@ function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) 
       setUploadingCol('');
       if (e.target) e.target.value = '';
     }
-  }, [tableName, pk, onReload]);
+  }, [tableName, pk, onReload, isCreate, setCol]);
 
   const onRemoveFile = useCallback(async (col) => {
+    if (isCreate) {
+      setPendingFiles(prev => {
+        const next = { ...prev };
+        delete next[col];
+        return next;
+      });
+      setCol(col, '');
+      return;
+    }
     try {
       await apiDelete('/tables/' + tableName + '/rows/' + pk + '/files/' + col);
       showToast('File removed');
@@ -579,14 +622,14 @@ function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) 
     } catch (err) {
       showToast(err.message || 'Remove failed', 'error');
     }
-  }, [tableName, pk, onReload]);
+  }, [tableName, pk, onReload, isCreate, setCol]);
 
   return html`
     <aside class="row-editor">
       <div class="row-editor-header">
         <div>
-          <div class="row-editor-title">Edit Row</div>
-          <div class="row-editor-meta">${pkField}: ${String(pk)}</div>
+          <div class="row-editor-title">${isCreate ? 'New Row' : 'Edit Row'}</div>
+          <div class="row-editor-meta">${isCreate ? ('table: ' + tableName) : (pkField + ': ' + String(pk))}</div>
         </div>
         <button class="btn-icon" onClick=${onClose}>&times;</button>
       </div>
@@ -594,14 +637,18 @@ function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) 
         ${cols.map(col => {
           const field = schema ? schema[col] : null;
           const val = row ? row[col] : null;
-          const ro = isAutoField(schema, col) || isReadOnly(schema, col) || val === '[REDACTED]';
+          const ro = isCreate
+            ? (isAutoField(schema, col) || (field && field.cached === true))
+            : (isAutoField(schema, col) || isReadOnly(schema, col) || val === '[REDACTED]');
           const typeLabel = field ? field.type + (field.refTable ? ' -> ' + field.refTable : '') : '';
           const inputVal = form[col] ?? '';
 
           if (field && (field.type === 'fileSingle' || field.type === 'fileMulti')) {
             const accept = field.mimeTypes ? field.mimeTypes.join(',') : '';
-            const singleFile = field.type === 'fileSingle' ? val : null;
-            const fileCount = field.type === 'fileMulti' && Array.isArray(val) ? val.length : 0;
+            const singleFile = isCreate ? pendingFiles[col] : (field.type === 'fileSingle' ? val : null);
+            const fileCount = isCreate
+              ? (pendingFiles[col] ? 1 : 0)
+              : (field.type === 'fileMulti' && Array.isArray(val) ? val.length : 0);
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
               <div class="row-editor-readonly">
@@ -610,7 +657,7 @@ function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) 
               <div class="create-actions" style="margin-top:6px">
                 <label class="btn btn-sm btn-primary file-upload-btn">
                   ${uploadingCol === col ? 'Uploading...' : html`${icons.upload} Upload`}
-                  <input type="file" accept=${accept} onChange=${e => onUploadFile(col, field, e)} hidden />
+                  <input type="file" accept=${accept} onChange=${e => onUploadFile(col, e)} hidden />
                 </label>
                 <button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col)}>${icons.trash} Remove</button>
               </div>
@@ -618,10 +665,19 @@ function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) 
           }
 
           if (ro) {
-            const display = val == null ? html`<span class="null">null</span>` : (typeof val === 'object' ? JSON.stringify(val) : String(val));
+            const display = isCreate
+              ? html`<span class="null">auto</span>`
+              : (val == null ? html`<span class="null">null</span>` : (typeof val === 'object' ? JSON.stringify(val) : String(val)));
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}${typeLabel ? ' ' : ''}(read only)</span></label>
               <div class="row-editor-readonly">${display}</div>
+            </div>`;
+          }
+
+          if (field && field.type === 'bcrypt') {
+            return html`<div key=${col} class="row-editor-field">
+              <label>${col} <span class="type-badge">${typeLabel}</span></label>
+              <input type="password" value=${inputVal} onInput=${e => setCol(col, e.target.value)} />
             </div>`;
           }
 
@@ -672,8 +728,9 @@ function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) 
         })}
       </div>
       <div class="row-editor-actions">
+        ${isCreate && createError && html`<span class="create-error" style="margin-right:auto">${createError}</span>`}
         <button class="btn" onClick=${onClose}>Close</button>
-        <button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${saving ? 'Saving...' : 'Save Changes'}</button>
+        <button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${isCreate ? (saving ? 'Creating...' : 'Create Row') : (saving ? 'Saving...' : 'Save Changes')}</button>
       </div>
     </aside>
   `;
@@ -689,7 +746,6 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
   const [createErr, setCreateErr] = useState('');
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const formRef = useRef({});
 
   const cols = useMemo(() => schema ? Object.keys(schema) : (rows.length > 0 ? Object.keys(rows[0]) : []), [schema, rows]);
 
@@ -718,6 +774,7 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     setSearch('');
     setSearchQuery('');
     setShowCreate(false);
+    setCreateErr('');
     setSelectedPk(null);
   }, [tableName]);
 
@@ -750,6 +807,7 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
       method: 'PUT',
       body: JSON.stringify(payload)
     });
+    showToast('Row updated');
     loadRows();
   }, [tableName, loadRows]);
 
@@ -765,28 +823,9 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     loadRows();
   }, [tableName, loadRows, selectedPk]);
 
-  const submitCreate = useCallback(async () => {
+  const submitCreate = useCallback(async (data, pendingFiles) => {
     if (!schema) return;
     setCreateErr('');
-    const data = {};
-    const pendingFiles = {};
-    for (const col of Object.keys(schema)) {
-      if (isAutoField(schema, col)) continue;
-      const f = schema[col];
-      if (f && f.cached) continue;
-      const val = formRef.current[col];
-      // Collect file fields separately
-      if ((f.type === 'fileSingle' || f.type === 'fileMulti') && val instanceof File) {
-        pendingFiles[col] = val;
-        continue;
-      }
-      if (val === undefined || val === '') continue;
-      if (f.type === 'number' || f.type === 'integer' || f.type === 'timestamp') data[col] = Number(val);
-      else if (f.type === 'boolean') data[col] = val === 'true';
-      else if (['json','vector','roles','set','refMulti'].includes(f.type)) {
-        try { data[col] = JSON.parse(val); } catch { data[col] = val; }
-      } else data[col] = val;
-    }
     try {
       const res = await api('/tables/' + tableName + '/rows', { method: 'POST', body: JSON.stringify(data) });
       // Upload pending files using the new row's primary key
@@ -798,12 +837,13 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
         }
       }
       setShowCreate(false);
-      formRef.current = {};
+      setCreateErr('');
       showToast('Row created');
       loadRows();
     } catch(err) {
       showToast(err.message || 'Create failed', 'error');
       setCreateErr(err.message || 'Create failed');
+      throw err;
     }
   }, [schema, tableName, loadRows]);
 
@@ -827,16 +867,11 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
             <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search all string fields">?</span>
             <button class="btn-filter" onClick=${applyFilter}>${icons.chevRight}</button>
           </div>
-          <button class="btn btn-primary" onClick=${() => setShowCreate(!showCreate)}>
+          <button class="btn btn-primary" onClick=${() => { setSelectedPk(null); setCreateErr(''); setShowCreate(true); }}>
             ${icons.plus} New Row
           </button>
         </div>
       </div>
-
-      ${showCreate && html`
-        <${CreateForm} schema=${schema} cols=${cols} formRef=${formRef}
-          onSubmit=${submitCreate} onCancel=${() => setShowCreate(false)} error=${createErr} />
-      `}
 
       <div class="table-layout">
         <div class="table-container">
@@ -862,7 +897,7 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
                 const pk = row[cols[0]];
                 const isSelected = selectedPk != null && String(selectedPk) === String(pk);
                 return html`
-                  <tr key=${pk} class=${isSelected ? 'selected' : ''} onClick=${() => setSelectedPk(String(pk))}>
+                  <tr key=${pk} class=${isSelected ? 'selected' : ''} onClick=${() => { setShowCreate(false); setCreateErr(''); setSelectedPk(String(pk)); }}>
                     ${cols.map(c => {
                       const val = row[c];
                       const ro = isReadOnly(schema, c) || isAutoField(schema, c) || val === '[REDACTED]';
@@ -880,7 +915,10 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
                       } else {
                         display = isObj ? JSON.stringify(val) : val;
                       }
-                      return html`<td key=${c} class=${ro ? "td-readonly" : ""}>${display != null ? truncate(String(display)) : html`<span class="null">null</span>`}</td>`;
+                      const rendered = display == null
+                        ? html`<span class="null">null</span>`
+                        : (typeof display === 'object' ? display : truncate(String(display)));
+                      return html`<td key=${c} class=${ro ? "td-readonly" : ""}>${rendered}</td>`;
                     })}
                     <td class="td-actions">
                       <button class="btn-icon danger" onClick=${(e) => { e.stopPropagation(); deleteRow(pk); }} title="Delete">${icons.trash}</button>
@@ -891,7 +929,17 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
             </tbody>
           </table>
         </div>
-        ${selectedRow && html`<${RowEditor}
+        ${showCreate && html`<${RowEditor}
+          mode="create"
+          tableName=${tableName}
+          schema=${schema}
+          cols=${cols}
+          createError=${createErr}
+          onClose=${() => { setShowCreate(false); setCreateErr(''); }}
+          onCreate=${submitCreate}
+          onReload=${loadRows}
+        />`}
+        ${!showCreate && selectedRow && html`<${RowEditor}
           tableName=${tableName}
           schema=${schema}
           cols=${cols}
@@ -911,112 +959,6 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
       `}
     </div>
   `;
-}
-
-function CreateForm({ schema, cols, formRef, onSubmit, onCancel, error }) {
-  const fields = cols.filter(c => !isAutoField(schema, c) && !(schema[c] && schema[c].cached));
-  return html`
-    <div class="create-panel">
-      <div class="create-header">
-        <span>New Row</span>
-        <button class="btn-icon" onClick=${onCancel}>&times;</button>
-      </div>
-      <div class="create-fields">
-        ${fields.map(col => {
-          const f = schema[col];
-          if (!f) return null;
-          return html`<${FormField} key=${col} col=${col} field=${f} formRef=${formRef} />`;
-        })}
-      </div>
-      <div class="create-actions">
-        <button class="btn btn-primary" onClick=${onSubmit}>Create</button>
-        <button class="btn" onClick=${onCancel}>Cancel</button>
-        ${error && html`<span class="create-error">${error}</span>`}
-      </div>
-    </div>
-  `;
-}
-
-function FormField({ col, field, formRef }) {
-  const [val, setVal] = useState('');
-  const [refOpts, setRefOpts] = useState([]);
-
-  useEffect(() => { formRef.current[col] = val; }, [val, col]);
-  useEffect(() => {
-    if ((field.type === 'ref' || field.type === 'refMulti') && field.refTable) {
-      fetchRefOptions(field.refTable).then(setRefOpts);
-    }
-  }, [field]);
-
-  const typeLabel = field.type + (field.refTable ? ' -> ' + field.refTable : '') + (field.required ? ' *' : '');
-
-  if (field.type === 'fileSingle' || field.type === 'fileMulti') {
-    const accept = field.mimeTypes ? field.mimeTypes.join(',') : '';
-    const [fileName, setFileName] = useState('');
-    const onFile = (e) => {
-      const f = e.target.files[0];
-      if (f) { formRef.current[col] = f; setFileName(f.name); }
-      else { delete formRef.current[col]; setFileName(''); }
-    };
-    return html`<div class="form-field">
-      <label>${col} <span class="type-badge">${typeLabel}</span></label>
-      <div class="file-input-wrap">
-        <label class="btn btn-sm btn-primary file-upload-btn">
-          ${icons.upload} Choose file
-          <input type="file" accept=${accept} onChange=${onFile} hidden />
-        </label>
-        ${fileName && html`<span class="file-input-name">${fileName}</span>`}
-      </div>
-    </div>`;
-  }
-
-  if (field.type === 'bcrypt') {
-    return html`<div class="form-field">
-      <label>${col} <span class="type-badge">${typeLabel}</span></label>
-      <input type="password" placeholder="Enter password" value=${val} onInput=${e => setVal(e.target.value)} />
-    </div>`;
-  }
-
-  if (field.type === 'boolean') {
-    return html`<div class="form-field">
-      <label>${col} <span class="type-badge">${typeLabel}</span></label>
-      <select value=${val} onChange=${e => setVal(e.target.value)}>
-        <option value="">--</option><option value="true">true</option><option value="false">false</option>
-      </select>
-    </div>`;
-  }
-
-  if (field.type === 'enum' && field.enumValues) {
-    return html`<div class="form-field">
-      <label>${col} <span class="type-badge">${typeLabel}</span></label>
-      <select value=${val} onChange=${e => setVal(e.target.value)}>
-        <option value="">--</option>
-        ${field.enumValues.map(v => html`<option key=${v} value=${v}>${v}</option>`)}
-      </select>
-    </div>`;
-  }
-
-  if ((field.type === 'ref') && field.refTable) {
-    return html`<div class="form-field">
-      <label>${col} <span class="type-badge">${typeLabel}</span></label>
-      <select value=${val} onChange=${e => setVal(e.target.value)}>
-        <option value="">--</option>
-        ${refOpts.map(o => html`<option key=${o.id} value=${o.id}>${o.id}${o.label !== o.id ? ' - ' + o.label : ''}</option>`)}
-      </select>
-    </div>`;
-  }
-
-  if (field.type === 'number' || field.type === 'integer' || field.type === 'timestamp') {
-    return html`<div class="form-field">
-      <label>${col} <span class="type-badge">${typeLabel}</span></label>
-      <input type="number" value=${val} onInput=${e => setVal(e.target.value)} />
-    </div>`;
-  }
-
-  return html`<div class="form-field">
-    <label>${col} <span class="type-badge">${typeLabel}</span></label>
-    <input type="text" placeholder=${col} value=${val} onInput=${e => setVal(e.target.value)} />
-  </div>`;
 }
 
 function fmtCount(n) {

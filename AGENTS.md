@@ -11,4 +11,4 @@ Kanban completion workflow:
 - When agent work is finished, move completed tasks to `Done`.
 - Keep completed cards as checked items (`- [x]`).
 - Never move tasks to `Archive`; only the user archives tasks.
-- Never remove or overwrite the `**Complete**` line under `## Done` (required by Obsidian kanban completion behavior).
+- NEVER EVER remove or overwrite the `**Complete**` text line under `## Done` line (required by Obsidian kanban completion behavior).
