@@ -122,7 +122,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .btn-icon:disabled{opacity:0.3;cursor:default;background:none}
 
 /* Table */
-.table-container{flex:1;overflow:auto}
+.table-layout{display:flex;flex:1;min-height:0;overflow:hidden}
+.table-container{flex:1;overflow:auto;min-width:0}
 table{width:100%;border-collapse:collapse}
 thead{position:sticky;top:0;z-index:1}
 th{text-align:left;padding:6px 12px;background:var(--bg-surface);border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap}
@@ -130,20 +131,26 @@ th{text-align:left;padding:6px 12px;background:var(--bg-surface);border-bottom:1
 .th-type{color:var(--text-ghost);font-weight:400;font-size:11px;margin-left:4px}
 .th-actions{width:40px}
 td{padding:5px 12px;border-bottom:1px solid var(--row-border);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
+tbody tr{cursor:pointer}
 tbody tr:hover{background:var(--bg-hover)}
-.td-editable{cursor:pointer}
-.td-editable:hover{background:var(--bg-active) !important}
+tbody tr.selected{background:var(--bg-active)}
 .td-readonly{color:var(--text-faint)}
-.td-editing{position:relative}
-.cell-text{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cell-text.hidden{visibility:hidden;height:0;overflow:hidden}
 .td-actions{text-align:center}
 .null{color:var(--text-ghost);font-style:italic}
 .empty-row{color:var(--text-dimmed);text-align:center;padding:32px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:13px}
 
-/* Cell editor */
-.cell-editor{position:absolute;top:0;left:0;right:0;bottom:0;width:100%;padding:5px 12px;background:var(--bg);border:none;outline:1px solid var(--accent);outline-offset:-1px;color:var(--text);font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
-select.cell-editor{appearance:auto}
+/* Row editor */
+.row-editor{width:360px;max-width:48vw;border-left:1px solid var(--border);background:var(--bg-surface);display:flex;flex-direction:column}
+.row-editor-header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.row-editor-title{font-size:13px;font-weight:600;color:var(--text-heading)}
+.row-editor-meta{font-size:11px;color:var(--text-muted)}
+.row-editor-body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.row-editor-field label{display:block;font-size:11px;color:var(--text-muted);margin-bottom:4px}
+.row-editor-field input,.row-editor-field select,.row-editor-field textarea{width:100%;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:3px;color:var(--text);font-size:12px;outline:none}
+.row-editor-field input:focus,.row-editor-field select:focus,.row-editor-field textarea:focus{border-color:var(--accent)}
+.row-editor-field textarea{min-height:80px;resize:vertical;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace}
+.row-editor-readonly{padding:6px 8px;border:1px solid var(--border-input);border-radius:3px;background:var(--bg);color:var(--text-faint);min-height:30px}
+.row-editor-actions{padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
 
 /* Pagination */
 .pagination{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 16px;background:var(--bg-surface);border-top:1px solid var(--border);flex-shrink:0}
@@ -203,6 +210,11 @@ select.cell-editor{appearance:auto}
 .btn-sm{padding:2px 6px;font-size:11px}
 .file-input-wrap{display:flex;align-items:center;gap:8px}
 .file-input-name{color:var(--text);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
+
+@media (max-width: 980px) {
+  .table-layout{flex-direction:column}
+  .row-editor{width:100%;max-width:none;max-height:45vh;border-left:none;border-top:1px solid var(--border)}
+}
 
 /* Toast */
 .toast-container{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;z-index:1000;pointer-events:none}
@@ -458,88 +470,213 @@ function EmptyState() {
   `;
 }
 
-function CellEditor({ value, field, onCommit, onCancel, tableName, pk, col, onReload }) {
-  const ref = useRef(null);
-  const done = useRef(false);
-  const [val, setVal] = useState(value ?? '');
+function valueToEditorInput(field, value) {
+  if (value == null) return '';
+  if (!field) return String(value);
+  if (field.type === 'boolean') return value ? 'true' : 'false';
+  if (['json', 'vector', 'roles', 'set', 'refMulti', 'fileMulti'].includes(field.type)) {
+    try { return JSON.stringify(value); } catch { return String(value); }
+  }
+  return String(value);
+}
+
+function parseEditorInput(field, input) {
+  if (!field) return input;
+  if (field.type === 'number' || field.type === 'integer' || field.type === 'timestamp') {
+    return input === '' ? null : Number(input);
+  }
+  if (field.type === 'boolean') return input === '' ? null : input === 'true';
+  if (['json', 'vector', 'roles', 'set', 'refMulti', 'fileMulti'].includes(field.type)) {
+    try { return JSON.parse(input); } catch { return input; }
+  }
+  return input;
+}
+
+function RowEditor({ tableName, schema, cols, row, onClose, onSave, onReload }) {
+  const pkField = cols[0];
+  const pk = row ? row[pkField] : '';
+  const [form, setForm] = useState({});
+  const [refOptions, setRefOptions] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [uploadingCol, setUploadingCol] = useState('');
 
   useEffect(() => {
-    if (ref.current) { ref.current.focus(); if (ref.current.select) ref.current.select(); }
+    if (!row || !schema) return;
+    const next = {};
+    for (const col of cols) {
+      next[col] = valueToEditorInput(schema[col], row[col]);
+    }
+    setForm(next);
+  }, [row, schema, cols, pk]);
+
+  useEffect(() => {
+    if (!schema) return;
+    const refs = Object.entries(schema)
+      .filter(([, f]) => f && (f.type === 'ref' || f.type === 'refMulti') && f.refTable)
+      .map(([col, f]) => ({ col, table: f.refTable }));
+    let alive = true;
+    Promise.all(refs.map(r => fetchRefOptions(r.table))).then(all => {
+      if (!alive) return;
+      const map = {};
+      refs.forEach((r, i) => { map[r.col] = all[i]; });
+      setRefOptions(map);
+    });
+    return () => { alive = false; };
+  }, [schema, pk]);
+
+  const setCol = useCallback((col, value) => {
+    setForm(prev => ({ ...prev, [col]: value }));
   }, []);
 
-  const commit = useCallback(() => { if (done.current) return; done.current = true; onCommit(val); }, [val, onCommit]);
+  const doSave = useCallback(async () => {
+    if (!schema || !row) return;
+    const payload = {};
+    for (const col of cols) {
+      if (isAutoField(schema, col) || isReadOnly(schema, col)) continue;
+      const f = schema[col];
+      if (f && (f.type === 'fileSingle' || f.type === 'fileMulti')) continue;
+      const before = valueToEditorInput(f, row[col]);
+      const after = form[col] ?? '';
+      if (before !== after) payload[col] = parseEditorInput(f, after);
+    }
+    if (Object.keys(payload).length === 0) {
+      showToast('No changes');
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(String(pk), payload);
+      showToast('Row updated');
+    } catch (err) {
+      showToast(err.message || 'Update failed', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }, [schema, row, cols, form, pk, onSave]);
 
-  const onKey = useCallback((e) => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') onCancel();
-  }, [commit, onCancel]);
+  const onUploadFile = useCallback(async (col, field, e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    setUploadingCol(col);
+    try {
+      const res = await apiUpload('/tables/' + tableName + '/rows/' + pk + '/files/' + col, f);
+      if (res && res.error) showToast(res.error, 'error');
+      else showToast('File uploaded');
+      await onReload();
+    } catch (err) {
+      showToast(err.message || 'Upload failed', 'error');
+    } finally {
+      setUploadingCol('');
+      if (e.target) e.target.value = '';
+    }
+  }, [tableName, pk, onReload]);
 
-  if (field && (field.type === 'fileSingle' || field.type === 'fileMulti')) {
-    const fileRef = useRef(null);
-    const [uploading, setUploading] = useState(false);
-    const accept = field.mimeTypes ? field.mimeTypes.join(',') : '';
-    const doUpload = async (e) => {
-      const f = e.target.files[0];
-      if (!f) return;
-      setUploading(true);
-      try {
-        const res = await apiUpload('/tables/' + tableName + '/rows/' + pk + '/files/' + col, f);
-        if (res.error) { showToast(res.error, 'error'); }
-        else { showToast('File uploaded'); }
-      } catch(err) { showToast(err.message || 'Upload failed', 'error'); }
-      setUploading(false);
-      if (onReload) onReload();
-      onCancel();
-    };
-    const doRemove = async () => {
-      try {
-        await apiDelete('/tables/' + tableName + '/rows/' + pk + '/files/' + col);
-        showToast('File removed');
-      } catch(err) { showToast(err.message || 'Remove failed', 'error'); }
-      if (onReload) onReload();
-      onCancel();
-    };
-    const parsed = typeof value === 'string' ? (() => { try { return JSON.parse(value); } catch { return null; } })() : value;
-    const hasFile = field.type === 'fileSingle' ? (parsed && parsed.name) : (Array.isArray(parsed) && parsed.length > 0);
-    return html`<div class="file-cell-editor" onClick=${e => e.stopPropagation()}>
-      ${hasFile && html`<button class="btn btn-sm file-remove" onClick=${doRemove}>${icons.trash} Remove</button>`}
-      <label class="btn btn-sm btn-primary file-upload-btn">
-        ${uploading ? 'Uploading...' : html`${icons.upload} Upload`}
-        <input ref=${fileRef} type="file" accept=${accept} onChange=${doUpload} hidden />
-      </label>
-      <button class="btn btn-sm" onClick=${onCancel}>Cancel</button>
-    </div>`;
-  }
+  const onRemoveFile = useCallback(async (col) => {
+    try {
+      await apiDelete('/tables/' + tableName + '/rows/' + pk + '/files/' + col);
+      showToast('File removed');
+      await onReload();
+    } catch (err) {
+      showToast(err.message || 'Remove failed', 'error');
+    }
+  }, [tableName, pk, onReload]);
 
-  if (field && field.type === 'boolean') {
-    return html`<select ref=${ref} class="cell-editor" value=${val} onChange=${e => onCommit(e.target.value)} onBlur=${commit} onKeyDown=${onKey}>
-      <option value="">null</option>
-      <option value="true">true</option>
-      <option value="false">false</option>
-    </select>`;
-  }
+  return html`
+    <aside class="row-editor">
+      <div class="row-editor-header">
+        <div>
+          <div class="row-editor-title">Edit Row</div>
+          <div class="row-editor-meta">${pkField}: ${String(pk)}</div>
+        </div>
+        <button class="btn-icon" onClick=${onClose}>&times;</button>
+      </div>
+      <div class="row-editor-body">
+        ${cols.map(col => {
+          const field = schema ? schema[col] : null;
+          const val = row ? row[col] : null;
+          const ro = isAutoField(schema, col) || isReadOnly(schema, col) || val === '[REDACTED]';
+          const typeLabel = field ? field.type + (field.refTable ? ' -> ' + field.refTable : '') : '';
+          const inputVal = form[col] ?? '';
 
-  if (field && field.type === 'enum' && field.enumValues) {
-    return html`<select ref=${ref} class="cell-editor" value=${val} onChange=${e => onCommit(e.target.value)} onBlur=${commit} onKeyDown=${onKey}>
-      <option value="">--</option>
-      ${field.enumValues.map(v => html`<option key=${v} value=${v}>${v}</option>`)}
-    </select>`;
-  }
+          if (field && (field.type === 'fileSingle' || field.type === 'fileMulti')) {
+            const accept = field.mimeTypes ? field.mimeTypes.join(',') : '';
+            const singleFile = field.type === 'fileSingle' ? val : null;
+            const fileCount = field.type === 'fileMulti' && Array.isArray(val) ? val.length : 0;
+            return html`<div key=${col} class="row-editor-field">
+              <label>${col} <span class="type-badge">${typeLabel}</span></label>
+              <div class="row-editor-readonly">
+                ${field.type === 'fileSingle' ? (singleFile && singleFile.name ? singleFile.name : html`<span class="null">null</span>`) : (fileCount > 0 ? fileCount + ' files' : html`<span class="null">null</span>`)}
+              </div>
+              <div class="create-actions" style="margin-top:6px">
+                <label class="btn btn-sm btn-primary file-upload-btn">
+                  ${uploadingCol === col ? 'Uploading...' : html`${icons.upload} Upload`}
+                  <input type="file" accept=${accept} onChange=${e => onUploadFile(col, field, e)} hidden />
+                </label>
+                <button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col)}>${icons.trash} Remove</button>
+              </div>
+            </div>`;
+          }
 
-  if (field && field.type === 'ref' && field.refTable) {
-    const [options, setOptions] = useState([]);
-    useEffect(() => { fetchRefOptions(field.refTable).then(setOptions); }, [field.refTable]);
-    return html`<select ref=${ref} class="cell-editor" value=${val} onChange=${e => onCommit(e.target.value)} onBlur=${commit} onKeyDown=${onKey}>
-      <option value="">--</option>
-      ${options.map(o => html`<option key=${o.id} value=${o.id}>${o.id}${o.label !== o.id ? ' - ' + o.label : ''}</option>`)}
-    </select>`;
-  }
+          if (ro) {
+            const display = val == null ? html`<span class="null">null</span>` : (typeof val === 'object' ? JSON.stringify(val) : String(val));
+            return html`<div key=${col} class="row-editor-field">
+              <label>${col} <span class="type-badge">${typeLabel}${typeLabel ? ' ' : ''}(read only)</span></label>
+              <div class="row-editor-readonly">${display}</div>
+            </div>`;
+          }
 
-  return html`<input ref=${ref} class="cell-editor" value=${val}
-    onInput=${e => setVal(e.target.value)}
-    onBlur=${commit}
-    onKeyDown=${onKey}
-  />`;
+          if (field && field.type === 'boolean') {
+            return html`<div key=${col} class="row-editor-field">
+              <label>${col} <span class="type-badge">${typeLabel}</span></label>
+              <select value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
+                <option value="">null</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </div>`;
+          }
+
+          if (field && field.type === 'enum' && field.enumValues) {
+            return html`<div key=${col} class="row-editor-field">
+              <label>${col} <span class="type-badge">${typeLabel}</span></label>
+              <select value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
+                <option value="">--</option>
+                ${field.enumValues.map(v => html`<option key=${v} value=${v}>${v}</option>`)}
+              </select>
+            </div>`;
+          }
+
+          if (field && field.type === 'ref' && field.refTable) {
+            const options = refOptions[col] || [];
+            return html`<div key=${col} class="row-editor-field">
+              <label>${col} <span class="type-badge">${typeLabel}</span></label>
+              <select value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
+                <option value="">--</option>
+                ${options.map(o => html`<option key=${o.id} value=${o.id}>${o.id}${o.label !== o.id ? ' - ' + o.label : ''}</option>`)}
+              </select>
+            </div>`;
+          }
+
+          if (field && ['json', 'vector', 'roles', 'set', 'refMulti'].includes(field.type)) {
+            return html`<div key=${col} class="row-editor-field">
+              <label>${col} <span class="type-badge">${typeLabel}</span></label>
+              <textarea value=${inputVal} onInput=${e => setCol(col, e.target.value)}></textarea>
+            </div>`;
+          }
+
+          const inputType = field && (field.type === 'number' || field.type === 'integer' || field.type === 'timestamp') ? 'number' : 'text';
+          return html`<div key=${col} class="row-editor-field">
+            <label>${col} <span class="type-badge">${typeLabel}</span></label>
+            <input type=${inputType} value=${inputVal} onInput=${e => setCol(col, e.target.value)} />
+          </div>`;
+        })}
+      </div>
+      <div class="row-editor-actions">
+        <button class="btn" onClick=${onClose}>Close</button>
+        <button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${saving ? 'Saving...' : 'Save Changes'}</button>
+      </div>
+    </aside>
+  `;
 }
 
 function DataTable({ tableName, schema, onReload, sseSignal }) {
@@ -547,7 +684,7 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
-  const [editing, setEditing] = useState(null); // {pk, col}
+  const [selectedPk, setSelectedPk] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createErr, setCreateErr] = useState('');
   const [search, setSearch] = useState('');
@@ -581,7 +718,7 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     setSearch('');
     setSearchQuery('');
     setShowCreate(false);
-    setEditing(null);
+    setSelectedPk(null);
   }, [tableName]);
 
   useEffect(() => { loadRows(page, searchQuery); }, [tableName, page, searchQuery]);
@@ -608,31 +745,13 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     if (e.key === 'Enter') { e.preventDefault(); applyFilter(); }
   }, [applyFilter]);
 
-  const commitEdit = useCallback(async (pk, col, newVal, oldVal) => {
-    setEditing(null);
-    if (newVal === oldVal) return;
-    const f = schema ? schema[col] : null;
-    let parsed = newVal;
-    if (f) {
-      if (f.type === 'number' || f.type === 'integer' || f.type === 'timestamp') {
-        parsed = newVal === '' ? null : Number(newVal);
-      } else if (f.type === 'boolean') {
-        parsed = newVal === '' ? null : newVal === 'true';
-      } else if (['json','vector','roles','set','refMulti','fileMulti'].includes(f.type)) {
-        try { parsed = JSON.parse(newVal); } catch { parsed = newVal; }
-      }
-    }
-    try {
-      await api('/tables/' + tableName + '/rows/' + pk, {
-        method: 'PUT',
-        body: JSON.stringify({ [col]: parsed })
-      });
-      showToast('Row updated');
-    } catch(err) {
-      showToast(err.message || 'Update failed', 'error');
-    }
+  const saveRow = useCallback(async (pk, payload) => {
+    await api('/tables/' + tableName + '/rows/' + pk, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    });
     loadRows();
-  }, [schema, tableName, loadRows]);
+  }, [tableName, loadRows]);
 
   const deleteRow = useCallback(async (pk) => {
     if (!confirm('Delete row ' + pk + '?')) return;
@@ -642,8 +761,9 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     } catch(err) {
       showToast(err.message || 'Delete failed', 'error');
     }
+    if (selectedPk != null && String(selectedPk) === String(pk)) setSelectedPk(null);
     loadRows();
-  }, [tableName, loadRows]);
+  }, [tableName, loadRows, selectedPk]);
 
   const submitCreate = useCallback(async () => {
     if (!schema) return;
@@ -687,6 +807,11 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
     }
   }, [schema, tableName, loadRows]);
 
+  const selectedRow = useMemo(() => {
+    if (selectedPk == null) return null;
+    return rows.find(r => String(r[cols[0]]) === String(selectedPk)) || null;
+  }, [rows, cols, selectedPk]);
+
   return html`
     <div class="panel">
       <div class="panel-toolbar">
@@ -713,77 +838,68 @@ function DataTable({ tableName, schema, onReload, sseSignal }) {
           onSubmit=${submitCreate} onCancel=${() => setShowCreate(false)} error=${createErr} />
       `}
 
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              ${cols.map(c => {
-                const f = schema ? schema[c] : null;
-                const typeStr = f ? f.type + (f.refTable ? ' -> ' + f.refTable : '') + (f.cached ? ' (cached)' : '') : '';
-                return html`<th key=${c}>
-                  <span class="th-name">${c}</span>
-                  ${typeStr && html`<span class="th-type">${typeStr}</span>`}
-                </th>`;
+      <div class="table-layout">
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                ${cols.map(c => {
+                  const f = schema ? schema[c] : null;
+                  const typeStr = f ? f.type + (f.refTable ? ' -> ' + f.refTable : '') + (f.cached ? ' (cached)' : '') : '';
+                  return html`<th key=${c}>
+                    <span class="th-name">${c}</span>
+                    ${typeStr && html`<span class="th-type">${typeStr}</span>`}
+                  </th>`;
+                })}
+                <th class="th-actions"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.length === 0 && html`
+                <tr><td colspan=${cols.length + 1} class="empty-row">No rows found</td></tr>
+              `}
+              ${rows.map(row => {
+                const pk = row[cols[0]];
+                const isSelected = selectedPk != null && String(selectedPk) === String(pk);
+                return html`
+                  <tr key=${pk} class=${isSelected ? 'selected' : ''} onClick=${() => setSelectedPk(String(pk))}>
+                    ${cols.map(c => {
+                      const val = row[c];
+                      const ro = isReadOnly(schema, c) || isAutoField(schema, c) || val === '[REDACTED]';
+                      const f = schema ? schema[c] : null;
+                      const isFile = f && (f.type === 'fileSingle' || f.type === 'fileMulti');
+                      const isObj = typeof val === 'object' && val !== null;
+                      let display;
+                      if (isFile && f.type === 'fileSingle' && val && val.name) {
+                        const isImage = val.mime && val.mime.startsWith('image/');
+                        display = html`<span class="file-display">${isImage ? html`<img class="file-thumb" src=${val.url} alt=${val.name} />` : ''}<a href=${val.url} target="_blank" class="file-link" onClick=${e => e.stopPropagation()}>${val.name}</a></span>`;
+                      } else if (isFile && f.type === 'fileMulti' && Array.isArray(val) && val.length > 0) {
+                        display = val.length + ' file' + (val.length !== 1 ? 's' : '');
+                      } else if (isFile) {
+                        display = null;
+                      } else {
+                        display = isObj ? JSON.stringify(val) : val;
+                      }
+                      return html`<td key=${c} class=${ro ? "td-readonly" : ""}>${display != null ? truncate(String(display)) : html`<span class="null">null</span>`}</td>`;
+                    })}
+                    <td class="td-actions">
+                      <button class="btn-icon danger" onClick=${(e) => { e.stopPropagation(); deleteRow(pk); }} title="Delete">${icons.trash}</button>
+                    </td>
+                  </tr>
+                `;
               })}
-              <th class="th-actions"></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.length === 0 && html`
-              <tr><td colspan=${cols.length + 1} class="empty-row">No rows found</td></tr>
-            `}
-            ${rows.map(row => {
-              const pk = row[cols[0]];
-              return html`
-                <tr key=${pk}>
-                  ${cols.map(c => {
-                    const val = row[c];
-                    const ro = isReadOnly(schema, c) || isAutoField(schema, c);
-                    const f = schema ? schema[c] : null;
-                    const isFile = f && (f.type === 'fileSingle' || f.type === 'fileMulti');
-                    const isObj = typeof val === 'object' && val !== null;
-                    const redacted = val === '[REDACTED]';
-                    const isEditing = editing && editing.pk === String(pk) && editing.col === c;
-
-                    // File display
-                    let display;
-                    if (isFile && f.type === 'fileSingle' && val && val.name) {
-                      const isImage = val.mime && val.mime.startsWith('image/');
-                      display = html`<span class="file-display">${isImage ? html`<img class="file-thumb" src=${val.url} alt=${val.name} />` : ''}<a href=${val.url} target="_blank" class="file-link">${val.name}</a></span>`;
-                    } else if (isFile && f.type === 'fileMulti' && Array.isArray(val) && val.length > 0) {
-                      display = val.length + ' file' + (val.length !== 1 ? 's' : '');
-                    } else if (isFile) {
-                      display = null;
-                    } else {
-                      display = isObj ? JSON.stringify(val) : val;
-                    }
-
-                    if (ro || redacted) {
-                      return html`<td key=${c} class="td-readonly">${display != null ? truncate(String(display)) : html`<span class="null">null</span>`}</td>`;
-                    }
-
-                    return html`<td key=${c} class=${"td-editable" + (isEditing ? " td-editing" : "")} onClick=${() => { if (!isEditing) setEditing({ pk: String(pk), col: c }); }}>
-                      <span class=${isEditing ? "cell-text hidden" : "cell-text"}>${display != null ? (typeof display === 'object' ? display : truncate(String(display))) : html`<span class="null">null</span>`}</span>
-                      ${isEditing && html`<${CellEditor}
-                        value=${isObj ? JSON.stringify(val) : String(val ?? '')}
-                        field=${f}
-                        onCommit=${(v) => commitEdit(pk, c, v, isObj ? JSON.stringify(val) : String(val ?? ''))}
-                        onCancel=${() => setEditing(null)}
-                        tableName=${tableName}
-                        pk=${pk}
-                        col=${c}
-                        onReload=${loadRows}
-                      />`}
-                    </td>`;
-                  })}
-                  <td class="td-actions">
-                    <button class="btn-icon danger" onClick=${() => deleteRow(pk)} title="Delete">${icons.trash}</button>
-                  </td>
-                </tr>
-              `;
-            })}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
+        ${selectedRow && html`<${RowEditor}
+          tableName=${tableName}
+          schema=${schema}
+          cols=${cols}
+          row=${selectedRow}
+          onClose=${() => setSelectedPk(null)}
+          onSave=${saveRow}
+          onReload=${loadRows}
+        />`}
       </div>
 
       ${totalPages > 1 && html`
