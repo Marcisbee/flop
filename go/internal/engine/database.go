@@ -1200,8 +1200,12 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 				continue
 			}
 			k := storage.CompositeKeyFromRow(newRow, indexDef.Fields)
-			if hi, ok := idx.(*storage.HashIndex); ok {
-				hi.Set(k, newPointer)
+			switch idx := idx.(type) {
+			case *storage.HashIndex:
+				idx.Set(k, newPointer)
+			case *storage.MultiIndex:
+				idx.Delete(k, pointer)
+				idx.Add(k, newPointer)
 			}
 		}
 	} else {
