@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/marcisbee/flop/internal/jsonx"
 	"html/template"
 	"io"
 	"net"
@@ -227,6 +227,21 @@ func (d *Database) Close() error {
 		}
 	}
 	return nil
+}
+
+// GetDataDir returns the data directory path for this database.
+func (d *Database) GetDataDir() string {
+	return d.db.GetDataDir()
+}
+
+// FileHandler returns an http.Handler that serves files stored by flop.
+// Mount it at "/api/files/" on your mux.
+func (d *Database) FileHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rel := strings.TrimPrefix(r.URL.Path, "/api/files/")
+		filePath := filepath.Join(d.db.GetDataDir(), "_files", rel)
+		http.ServeFile(w, r, filePath)
+	})
 }
 
 // RequestAnalytics returns the process-local analytics collector for this DB.
@@ -492,11 +507,20 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 			return fields[i].Name < fields[j].Name
 		})
 
+		var migrations []schema.MigrationStep
+		for _, m := range ts.Migrations {
+			migrations = append(migrations, schema.MigrationStep{
+				Version: m.Version,
+				Rename:  m.Rename,
+			})
+		}
+
 		defs[name] = &schema.TableDef{
 			Name:           name,
 			CompiledSchema: schema.NewCompiledSchema(fields),
 			Indexes:        indexes,
 			Auth:           isAuth,
+			Migrations:     migrations,
 		}
 	}
 
@@ -564,14 +588,14 @@ func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 
 // marshalOrderedSchema produces an ordered JSON object of field definitions
 // matching the format the admin SPA expects.
-func marshalOrderedSchema(cs *schema.CompiledSchema) (json.RawMessage, error) {
+func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('{')
 	for i, f := range cs.Fields {
 		if i > 0 {
 			buf.WriteByte(',')
 		}
-		key, _ := json.Marshal(f.Name)
+		key, _ := jsonx.Marshal(f.Name)
 		buf.Write(key)
 		buf.WriteByte(':')
 
@@ -595,11 +619,11 @@ func marshalOrderedSchema(cs *schema.CompiledSchema) (json.RawMessage, error) {
 		if len(f.MimeTypes) > 0 {
 			entry["mimeTypes"] = f.MimeTypes
 		}
-		val, _ := json.Marshal(entry)
+		val, _ := jsonx.Marshal(entry)
 		buf.Write(val)
 	}
 	buf.WriteByte('}')
-	return json.RawMessage(buf.Bytes()), nil
+	return jsonx.RawMessage(buf.Bytes()), nil
 }
 
 func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
@@ -835,7 +859,7 @@ func (rw *statusRecorder) Write(b []byte) (int, error) {
 	}
 	if rw.status >= 400 && rw.errorMessage == "" {
 		var payload map[string]any
-		if err := json.Unmarshal(b, &payload); err == nil {
+		if err := jsonx.Unmarshal(b, &payload); err == nil {
 			if msg, ok := payload["error"].(string); ok {
 				rw.errorMessage = msg
 			}
@@ -985,7 +1009,7 @@ func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": "SSE not supported"})
+		_ = jsonx.NewEncoder(w).Encode(map[string]any{"error": "SSE not supported"})
 		return
 	}
 
@@ -998,7 +1022,7 @@ func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {
 	for name, table := range p.DB.db.Tables {
 		tableCounts[name] = table.Count()
 	}
-	data, _ := json.Marshal(map[string]any{"tableCounts": tableCounts})
+	data, _ := jsonx.Marshal(map[string]any{"tableCounts": tableCounts})
 	fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data)
 	flusher.Flush()
 
@@ -1020,7 +1044,7 @@ func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {
 		case <-done:
 			return
 		case event := <-changeCh:
-			data, _ := json.Marshal(event)
+			data, _ := jsonx.Marshal(event)
 			fmt.Fprintf(w, "event: change\ndata: %s\n\n", data)
 			flusher.Flush()
 		case <-heartbeat.C:

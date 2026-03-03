@@ -3,8 +3,8 @@ package flop
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"github.com/marcisbee/flop/internal/jsonx"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,9 +16,9 @@ import (
 )
 
 type AdminTable struct {
-	Name     string          `json:"name"`
-	Schema   json.RawMessage `json:"schema,omitempty"`
-	RowCount int             `json:"rowCount"`
+	Name     string           `json:"name"`
+	Schema   jsonx.RawMessage `json:"schema,omitempty"`
+	RowCount int              `json:"rowCount"`
 }
 
 type AdminRowsPage struct {
@@ -191,7 +191,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				Email    string `json:"email"`
 				Password string `json:"password"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
 				adminJSONError(w, "invalid json", http.StatusBadRequest)
 				return
 			}
@@ -216,7 +216,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			var body struct {
 				RefreshToken string `json:"refreshToken"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
 				adminJSONError(w, "invalid json", http.StatusBadRequest)
 				return
 			}
@@ -288,7 +288,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				return
 			}
 			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
 				adminJSONError(w, "invalid json", http.StatusBadRequest)
 				return
 			}
@@ -519,7 +519,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				switch r.Method {
 				case http.MethodPut:
 					var fields map[string]any
-					if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+					if err := jsonx.NewDecoder(r.Body).Decode(&fields); err != nil {
 						adminJSONError(w, "invalid json", http.StatusBadRequest)
 						return
 					}
@@ -552,7 +552,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					return
 				}
 				var data map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+				if err := jsonx.NewDecoder(r.Body).Decode(&data); err != nil {
 					adminJSONError(w, "invalid json", http.StatusBadRequest)
 					return
 				}
@@ -766,7 +766,7 @@ func clampInt(v, minV, maxV int) int {
 func adminJSONResp(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	_ = jsonx.NewEncoder(w).Encode(payload)
 }
 
 func adminJSONError(w http.ResponseWriter, message string, status int) {

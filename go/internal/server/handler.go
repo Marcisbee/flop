@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +14,8 @@ import (
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
+	"github.com/marcisbee/flop/internal/jsonstd"
+	"github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/storage"
 )
@@ -53,6 +54,14 @@ type Handler struct {
 const sseEventBufferSize = 4096
 const sseChangeBatchSize = 128
 const sseChangeFlushInterval = 25 * time.Millisecond
+
+type sseErrorPayload struct {
+	Error string `json:"error"`
+}
+
+type sseAdminSnapshotPayload struct {
+	TableCounts map[string]int `json:"tableCounts"`
+}
 
 // NewHandler creates the main HTTP handler.
 func NewHandler(
@@ -218,7 +227,7 @@ func (h *Handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				params[k] = v[0]
 			}
 		}
-		paramsJSON, _ := json.Marshal(params)
+		paramsJSON, _ := jsonx.Marshal(params)
 		h.callHandler(w, r, route, string(paramsJSON), auth, "http")
 		return
 	}
@@ -329,7 +338,7 @@ func (h *Handler) executeHandler(
 ) (string, error) {
 	authJSON := "null"
 	if auth != nil {
-		b, _ := json.Marshal(auth)
+		b, _ := jsonx.Marshal(auth)
 		authJSON = string(b)
 	}
 
@@ -382,7 +391,7 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 	var body map[string]interface{}
 	if r.Method == "POST" {
 		defer r.Body.Close()
-		json.NewDecoder(r.Body).Decode(&body)
+		jsonx.NewDecoder(r.Body).Decode(&body)
 	}
 
 	switch path {
@@ -562,7 +571,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *Route
 	w.Header().Set("Connection", "keep-alive")
 
 	writeEvent := func(eventType, payload string) {
-		sseEvent(w, eventType, payload)
+		sseEventString(w, eventType, payload)
 		flusher.Flush()
 	}
 	writeHeartbeat := func() {
@@ -577,11 +586,11 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *Route
 			params[k] = v[0]
 		}
 	}
-	paramsJSON, _ := json.Marshal(params)
+	paramsJSON, _ := jsonx.Marshal(params)
 
 	result, err := h.executeHandler("view", route.Name, string(paramsJSON), auth, "GET", route.Path, "sse", r)
 	if err != nil {
-		writeEvent("error", fmt.Sprintf(`{"error":%q}`, err.Error()))
+		writeEvent("error", marshalSSEError(err))
 	} else {
 		writeEvent("snapshot", result)
 	}
@@ -620,8 +629,8 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *Route
 			batchCount := 0
 		drainChanges:
 			for {
-				data, _ := json.Marshal(event)
-				sseEvent(w, "change", string(data))
+				data, _ := jsonstd.Marshal(event)
+				sseEventBytes(w, "change", data)
 				batchCount++
 				pendingChangeFlush = true
 				if batchCount >= sseChangeBatchSize {
@@ -668,7 +677,7 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	writeEvent := func(eventType, payload string) {
-		sseEvent(w, eventType, payload)
+		sseEventString(w, eventType, payload)
 		flusher.Flush()
 	}
 	writeHeartbeat := func() {
@@ -712,7 +721,7 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 				params[k[len(prefix):]] = v[0]
 			}
 		}
-		paramsJSON, _ := json.Marshal(params)
+		paramsJSON, _ := jsonx.Marshal(params)
 		scheduled++
 
 		routePath := route.Path
@@ -731,7 +740,7 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case out := <-results:
 			if out.err != nil {
-				writeEvent(fmt.Sprintf("error:%s", out.name), fmt.Sprintf(`{"error":%q}`, out.err.Error()))
+				writeEvent(fmt.Sprintf("error:%s", out.name), marshalSSEError(out.err))
 			} else {
 				writeEvent(fmt.Sprintf("snapshot:%s", out.name), out.result)
 			}
@@ -785,8 +794,8 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 			batchCount := 0
 		drainChanges:
 			for {
-				data, _ := json.Marshal(event)
-				sseEvent(w, "change", string(data))
+				data, _ := jsonstd.Marshal(event)
+				sseEventBytes(w, "change", data)
 				batchCount++
 				pendingChangeFlush = true
 				if batchCount >= sseChangeBatchSize {
@@ -835,7 +844,7 @@ func (h *Handler) handlePageRoute(w http.ResponseWriter, r *http.Request, path s
 			}
 		}
 
-		routeData, _ := json.Marshal(map[string]interface{}{
+		routeData, _ := jsonx.Marshal(map[string]interface{}{
 			"pattern": route.Pattern,
 			"params":  params,
 		})
@@ -887,7 +896,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		jsonx.NewDecoder(r.Body).Decode(&body)
 		token, _ := body["token"].(string)
 		if token != h.setupToken {
 			jsonError(w, "Invalid setup token", 403)
@@ -928,7 +937,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		jsonx.NewDecoder(r.Body).Decode(&body)
 		email, _ := body["email"].(string)
 		password, _ := body["password"].(string)
 		token, refresh, user, err := h.authService.Login(email, password)
@@ -958,7 +967,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
+		jsonx.NewDecoder(r.Body).Decode(&body)
 		refreshToken, _ := body["refreshToken"].(string)
 		if refreshToken == "" {
 			jsonError(w, "Refresh token required", 400)
@@ -1070,7 +1079,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			}
 			if r.Method == "POST" {
 				var body map[string]interface{}
-				json.NewDecoder(r.Body).Decode(&body)
+				jsonx.NewDecoder(r.Body).Decode(&body)
 				h.handleCreateRow(w, match[1], body)
 				return
 			}
@@ -1102,7 +1111,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 				return
 			case "PUT":
 				var body map[string]interface{}
-				json.NewDecoder(r.Body).Decode(&body)
+				jsonx.NewDecoder(r.Body).Decode(&body)
 				h.handleUpdateRow(w, match[1], match[2], body)
 				return
 			case "DELETE":
@@ -1130,9 +1139,9 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 
 func (h *Handler) handleListTables(w http.ResponseWriter) {
 	type tableMeta struct {
-		Name     string          `json:"name"`
-		Schema   json.RawMessage `json:"schema"`
-		RowCount int             `json:"rowCount"`
+		Name     string           `json:"name"`
+		Schema   jsonx.RawMessage `json:"schema"`
+		RowCount int              `json:"rowCount"`
 	}
 
 	names := make([]string, 0, len(h.db.Tables))
@@ -1159,14 +1168,14 @@ func (h *Handler) handleListTables(w http.ResponseWriter) {
 	jsonResponse(w, map[string]interface{}{"tables": tables})
 }
 
-func marshalOrderedSchema(cs *schema.CompiledSchema) (json.RawMessage, error) {
+func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('{')
 	for i, f := range cs.Fields {
 		if i > 0 {
 			buf.WriteByte(',')
 		}
-		key, err := json.Marshal(f.Name)
+		key, err := jsonx.Marshal(f.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -1190,14 +1199,14 @@ func marshalOrderedSchema(cs *schema.CompiledSchema) (json.RawMessage, error) {
 		if len(f.MimeTypes) > 0 {
 			entry["mimeTypes"] = f.MimeTypes
 		}
-		val, err := json.Marshal(entry)
+		val, err := jsonx.Marshal(entry)
 		if err != nil {
 			return nil, err
 		}
 		buf.Write(val)
 	}
 	buf.WriteByte('}')
-	return json.RawMessage(buf.Bytes()), nil
+	return jsonx.RawMessage(buf.Bytes()), nil
 }
 
 func (h *Handler) handleListRows(w http.ResponseWriter, r *http.Request, tableName string) {
@@ -1490,8 +1499,8 @@ func (h *Handler) handleAdminSSE(w http.ResponseWriter, r *http.Request) {
 	for name, table := range h.db.Tables {
 		tableCounts[name] = table.Count()
 	}
-	data, _ := json.Marshal(map[string]interface{}{"tableCounts": tableCounts})
-	sseEvent(w, "snapshot", string(data))
+	data, _ := jsonstd.Marshal(sseAdminSnapshotPayload{TableCounts: tableCounts})
+	sseEventBytes(w, "snapshot", data)
 	flusher.Flush()
 
 	done := r.Context().Done()
@@ -1519,8 +1528,8 @@ func (h *Handler) handleAdminSSE(w http.ResponseWriter, r *http.Request) {
 			batchCount := 0
 		drainChanges:
 			for {
-				data, _ := json.Marshal(event)
-				sseEvent(w, "change", string(data))
+				data, _ := jsonstd.Marshal(event)
+				sseEventBytes(w, "change", data)
 				batchCount++
 				pendingChangeFlush = true
 				if batchCount >= sseChangeBatchSize {
@@ -1713,17 +1722,40 @@ func (h *Handler) serveStatic(w http.ResponseWriter, r *http.Request, path strin
 
 func jsonResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	jsonx.NewEncoder(w).Encode(data)
 }
 
 func jsonError(w http.ResponseWriter, msg string, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	jsonx.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-func sseEvent(w http.ResponseWriter, event, data string) {
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+func marshalSSEError(err error) string {
+	if err == nil {
+		return `{"error":"unknown"}`
+	}
+	b, mErr := jsonstd.Marshal(sseErrorPayload{Error: err.Error()})
+	if mErr != nil {
+		return `{"error":"marshal failed"}`
+	}
+	return string(b)
+}
+
+func sseEventString(w http.ResponseWriter, event, data string) {
+	io.WriteString(w, "event: ")
+	io.WriteString(w, event)
+	io.WriteString(w, "\ndata: ")
+	io.WriteString(w, data)
+	io.WriteString(w, "\n\n")
+}
+
+func sseEventBytes(w http.ResponseWriter, event string, data []byte) {
+	io.WriteString(w, "event: ")
+	io.WriteString(w, event)
+	io.WriteString(w, "\ndata: ")
+	w.Write(data)
+	io.WriteString(w, "\n\n")
 }
 
 func intParam(s string, defaultVal int) int {

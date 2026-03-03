@@ -444,6 +444,16 @@ func (sb *SchemaBuilder) field(name, kind, tsType string) *fieldSpec {
 	return fs
 }
 
+// Migration declares a migration step for this table's schema version.
+// This allows field type changes (e.g. string → fileSingle) to pass validation.
+func (sb *SchemaBuilder) Migration(version int, rename ...map[string]string) {
+	step := migrationStep{Version: version}
+	if len(rename) > 0 {
+		step.Rename = rename[0]
+	}
+	sb.table.Migrations = append(sb.table.Migrations, step)
+}
+
 func (b *StringFieldRules) Primary(strategy ...string) *StringFieldRules {
 	b.spec.Primary = true
 	if len(strategy) > 0 {
@@ -1043,12 +1053,19 @@ func (a *App) WriteSpec(path string) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+// migrationStep is the public-facing migration declaration (mirrors schema.MigrationStep).
+type migrationStep struct {
+	Version int
+	Rename  map[string]string
+}
+
 type tableSpec struct {
 	Name       string
 	RowType    string
 	RowTS      string
 	Fields     map[string]*fieldSpec
 	CachedDefs []cachedFieldRuntime
+	Migrations []migrationStep
 }
 
 // cachedFieldRuntime stores the compute function + triggers for a cached field.

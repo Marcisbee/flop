@@ -2,8 +2,8 @@ package server
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
+	"github.com/marcisbee/flop/internal/jsonx"
 	"os"
 	"path/filepath"
 	"sort"
@@ -182,7 +182,7 @@ func (ra *RequestAnalytics) loadFromDiskLocked() {
 			continue
 		}
 		var diskRec requestLogDiskRecord
-		if err := json.Unmarshal([]byte(line), &diskRec); err != nil {
+		if err := jsonx.Unmarshal([]byte(line), &diskRec); err != nil {
 			continue
 		}
 		if diskRec.Ts <= 0 {
@@ -550,7 +550,7 @@ func (ra *RequestAnalytics) appendRecordLocked(rec requestLogRecord) {
 	if err := ra.ensureAppendFileLocked(); err != nil {
 		return
 	}
-	payload, err := json.Marshal(requestLogDiskRecord{Ts: rec.Ts, Row: rec.toRow()})
+	payload, err := jsonx.Marshal(requestLogDiskRecord{Ts: rec.Ts, Row: rec.toRow()})
 	if err != nil {
 		return
 	}
@@ -586,7 +586,7 @@ func (ra *RequestAnalytics) compactLocked() error {
 		return err
 	}
 	for _, rec := range ra.logs {
-		payload, err := json.Marshal(requestLogDiskRecord{Ts: rec.Ts, Row: rec.toRow()})
+		payload, err := jsonx.Marshal(requestLogDiskRecord{Ts: rec.Ts, Row: rec.toRow()})
 		if err != nil {
 			continue
 		}
@@ -682,7 +682,7 @@ func detailsToText(details map[string]interface{}) string {
 	if len(details) == 0 {
 		return ""
 	}
-	raw, err := json.Marshal(details)
+	raw, err := jsonx.Marshal(details)
 	if err != nil {
 		return ""
 	}
@@ -769,7 +769,7 @@ func toFloatValue(v interface{}) float64 {
 		return float64(n)
 	case uint32:
 		return float64(n)
-	case json.Number:
+	case jsonx.Number:
 		f, _ := n.Float64()
 		return f
 	case string:

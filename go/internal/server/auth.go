@@ -6,8 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"github.com/marcisbee/flop/internal/jsonx"
 	"strings"
 	"sync"
 	"time"
@@ -47,7 +47,7 @@ func hmacSign(data, secret string) string {
 // CreateJWT creates a signed JWT token.
 func CreateJWT(payload *JWTPayload, secret string) string {
 	header := base64urlEncode([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	bodyJSON, _ := json.Marshal(payload)
+	bodyJSON, _ := jsonx.Marshal(payload)
 	body := base64urlEncode(bodyJSON)
 	signature := hmacSign(header+"."+body, secret)
 	return header + "." + body + "." + signature
@@ -94,7 +94,7 @@ func VerifyJWT(token, secret string) *JWTPayload {
 	}
 
 	var payload JWTPayload
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+	if err := jsonx.Unmarshal(bodyBytes, &payload); err != nil {
 		return nil
 	}
 
@@ -240,7 +240,7 @@ const (
 // CreatePurposeJWT creates a signed JWT for verification/reset purposes.
 func CreatePurposeJWT(payload *PurposePayload, secret string) string {
 	header := base64urlEncode([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	bodyJSON, _ := json.Marshal(payload)
+	bodyJSON, _ := jsonx.Marshal(payload)
 	body := base64urlEncode(bodyJSON)
 	signature := hmacSign(header+"."+body, secret)
 	return header + "." + body + "." + signature
@@ -265,7 +265,7 @@ func VerifyPurposeJWT(token, secret string) *PurposePayload {
 	}
 
 	var payload PurposePayload
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+	if err := jsonx.Unmarshal(bodyBytes, &payload); err != nil {
 		return nil
 	}
 
