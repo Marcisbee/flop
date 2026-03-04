@@ -619,7 +619,7 @@ func (ti *TableInstance) rebuildSecondaryIndexesByKeys(keys map[string]bool) err
 		}
 	}
 
-	return ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
 			return true
@@ -656,6 +656,20 @@ func (ti *TableInstance) rebuildSecondaryIndexesByKeys(keys map[string]bool) err
 		}
 		return true
 	})
+	if err != nil {
+		return err
+	}
+
+	// Eagerly finalize full-text indexes so the first search is fast.
+	for indexKey, idx := range ti.secondaryIdxs {
+		if keys != nil && !keys[indexKey] {
+			continue
+		}
+		if fti, ok := idx.(*storage.FullTextIndex); ok {
+			fti.Finalize()
+		}
+	}
+	return nil
 }
 
 func (ti *TableInstance) rebuildSecondaryIndexesAsync() {
