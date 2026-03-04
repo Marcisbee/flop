@@ -34,13 +34,14 @@ type WALEntry struct {
 
 // WAL manages a per-table write-ahead log.
 type WAL struct {
-	Path      string
-	file      *os.File
-	txCounter atomic.Uint32
-	lsn       atomic.Uint64
-	mu        sync.Mutex
-	closed    bool
-	version   uint32
+	Path          string
+	file          *os.File
+	txCounter     atomic.Uint32
+	lsn           atomic.Uint64
+	checkpointLSN atomic.Uint64
+	mu            sync.Mutex
+	closed        bool
+	version       uint32
 }
 
 // OpenWAL opens or creates a WAL file.
@@ -81,8 +82,12 @@ func (w *WAL) writeHeader() error {
 	buf := make([]byte, walHeaderSize)
 	copy(buf[0:4], schema.WALFileMagic[:])
 	binary.LittleEndian.PutUint32(buf[4:8], w.version)
-	binary.LittleEndian.PutUint32(buf[8:12], 0)  // checkpoint LSN
-	binary.LittleEndian.PutUint32(buf[12:16], 0) // reserved
+	if w.version >= walVersionCurrent {
+		binary.LittleEndian.PutUint64(buf[8:16], w.checkpointLSN.Load())
+	} else {
+		binary.LittleEndian.PutUint32(buf[8:12], uint32(w.checkpointLSN.Load()))
+		binary.LittleEndian.PutUint32(buf[12:16], 0)
+	}
 	_, err := w.file.WriteAt(buf, 0)
 	return err
 }
@@ -102,6 +107,15 @@ func (w *WAL) readHeader() error {
 		return fmt.Errorf("unsupported wal version: %d", version)
 	}
 	w.version = version
+	if version >= walVersionCurrent {
+		cp := binary.LittleEndian.Uint64(buf[8:16])
+		w.checkpointLSN.Store(cp)
+		w.lsn.Store(cp)
+	} else {
+		cp := uint64(binary.LittleEndian.Uint32(buf[8:12]))
+		w.checkpointLSN.Store(cp)
+		w.lsn.Store(cp)
+	}
 	return nil
 }
 
@@ -112,6 +126,30 @@ func (w *WAL) BeginTransaction() uint32 {
 
 func (w *WAL) nextLSN() uint64 {
 	return w.lsn.Add(1)
+}
+
+// CurrentLSN returns the highest LSN allocated in this WAL.
+func (w *WAL) CurrentLSN() uint64 {
+	return w.lsn.Load()
+}
+
+// CheckpointLSN returns the most recently persisted checkpoint LSN.
+func (w *WAL) CheckpointLSN() uint64 {
+	return w.checkpointLSN.Load()
+}
+
+// SetCheckpointLSN persists checkpoint LSN in the WAL header.
+func (w *WAL) SetCheckpointLSN(lsn uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.version < walVersionCurrent {
+		w.version = walVersionCurrent
+	}
+	w.checkpointLSN.Store(lsn)
+	if err := w.writeHeader(); err != nil {
+		return err
+	}
+	return w.file.Sync()
 }
 
 // Append writes a WAL entry to disk.
@@ -348,6 +386,17 @@ func FindCommittedTxIDs(entries []WALEntry) map[uint32]bool {
 	return committed
 }
 
+// FindCommittedTxLSN returns commit LSN by transaction ID.
+func FindCommittedTxLSN(entries []WALEntry) map[uint32]uint64 {
+	committed := make(map[uint32]uint64)
+	for _, e := range entries {
+		if e.Op == WALOpCommit {
+			committed[e.TxID] = e.LSN
+		}
+	}
+	return committed
+}
+
 // Truncate resets the WAL to header only.
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
@@ -359,7 +408,10 @@ func (w *WAL) Truncate() error {
 	if w.version < walVersionCurrent {
 		w.version = walVersionCurrent
 	}
-	return w.writeHeader()
+	if err := w.writeHeader(); err != nil {
+		return err
+	}
+	return w.file.Sync()
 }
 
 // Close closes the WAL file.

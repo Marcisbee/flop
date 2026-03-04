@@ -99,6 +99,50 @@ func TestWALReplayLegacyV1CompatibilityAndUpgrade(t *testing.T) {
 	}
 }
 
+func TestWALCheckpointLSNPersisted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "checkpoint.wal")
+	w, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+
+	txID := w.BeginTransaction()
+	records := [][]byte{
+		w.BuildBeginRecord(txID),
+		w.BuildRecord(txID, WALOpInsert, []byte("checkpoint")),
+	}
+	if err := w.FlushBatch(records, []uint32{txID}); err != nil {
+		_ = w.Close()
+		t.Fatalf("flush batch: %v", err)
+	}
+	entries, err := w.Replay()
+	if err != nil {
+		_ = w.Close()
+		t.Fatalf("replay: %v", err)
+	}
+	commitLSN := FindCommittedTxLSN(entries)[txID]
+	if commitLSN == 0 {
+		_ = w.Close()
+		t.Fatalf("expected commit lsn")
+	}
+	if err := w.SetCheckpointLSN(commitLSN); err != nil {
+		_ = w.Close()
+		t.Fatalf("set checkpoint lsn: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close wal: %v", err)
+	}
+
+	reopened, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("reopen wal: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if got := reopened.CheckpointLSN(); got != commitLSN {
+		t.Fatalf("checkpoint lsn mismatch: got=%d want=%d", got, commitLSN)
+	}
+}
+
 func writeLegacyWAL(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {

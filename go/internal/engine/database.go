@@ -590,8 +590,9 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 		return false, nil
 	}
 
-	committed := storage.FindCommittedTxIDs(entries)
-	if len(committed) == 0 {
+	checkpointLSN := ti.wal.CheckpointLSN()
+	committedLSN := storage.FindCommittedTxLSN(entries)
+	if len(committedLSN) == 0 {
 		if err := ti.wal.Truncate(); err != nil {
 			return false, err
 		}
@@ -605,7 +606,14 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 
 	applied := false
 	for _, entry := range entries {
-		if entry.Op == storage.WALOpCommit || !committed[entry.TxID] {
+		if entry.Op == storage.WALOpBegin || entry.Op == storage.WALOpCommit {
+			continue
+		}
+		commitLSN, committed := committedLSN[entry.TxID]
+		if !committed {
+			continue
+		}
+		if checkpointLSN > 0 && commitLSN > 0 && commitLSN <= checkpointLSN {
 			continue
 		}
 		if err := ti.applyWALEntry(entry); err != nil {
@@ -2123,6 +2131,9 @@ func (ti *TableInstance) Checkpoint() error {
 		return err
 	}
 	failpoint.Hit("checkpoint_after_wal_fsync")
+	if err := ti.wal.SetCheckpointLSN(ti.wal.CurrentLSN()); err != nil {
+		return err
+	}
 	return ti.wal.Truncate()
 }
 

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/marcisbee/flop/internal/schema"
+	"github.com/marcisbee/flop/internal/storage"
 )
 
 func replayTestDefs() map[string]*schema.TableDef {
@@ -198,4 +200,91 @@ func TestWALReplayHelperProcess(t *testing.T) {
 	// If failpoint did not trigger, close and return explicit error code.
 	_ = db.Close()
 	os.Exit(5)
+}
+
+func TestWALReplaySkipsCheckpointedTransactions(t *testing.T) {
+	dataDir := t.TempDir()
+	db, _, err := openReplayTestDB(dataDir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	walPath := filepath.Join(dataDir, "items.wal")
+	wal, err := storage.OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+
+	mkInsert := func(id string) []byte {
+		row := map[string]interface{}{
+			"id":    id,
+			"slug":  id,
+			"title": "title-" + id,
+			"value": float64(1),
+		}
+		return storage.SerializeRow(row, replayTestDefs()["items"].CompiledSchema, 1)
+	}
+
+	tx1 := wal.BeginTransaction()
+	tx2 := wal.BeginTransaction()
+	records := [][]byte{
+		wal.BuildBeginRecord(tx1),
+		wal.BuildRecord(tx1, storage.WALOpInsert, mkInsert("id-old")),
+		wal.BuildBeginRecord(tx2),
+		wal.BuildRecord(tx2, storage.WALOpInsert, mkInsert("id-new")),
+	}
+	if err := wal.FlushBatch(records, []uint32{tx1, tx2}); err != nil {
+		_ = wal.Close()
+		t.Fatalf("flush batch: %v", err)
+	}
+
+	entries, err := wal.Replay()
+	if err != nil {
+		_ = wal.Close()
+		t.Fatalf("replay for commit lsn lookup: %v", err)
+	}
+	commitLSN := storage.FindCommittedTxLSN(entries)
+	if commitLSN[tx1] == 0 || commitLSN[tx2] == 0 {
+		_ = wal.Close()
+		t.Fatalf("missing commit lsns for tx1/tx2: %v", commitLSN)
+	}
+	if !(commitLSN[tx1] < commitLSN[tx2]) {
+		_ = wal.Close()
+		t.Fatalf("expected tx1 commit lsn < tx2 commit lsn: %d >= %d", commitLSN[tx1], commitLSN[tx2])
+	}
+	if err := wal.SetCheckpointLSN(commitLSN[tx1]); err != nil {
+		_ = wal.Close()
+		t.Fatalf("set checkpoint lsn: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatalf("close wal: %v", err)
+	}
+
+	db2, ti2, err := openReplayTestDB(dataDir)
+	if err != nil {
+		t.Fatalf("open recovery db: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	oldRow, err := ti2.Get("id-old")
+	if err != nil {
+		t.Fatalf("get id-old: %v", err)
+	}
+	if oldRow != nil {
+		t.Fatalf("expected checkpointed tx row to be skipped, got=%v", oldRow)
+	}
+
+	newRow, err := ti2.Get("id-new")
+	if err != nil {
+		t.Fatalf("get id-new: %v", err)
+	}
+	if newRow == nil {
+		t.Fatal("expected post-checkpoint tx row to be replayed")
+	}
+	if got := fmt.Sprintf("%v", newRow["id"]); got != "id-new" {
+		t.Fatalf("unexpected id-new row: %q", got)
+	}
 }
