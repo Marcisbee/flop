@@ -862,5 +862,5 @@ func ReadIndexFile(path string) (*HashIndex, error) {
 // WriteIndexFile persists an index to disk.
 func WriteIndexFile(path string, index *HashIndex) error {
 	data := SerializeIndex(index)
-	return os.WriteFile(path, data, 0644)
+	return writeFileAtomic(path, data, 0o644)
 }

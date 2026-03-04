@@ -83,9 +83,10 @@ func (p *Page) rowDataStart() uint16 {
 	return min
 }
 
-// FreeSpace returns available bytes for new row data + slot entry.
+// FreeSpace returns contiguous free bytes between the slot directory
+// and the lowest live row payload.
 func (p *Page) FreeSpace() int {
-	slotDirEnd := schema.PageHeaderSize + int(p.SlotCount)*schema.SlotSize + schema.SlotSize
+	slotDirEnd := schema.PageHeaderSize + int(p.SlotCount)*schema.SlotSize
 	rowStart := int(p.rowDataStart())
 	free := rowStart - slotDirEnd
 	if free < 0 {
@@ -96,19 +97,30 @@ func (p *Page) FreeSpace() int {
 
 // InsertRow inserts row data into the page. Returns slot index or -1 if no space.
 func (p *Page) InsertRow(rowData []byte) int {
-	needed := len(rowData) + schema.SlotSize
+	slotIndex := p.firstDeletedSlot()
+	needsNewSlot := slotIndex < 0
+
+	needed := len(rowData)
+	if needsNewSlot {
+		needed += schema.SlotSize
+	}
 	if p.FreeSpace() < needed {
-		return -1
+		p.compactRows()
+		if p.FreeSpace() < needed {
+			return -1
+		}
 	}
 
 	rowStart := p.rowDataStart() - uint16(len(rowData))
 	copy(p.Data[rowStart:], rowData)
 
-	slotIndex := int(p.SlotCount)
+	if needsNewSlot {
+		slotIndex = int(p.SlotCount)
+		p.SlotCount++
+		p.FreeOff = uint16(schema.PageHeaderSize + int(p.SlotCount)*schema.SlotSize)
+	}
 	p.SetSlot(slotIndex, rowStart, uint16(len(rowData)))
 
-	p.SlotCount++
-	p.FreeOff = uint16(schema.PageHeaderSize + int(p.SlotCount)*schema.SlotSize)
 	p.writeHeader()
 
 	return slotIndex
@@ -198,4 +210,67 @@ func (p *Page) Slots() []SlotEntry {
 		return true
 	})
 	return entries
+}
+
+// CanFit reports whether the page can fit rowDataSize bytes, accounting for
+// reusable tombstoned slots and potential in-page compaction.
+func (p *Page) CanFit(rowDataSize int) bool {
+	if rowDataSize <= 0 {
+		return false
+	}
+	reusableSlot := p.firstDeletedSlot() >= 0
+	needed := rowDataSize
+	if !reusableSlot {
+		needed += schema.SlotSize
+	}
+	if p.FreeSpace() >= needed {
+		return true
+	}
+
+	slotDirEnd := schema.PageHeaderSize + int(p.SlotCount)*schema.SlotSize
+	if !reusableSlot {
+		slotDirEnd += schema.SlotSize
+	}
+	freeAfterCompact := schema.PageSize - slotDirEnd - p.liveDataSize()
+	return freeAfterCompact >= rowDataSize
+}
+
+func (p *Page) firstDeletedSlot() int {
+	for i := 0; i < int(p.SlotCount); i++ {
+		_, length := p.GetSlot(i)
+		if length == 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+func (p *Page) liveDataSize() int {
+	total := 0
+	for i := 0; i < int(p.SlotCount); i++ {
+		_, length := p.GetSlot(i)
+		total += int(length)
+	}
+	return total
+}
+
+func (p *Page) compactRows() {
+	var next [schema.PageSize]byte
+	writePos := schema.PageSize
+
+	for i := 0; i < int(p.SlotCount); i++ {
+		off, length := p.GetSlot(i)
+		if length == 0 {
+			continue
+		}
+		writePos -= int(length)
+		copy(next[writePos:], p.Data[off:off+length])
+		slotOff := schema.PageHeaderSize + i*schema.SlotSize
+		binary.LittleEndian.PutUint16(next[slotOff:slotOff+2], uint16(writePos))
+		binary.LittleEndian.PutUint16(next[slotOff+2:slotOff+4], length)
+	}
+
+	p.Data = next
+	p.FreeOff = uint16(schema.PageHeaderSize + int(p.SlotCount)*schema.SlotSize)
+	p.writeHeader()
 }

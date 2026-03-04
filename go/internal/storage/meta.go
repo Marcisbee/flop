@@ -94,7 +94,7 @@ func WriteMetaFile(path string, meta *schema.StoredMeta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeFileAtomic(path, data, 0o644)
 }
 
 // CreateTableMeta creates a new table meta with initial schema.

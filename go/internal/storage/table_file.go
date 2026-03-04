@@ -197,12 +197,10 @@ func (tf *TableFile) ScanAllRows() ([]ScannedRow, error) {
 
 // FindOrAllocatePage finds a page with enough free space or allocates a new one.
 func (tf *TableFile) FindOrAllocatePage(rowDataSize int) (uint32, *Page, error) {
-	needed := rowDataSize + schema.SlotSize
-
 	// Fast path: try the last known free page
 	if tf.lastFreePage >= 0 && uint32(tf.lastFreePage) < tf.PageCount {
 		page, err := tf.GetPage(uint32(tf.lastFreePage))
-		if err == nil && page.FreeSpace() >= needed {
+		if err == nil && page.CanFit(rowDataSize) {
 			return uint32(tf.lastFreePage), page, nil
 		}
 	}
@@ -212,7 +210,7 @@ func (tf *TableFile) FindOrAllocatePage(rowDataSize int) (uint32, *Page, error) 
 		lastPage := tf.PageCount - 1
 		if int32(lastPage) != tf.lastFreePage {
 			page, err := tf.GetPage(lastPage)
-			if err == nil && page.FreeSpace() >= needed {
+			if err == nil && page.CanFit(rowDataSize) {
 				tf.lastFreePage = int32(lastPage)
 				return lastPage, page, nil
 			}

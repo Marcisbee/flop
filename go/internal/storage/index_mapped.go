@@ -119,7 +119,7 @@ func WriteMappedIndexFile(path string, index *HashIndex) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeFileAtomic(path, data, 0o644)
 }
 
 func parseMappedIndex(raw []byte) (*mappedHashBase, error) {
@@ -398,7 +398,7 @@ func WriteMappedMultiIndexFile(path string, index *MultiIndex) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeFileAtomic(path, data, 0o644)
 }
 
 func parseMappedMultiIndex(raw []byte) (*mappedMultiBase, error) {

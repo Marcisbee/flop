@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/marcisbee/flop/internal/failpoint"
 	"github.com/marcisbee/flop/internal/reqtrace"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/storage"
@@ -463,28 +464,33 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		return err
 	}
 	ti.wal = wal
-	if err := ti.replayWAL(); err != nil {
+	ti.primaryIndex = storage.NewHashIndex()
+	replayed, err := ti.replayWAL()
+	if err != nil {
 		return err
 	}
-	ti.primaryIndex = storage.NewHashIndex()
 
-	// Load primary index from mapped .midx first, then fallback to .idx, or rebuild.
-	idx, err := storage.ReadMappedIndexFile(midxPath)
-	if err == nil && idx.Size() > 0 {
-		ti.primaryIndex = idx
-	} else {
-		idx, err = storage.ReadIndexFile(idxPath)
+	if !replayed {
+		// Load primary index from mapped .midx first, then fallback to .idx, or rebuild.
+		idx, err := storage.ReadMappedIndexFile(midxPath)
 		if err == nil && idx.Size() > 0 {
 			ti.primaryIndex = idx
-			// Best effort: seed mapped index so next restart can load without full deserialize.
-			_ = storage.WriteMappedIndexFile(midxPath, ti.primaryIndex)
 		} else {
-			if err := ti.rebuildIndex(); err != nil {
-				return err
+			idx, err = storage.ReadIndexFile(idxPath)
+			if err == nil && idx.Size() > 0 {
+				ti.primaryIndex = idx
+				// Best effort: seed mapped index so next restart can load without full deserialize.
+				_ = storage.WriteMappedIndexFile(midxPath, ti.primaryIndex)
+			} else {
+				if err := ti.rebuildIndex(); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	ti.initializeAutoIncrementCounters()
+
+	forceSecondaryRebuild := replayed
 
 	// Auto-create unique indexes for fields with Unique flag
 	for _, field := range ti.def.CompiledSchema.Fields {
@@ -512,6 +518,17 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	for _, indexDef := range ti.def.Indexes {
 		indexKey := secondaryIndexKey(indexDef)
 		ti.indexDefsByKey[indexKey] = indexDef
+		if forceSecondaryRebuild {
+			if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+				ti.secondaryIdxs[indexKey] = storage.NewFullTextIndex()
+			} else if indexDef.Unique {
+				ti.secondaryIdxs[indexKey] = storage.NewHashIndex()
+			} else {
+				ti.secondaryIdxs[indexKey] = storage.NewMultiIndex()
+			}
+			ti.indexesToRebuild[indexKey] = true
+			continue
+		}
 		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
 			ti.secondaryIdxs[indexKey] = storage.NewFullTextIndex()
 			ti.indexesToRebuild[indexKey] = true
@@ -564,16 +581,149 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	return nil
 }
 
-func (ti *TableInstance) replayWAL() error {
+func (ti *TableInstance) replayWAL() (bool, error) {
 	entries, err := ti.wal.Replay()
+	if err != nil {
+		return false, err
+	}
+	if len(entries) == 0 {
+		return false, nil
+	}
+
+	committed := storage.FindCommittedTxIDs(entries)
+	if len(committed) == 0 {
+		if err := ti.wal.Truncate(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	// Start from on-disk state.
+	if err := ti.rebuildIndex(); err != nil {
+		return false, err
+	}
+
+	applied := false
+	for _, entry := range entries {
+		if entry.Op == storage.WALOpCommit || !committed[entry.TxID] {
+			continue
+		}
+		if err := ti.applyWALEntry(entry); err != nil {
+			return false, err
+		}
+		applied = true
+	}
+
+	if applied {
+		if err := ti.tableFile.Flush(); err != nil {
+			return false, err
+		}
+	}
+	if err := ti.wal.Truncate(); err != nil {
+		return false, err
+	}
+	return applied, nil
+}
+
+func (ti *TableInstance) applyWALEntry(entry storage.WALEntry) error {
+	switch entry.Op {
+	case storage.WALOpInsert:
+		return ti.applyWALInsert(entry.Data)
+	case storage.WALOpUpdate:
+		return ti.applyWALUpdate(entry.Data)
+	case storage.WALOpDelete:
+		return ti.applyWALDelete(string(entry.Data))
+	default:
+		return nil
+	}
+}
+
+func (ti *TableInstance) applyWALInsert(serialized []byte) error {
+	row, err := ti.deserializeCurrentRow(serialized)
+	if err != nil {
+		return nil
+	}
+	pk := toString(row[ti.primaryKeyField()])
+	if pk == "" {
+		return nil
+	}
+	if ti.primaryIndex.Has(pk) {
+		return nil
+	}
+
+	pageNum, page, err := ti.tableFile.FindOrAllocatePage(len(serialized))
 	if err != nil {
 		return err
 	}
-	if len(entries) == 0 {
+	slotIndex := page.InsertRow(serialized)
+	if slotIndex == -1 {
+		return fmt.Errorf("wal replay insert failed: no slot")
+	}
+	ti.tableFile.MarkPageDirty(pageNum)
+	ti.tableFile.TotalRows++
+	ti.primaryIndex.Set(pk, schema.RowPointer{PageNumber: pageNum, SlotIndex: uint16(slotIndex)})
+	return nil
+}
+
+func (ti *TableInstance) applyWALUpdate(serialized []byte) error {
+	row, err := ti.deserializeCurrentRow(serialized)
+	if err != nil {
 		return nil
 	}
-	// For now, truncate after replay (simplified — entries were already applied)
-	return ti.wal.Truncate()
+	pk := toString(row[ti.primaryKeyField()])
+	if pk == "" {
+		return nil
+	}
+
+	pointer, ok := ti.primaryIndex.Get(pk)
+	if !ok {
+		return ti.applyWALInsert(serialized)
+	}
+
+	page, err := ti.tableFile.GetPage(pointer.PageNumber)
+	if err != nil {
+		return err
+	}
+	if page.UpdateRow(int(pointer.SlotIndex), serialized) {
+		ti.tableFile.MarkPageDirty(pointer.PageNumber)
+		return nil
+	}
+
+	page.DeleteRow(int(pointer.SlotIndex))
+	ti.tableFile.MarkPageDirty(pointer.PageNumber)
+
+	newPageNum, newPage, err := ti.tableFile.FindOrAllocatePage(len(serialized))
+	if err != nil {
+		return err
+	}
+	newSlot := newPage.InsertRow(serialized)
+	if newSlot == -1 {
+		return fmt.Errorf("wal replay update failed: reinsert")
+	}
+	ti.tableFile.MarkPageDirty(newPageNum)
+	ti.primaryIndex.Set(pk, schema.RowPointer{PageNumber: newPageNum, SlotIndex: uint16(newSlot)})
+	return nil
+}
+
+func (ti *TableInstance) applyWALDelete(pk string) error {
+	if pk == "" {
+		return nil
+	}
+	pointer, ok := ti.primaryIndex.Get(pk)
+	if !ok {
+		return nil
+	}
+	page, err := ti.tableFile.GetPage(pointer.PageNumber)
+	if err != nil {
+		return err
+	}
+	page.DeleteRow(int(pointer.SlotIndex))
+	ti.tableFile.MarkPageDirty(pointer.PageNumber)
+	if ti.tableFile.TotalRows > 0 {
+		ti.tableFile.TotalRows--
+	}
+	ti.primaryIndex.Delete(pk)
+	return nil
 }
 
 func (ti *TableInstance) rebuildIndex() error {
@@ -830,6 +980,12 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 
 	// Check unique constraints
 	pk := toString(row[ti.primaryKeyField()])
+	var rowLock *sync.Mutex
+	if pk != "" {
+		rowLock = ti.rowLockForKey(pk)
+		rowLock.Lock()
+		defer rowLock.Unlock()
+	}
 	if pk != "" && ti.primaryIndex.Has(pk) {
 		return nil, fmt.Errorf("duplicate primary key: %s", pk)
 	}
@@ -864,6 +1020,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	// WAL
 	txID := ti.wal.BeginTransaction()
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpInsert, serialized)
+	failpoint.Hit("insert_after_wal_record")
 
 	// Write to page
 	pageNum, page, err := ti.tableFile.FindOrAllocatePage(len(serialized))
@@ -876,6 +1033,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	}
 	ti.tableFile.MarkPageDirty(pageNum)
 	ti.tableFile.TotalRows++
+	failpoint.Hit("insert_after_page_write")
 
 	// Update indexes
 	pointer := schema.RowPointer{PageNumber: pageNum, SlotIndex: uint16(slotIndex)}
@@ -899,6 +1057,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 			idx.Add(key, pointer)
 		}
 	}
+	failpoint.Hit("insert_after_index_update")
 
 	// WAL commit: buffer into transaction or commit immediately
 	if txBuf != nil {
@@ -913,9 +1072,11 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		walBuf := map[string]*walBufEntry{
 			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
 		}
+		failpoint.Hit("insert_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
 			return nil, err
 		}
+		failpoint.Hit("insert_after_commit")
 	}
 
 	change = &ChangeEvent{Table: ti.Name, Op: "insert", RowID: pk, Data: row}
@@ -967,6 +1128,14 @@ func (ti *TableInstance) BulkInsert(rows []map[string]interface{}, flushEvery in
 
 // Get retrieves a row by primary key.
 func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
+	rowLock := ti.rowLockForKey(key)
+	rowLock.Lock()
+	defer rowLock.Unlock()
+
+	return ti.getUnlocked(key)
+}
+
+func (ti *TableInstance) getUnlocked(key string) (map[string]interface{}, error) {
 	pointer, ok := ti.primaryIndex.Get(key)
 	if !ok {
 		return nil, nil
@@ -1029,7 +1198,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		}
 	}()
 
-	existing, err := ti.Get(key)
+	existing, err := ti.getUnlocked(key)
 	if err != nil {
 		return nil, err
 	}
@@ -1076,6 +1245,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 
 	txID := ti.wal.BeginTransaction()
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
+	failpoint.Hit("update_after_wal_record")
 
 	pageLock := ti.pageLockFor(pointer.PageNumber)
 	pageLock.Lock()
@@ -1103,9 +1273,11 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	}
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	pageLock.Unlock()
+	failpoint.Hit("update_after_page_write")
 
 	// Apply index changes after successful page write
 	ti.applyIndexChanges(existing, newRow, pointer)
+	failpoint.Hit("update_after_index_update")
 
 	// WAL commit: buffer into transaction or commit immediately
 	if txBuf != nil {
@@ -1120,9 +1292,11 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		walBuf := map[string]*walBufEntry{
 			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
 		}
+		failpoint.Hit("update_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
 			return nil, err
 		}
+		failpoint.Hit("update_after_commit")
 	}
 
 	rowLock.Unlock()
@@ -1139,15 +1313,18 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 // Used as a fallback when an in-place concurrent update cannot be applied.
 func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry, silent bool) (map[string]interface{}, error) {
 	ti.mu.Lock()
+	rowLock := ti.rowLockForKey(key)
+	rowLock.Lock()
 	var change *ChangeEvent
 	defer func() {
+		rowLock.Unlock()
 		ti.mu.Unlock()
 		if change != nil && !silent {
 			ti.pubsub.Publish(*change)
 		}
 	}()
 
-	existing, err := ti.Get(key)
+	existing, err := ti.getUnlocked(key)
 	if err != nil {
 		return nil, err
 	}
@@ -1183,6 +1360,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
 	txID := ti.wal.BeginTransaction()
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
+	failpoint.Hit("update_slow_after_wal_record")
 
 	// Apply index changes (remove old keys, add new keys with current pointer)
 	ti.applyIndexChanges(existing, newRow, pointer)
@@ -1229,6 +1407,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	} else {
 		ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	}
+	failpoint.Hit("update_slow_after_page_write")
 
 	if txBuf != nil {
 		entry := txBuf[ti.Name]
@@ -1242,9 +1421,11 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		walBuf := map[string]*walBufEntry{
 			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
 		}
+		failpoint.Hit("update_slow_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
 			return nil, err
 		}
+		failpoint.Hit("update_slow_after_commit")
 	}
 
 	change = &ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow}
@@ -1342,15 +1523,18 @@ func (ti *TableInstance) applyIndexChanges(existing, newRow map[string]interface
 // into it for batch commit later (transaction mode). Otherwise commits immediately.
 func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool, error) {
 	ti.mu.Lock()
+	rowLock := ti.rowLockForKey(key)
+	rowLock.Lock()
 	var change *ChangeEvent
 	defer func() {
+		rowLock.Unlock()
 		ti.mu.Unlock()
 		if change != nil {
 			ti.pubsub.Publish(*change)
 		}
 	}()
 
-	existing, err := ti.Get(key)
+	existing, err := ti.getUnlocked(key)
 	if err != nil {
 		return false, err
 	}
@@ -1369,6 +1553,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	txID := ti.wal.BeginTransaction()
 	deleteData := []byte(key)
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpDelete, deleteData)
+	failpoint.Hit("delete_after_wal_record")
 
 	page, err := ti.tableFile.GetPage(pointer.PageNumber)
 	if err != nil {
@@ -1377,6 +1562,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	page.DeleteRow(int(pointer.SlotIndex))
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	ti.tableFile.TotalRows--
+	failpoint.Hit("delete_after_page_write")
 
 	// Remove from indexes
 	ti.primaryIndex.Delete(key)
@@ -1397,6 +1583,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 			idx.Delete(k, pointer)
 		}
 	}
+	failpoint.Hit("delete_after_index_update")
 
 	// WAL commit: buffer into transaction or commit immediately
 	if txBuf != nil {
@@ -1411,9 +1598,11 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 		walBuf := map[string]*walBufEntry{
 			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
 		}
+		failpoint.Hit("delete_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
 			return false, err
 		}
+		failpoint.Hit("delete_after_commit")
 	}
 
 	change = &ChangeEvent{Table: ti.Name, Op: "delete", RowID: key, Data: existing}
@@ -1892,9 +2081,11 @@ func (ti *TableInstance) Checkpoint() error {
 	ti.mu.Lock()
 	defer ti.mu.Unlock()
 
+	failpoint.Hit("checkpoint_start")
 	if err := ti.tableFile.Flush(); err != nil {
 		return err
 	}
+	failpoint.Hit("checkpoint_after_table_flush")
 	idxPath := filepath.Join(ti.dataDir, ti.Name+".idx")
 	if err := storage.WriteIndexFile(idxPath, ti.primaryIndex); err != nil {
 		return err
@@ -1919,9 +2110,11 @@ func (ti *TableInstance) Checkpoint() error {
 			}
 		}
 	}
+	failpoint.Hit("checkpoint_after_index_write")
 	if err := ti.wal.Fsync(); err != nil {
 		return err
 	}
+	failpoint.Hit("checkpoint_after_wal_fsync")
 	return ti.wal.Truncate()
 }
 
