@@ -9,6 +9,7 @@ import (
 
 // FullTextIndex is an in-memory inverted index optimized for memory:
 // tokenID -> sorted doc IDs, with token dictionary and docID -> primary key mapping.
+// A sorted token list enables fast O(log n) prefix lookups for autocomplete.
 type FullTextIndex struct {
 	mu sync.RWMutex
 
@@ -18,6 +19,8 @@ type FullTextIndex struct {
 	docPKs   []string
 
 	tokenIDByText map[string]uint32
+	sortedTokens  []string // sorted word list for binary-search prefix lookup
+	tokensDirty   bool     // true when sortedTokens needs rebuild
 
 	nextDocID   uint32
 	nextTokenID uint32
@@ -137,60 +140,238 @@ func (f *FullTextIndex) Clear() {
 	f.docByPK = make(map[string]uint32)
 	f.docPKs = make([]string, 1)
 	f.tokenIDByText = make(map[string]uint32)
+	f.sortedTokens = nil
+	f.tokensDirty = false
 	f.nextDocID = 1
 	f.nextTokenID = 1
 }
 
+// maxPrefixWordsSingle caps how many dictionary words a single-token prefix
+// query expands to, keeping the round-robin cursor count small.
+const maxPrefixWordsSingle = 32
+
 // Search returns primary keys that match all query tokens.
+// Each query token is prefix-matched against the token dictionary so that
+// incomplete words work like autocomplete (e.g. "galact" matches "galactic").
 func (f *FullTextIndex) Search(query string, limit int) []string {
 	tokens := tokenizeTexts(query)
 	if len(tokens) == 0 {
 		return nil
 	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	f.ensureSortedTokens()
 
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
-	lists := make([][]uint32, 0, len(tokens))
-	for _, token := range tokens {
-		tokenID, ok := f.tokenIDByText[token]
-		if !ok {
-			return nil
-		}
-		list := f.postings[tokenID]
-		if len(list) == 0 {
-			return nil
-		}
-		lists = append(lists, list)
+	if len(tokens) == 1 {
+		return f.searchSinglePrefix(tokens[0], limit)
+	}
+	return f.searchMultiPrefix(tokens, limit)
+}
+
+// ensureSortedTokens rebuilds the sorted token list under a write lock if needed.
+func (f *FullTextIndex) ensureSortedTokens() {
+	f.mu.RLock()
+	dirty := f.tokensDirty || len(f.sortedTokens) != len(f.tokenIDByText)
+	f.mu.RUnlock()
+	if !dirty {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rebuildSortedTokensIfNeeded()
+}
+
+// searchSinglePrefix handles single-token queries by round-robining across
+// matching words' posting lists for fast, diverse results.
+func (f *FullTextIndex) searchSinglePrefix(prefix string, limit int) []string {
+	lists := f.prefixPostingLists(prefix, maxPrefixWordsSingle)
+	if len(lists) == 0 {
+		return nil
 	}
 
-	sort.Slice(lists, func(i, j int) bool {
-		return len(lists[i]) < len(lists[j])
-	})
-
-	candidates := append([]uint32(nil), lists[0]...)
-	for i := 1; i < len(lists); i++ {
-		candidates = intersectSorted(candidates, lists[i])
-		if len(candidates) == 0 {
-			return nil
+	// Round-robin: take one doc from each matching word per round.
+	// Gives diversity (results from different words) and stops early.
+	seen := make(map[uint32]struct{}, limit*2)
+	out := make([]string, 0, limit)
+	cursors := make([]int, len(lists))
+	for len(out) < limit {
+		progress := false
+		for i, list := range lists {
+			for cursors[i] < len(list) {
+				docID := list[cursors[i]]
+				cursors[i]++
+				if _, ok := seen[docID]; ok {
+					continue
+				}
+				seen[docID] = struct{}{}
+				if int(docID) < len(f.docPKs) {
+					if pk := f.docPKs[docID]; pk != "" {
+						out = append(out, pk)
+						progress = true
+						if len(out) >= limit {
+							return out
+						}
+					}
+				}
+				break // move to next word
+			}
 		}
-	}
-
-	out := make([]string, 0, len(candidates))
-	for _, docID := range candidates {
-		if int(docID) >= len(f.docPKs) {
-			continue
-		}
-		pk := f.docPKs[docID]
-		if pk == "" {
-			continue
-		}
-		out = append(out, pk)
-		if limit > 0 && len(out) >= limit {
+		if !progress {
 			break
 		}
 	}
 	return out
+}
+
+// searchMultiPrefix handles multi-token queries. It builds a full doc-ID union
+// only for the most selective token (fewest matching dictionary words), then
+// filters candidates against remaining tokens via their docTerms — avoiding
+// expensive unions for broad prefixes like single-letter tokens.
+func (f *FullTextIndex) searchMultiPrefix(tokens []string, limit int) []string {
+	// Count matching dictionary words per token to find selectivity.
+	type ranked struct {
+		token string
+		count int
+	}
+	ranked_ := make([]ranked, 0, len(tokens))
+	for _, token := range tokens {
+		c := f.prefixWordCount(token)
+		if c == 0 {
+			return nil
+		}
+		ranked_ = append(ranked_, ranked{token, c})
+	}
+	sort.Slice(ranked_, func(i, j int) bool {
+		return ranked_[i].count < ranked_[j].count
+	})
+
+	// Build full union for the most selective token → candidates.
+	candidates := f.prefixDocIDs(ranked_[0].token)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Filter candidates using term-ID sets for remaining tokens.
+	for i := 1; i < len(ranked_); i++ {
+		termIDs := f.prefixTermIDSet(ranked_[i].token)
+		n := 0
+		for _, docID := range candidates {
+			if f.docHasAnyTerm(docID, termIDs) {
+				candidates[n] = docID
+				n++
+			}
+		}
+		candidates = candidates[:n]
+		if n == 0 {
+			return nil
+		}
+	}
+
+	out := make([]string, 0, min(len(candidates), limit))
+	for _, docID := range candidates {
+		if int(docID) >= len(f.docPKs) {
+			continue
+		}
+		if pk := f.docPKs[docID]; pk != "" {
+			out = append(out, pk)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// prefixWordCount returns how many dictionary words match the prefix.
+func (f *FullTextIndex) prefixWordCount(prefix string) int {
+	start := sort.SearchStrings(f.sortedTokens, prefix)
+	count := 0
+	for i := start; i < len(f.sortedTokens); i++ {
+		if !strings.HasPrefix(f.sortedTokens[i], prefix) {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+// prefixDocIDs returns the sorted union of all doc IDs for dictionary words
+// matching the prefix.
+func (f *FullTextIndex) prefixDocIDs(prefix string) []uint32 {
+	start := sort.SearchStrings(f.sortedTokens, prefix)
+	var merged []uint32
+	for i := start; i < len(f.sortedTokens); i++ {
+		if !strings.HasPrefix(f.sortedTokens[i], prefix) {
+			break
+		}
+		if list := f.postings[f.tokenIDByText[f.sortedTokens[i]]]; len(list) > 0 {
+			merged = unionSorted(merged, list)
+		}
+	}
+	return merged
+}
+
+// prefixTermIDSet returns the set of term IDs for all dictionary words
+// matching the prefix.
+func (f *FullTextIndex) prefixTermIDSet(prefix string) map[uint32]struct{} {
+	start := sort.SearchStrings(f.sortedTokens, prefix)
+	ids := make(map[uint32]struct{})
+	for i := start; i < len(f.sortedTokens); i++ {
+		if !strings.HasPrefix(f.sortedTokens[i], prefix) {
+			break
+		}
+		ids[f.tokenIDByText[f.sortedTokens[i]]] = struct{}{}
+	}
+	return ids
+}
+
+// docHasAnyTerm checks whether a document contains any term in the set.
+func (f *FullTextIndex) docHasAnyTerm(docID uint32, termIDs map[uint32]struct{}) bool {
+	if int(docID) >= len(f.docTerms) {
+		return false
+	}
+	for _, tid := range f.docTerms[docID] {
+		if _, ok := termIDs[tid]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// prefixPostingLists returns the posting lists for dictionary words matching
+// the prefix, found via binary search. Capped to maxWords.
+func (f *FullTextIndex) prefixPostingLists(prefix string, maxWords int) [][]uint32 {
+	start := sort.SearchStrings(f.sortedTokens, prefix)
+
+	var lists [][]uint32
+	for i := start; i < len(f.sortedTokens) && len(lists) < maxWords; i++ {
+		word := f.sortedTokens[i]
+		if !strings.HasPrefix(word, prefix) {
+			break
+		}
+		if list := f.postings[f.tokenIDByText[word]]; len(list) > 0 {
+			lists = append(lists, list)
+		}
+	}
+	return lists
+}
+
+// rebuildSortedTokensIfNeeded lazily rebuilds the sorted token list.
+func (f *FullTextIndex) rebuildSortedTokensIfNeeded() {
+	if !f.tokensDirty && len(f.sortedTokens) == len(f.tokenIDByText) {
+		return
+	}
+	f.sortedTokens = make([]string, 0, len(f.tokenIDByText))
+	for word := range f.tokenIDByText {
+		f.sortedTokens = append(f.sortedTokens, word)
+	}
+	sort.Strings(f.sortedTokens)
+	f.tokensDirty = false
 }
 
 func (f *FullTextIndex) internTokenIDLocked(token string) uint32 {
@@ -200,6 +381,7 @@ func (f *FullTextIndex) internTokenIDLocked(token string) uint32 {
 	id := f.nextTokenID
 	f.nextTokenID++
 	f.tokenIDByText[token] = id
+	f.tokensDirty = true
 	return id
 }
 
@@ -285,12 +467,40 @@ func intersectSorted(a, b []uint32) []uint32 {
 	return out
 }
 
+func unionSorted(a, b []uint32) []uint32 {
+	if len(a) == 0 {
+		return append([]uint32(nil), b...)
+	}
+	if len(b) == 0 {
+		return a
+	}
+	out := make([]uint32, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] == b[j]:
+			out = append(out, a[i])
+			i++
+			j++
+		case a[i] < b[j]:
+			out = append(out, a[i])
+			i++
+		default:
+			out = append(out, b[j])
+			j++
+		}
+	}
+	out = append(out, a[i:]...)
+	out = append(out, b[j:]...)
+	return out
+}
+
 func tokenizeTexts(texts ...string) []string {
 	if len(texts) == 0 {
 		return nil
 	}
 
-	const minTokenLen = 2
+	const minTokenLen = 1
 	seen := make(map[string]struct{}, 16)
 	var token []rune
 
@@ -299,10 +509,7 @@ func tokenizeTexts(texts ...string) []string {
 			token = token[:0]
 			return
 		}
-		t := string(token)
-		if _, stop := defaultStopWords[t]; !stop {
-			seen[t] = struct{}{}
-		}
+		seen[string(token)] = struct{}{}
 		token = token[:0]
 	}
 
@@ -310,6 +517,11 @@ func tokenizeTexts(texts ...string) []string {
 		for _, r := range text {
 			if unicode.IsLetter(r) || unicode.IsDigit(r) {
 				token = append(token, unicode.ToLower(r))
+				continue
+			}
+			if r == '&' {
+				flush()
+				seen["and"] = struct{}{}
 				continue
 			}
 			flush()
@@ -324,15 +536,3 @@ func tokenizeTexts(texts ...string) []string {
 	return out
 }
 
-var defaultStopWords = func() map[string]struct{} {
-	words := []string{
-		"a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
-		"has", "he", "in", "is", "it", "its", "of", "on", "or", "that",
-		"the", "to", "was", "were", "will", "with",
-	}
-	m := make(map[string]struct{}, len(words))
-	for _, w := range words {
-		m[strings.ToLower(w)] = struct{}{}
-	}
-	return m
-}()

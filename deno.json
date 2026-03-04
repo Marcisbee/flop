@@ -14,6 +14,8 @@
     "example:whiteboard": "deno task start examples/whiteboard/app.ts",
     "example:blog": "deno task start examples/blog/app.ts",
     "example:blog-go-react": "make -C examples/blog-go-react dev",
+    "example:movies-go-react": "make -C examples/movies-go-react dev",
+    "example:twitter-go-react": "make -C examples/twitter-go-react dev",
     "test": "deno test --allow-read --allow-write --allow-net --allow-env ts/tests/",
     "check": "deno check ts/mod.ts ts/client.ts ts/cli.ts",
     "bench": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts",

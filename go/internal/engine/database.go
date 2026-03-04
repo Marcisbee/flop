@@ -659,13 +659,16 @@ func (ti *TableInstance) rebuildSecondaryIndexesByKeys(keys map[string]bool) err
 }
 
 func (ti *TableInstance) rebuildSecondaryIndexesAsync() {
+	start := time.Now()
 	defer close(ti.indexBuildDone)
 	ti.mu.Lock()
 	defer ti.mu.Unlock()
 	if err := ti.rebuildSecondaryIndexesByKeys(ti.indexesToRebuild); err != nil {
+		fmt.Fprintf(os.Stderr, "flop: %s: secondary index build failed in %s: %v\n", ti.Name, time.Since(start).Round(time.Millisecond), err)
 		ti.setIndexesReady(false)
 		return
 	}
+	fmt.Fprintf(os.Stderr, "flop: %s: secondary indexes ready in %s\n", ti.Name, time.Since(start).Round(time.Millisecond))
 	ti.indexesToRebuild = make(map[string]bool)
 	ti.setIndexesReady(true)
 }
@@ -1724,11 +1727,8 @@ func (ti *TableInstance) SearchFullText(fields []string, query string, limit int
 	results := make([]map[string]interface{}, 0, len(pks))
 	for _, pk := range pks {
 		row, err := ti.Get(pk)
-		if err != nil {
-			return nil, err
-		}
-		if row == nil {
-			continue
+		if err != nil || row == nil {
+			continue // skip rows on unreadable/corrupted pages
 		}
 		results = append(results, row)
 		if limit > 0 && len(results) >= limit {

@@ -39,7 +39,7 @@ func BuildWithDataDir(dataDir string) *flop.App {
 	flop.Define(application, "movies", func(s *flop.SchemaBuilder) {
 		s.String("id").Primary("uuidv7")
 		s.String("slug").Required().Unique()
-		s.String("title").Required()
+		s.String("title").Required().FullText()
 		s.Integer("year").Required()
 		s.Integer("runtimeMinutes")
 		s.Number("rating")

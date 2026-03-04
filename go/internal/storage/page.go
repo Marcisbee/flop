@@ -167,12 +167,22 @@ type SlotEntry struct {
 // The provided data slice points into the page buffer and is valid only
 // for the duration of fn.
 func (p *Page) ForEachSlot(fn func(slotIndex int, data []byte) bool) {
-	for i := 0; i < int(p.SlotCount); i++ {
+	size := uint16(len(p.Data))
+	maxSlots := (size - schema.PageHeaderSize) / schema.SlotSize
+	count := int(p.SlotCount)
+	if count > int(maxSlots) {
+		count = int(maxSlots)
+	}
+	for i := 0; i < count; i++ {
 		off, length := p.GetSlot(i)
 		if length == 0 {
 			continue
 		}
-		if !fn(i, p.Data[off:off+length]) {
+		end := off + length
+		if end < off || end > size {
+			continue // corrupted slot — skip
+		}
+		if !fn(i, p.Data[off:end]) {
 			return
 		}
 	}

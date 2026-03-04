@@ -11,22 +11,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	flop "github.com/marcisbee/flop"
 	movies "github.com/marcisbee/flop/examples/movies-go-react/app"
 )
-
-type indexBuildState struct {
-	mu         sync.RWMutex
-	building   bool
-	ready      bool
-	total      int
-	lastError  string
-	startedAt  time.Time
-	finishedAt time.Time
-}
 
 func main() {
 	projectRoot, err := findModuleRoot()
@@ -48,37 +37,8 @@ func main() {
 		log.Printf("movies-go-react: loaded %d movies from %s", table.Count(), dataDir)
 	}
 
-	autocomplete := flop.NewAutocompleteIndex(nil)
-	indexState := &indexBuildState{
-		building:  true,
-		startedAt: time.Now(),
-	}
-	go func() {
-		table := db.Table("movies")
-		if table == nil {
-			indexState.mu.Lock()
-			indexState.building = false
-			indexState.finishedAt = time.Now()
-			indexState.lastError = "movies table not found"
-			indexState.mu.Unlock()
-			return
-		}
-
-		entries, err := table.BuildAutocompleteEntries("slug", "title", "year")
-		indexState.mu.Lock()
-		defer indexState.mu.Unlock()
-		indexState.building = false
-		indexState.finishedAt = time.Now()
-		if err != nil {
-			indexState.lastError = err.Error()
-			log.Printf("movies-go-react: autocomplete index build failed: %v", err)
-			return
-		}
-		autocomplete.Add(entries)
-		indexState.ready = true
-		indexState.total = len(entries)
-		log.Printf("movies-go-react: autocomplete index ready with %d entries in %s", len(entries), time.Since(indexState.startedAt).Round(time.Millisecond))
-	}()
+	// Full-text index on "title" is built automatically by the engine
+	// (AsyncSecondaryIndexes: true) so no manual autocomplete index needed.
 
 	mux := http.NewServeMux()
 
@@ -94,30 +54,11 @@ func main() {
 			adminJSONError(w, "movies table not found", http.StatusInternalServerError)
 			return
 		}
-		indexState.mu.RLock()
-		building := indexState.building
-		ready := indexState.ready
-		total := indexState.total
-		lastErr := indexState.lastError
-		var buildMs int64
-		if !indexState.startedAt.IsZero() {
-			end := time.Now()
-			if !indexState.finishedAt.IsZero() {
-				end = indexState.finishedAt
-			}
-			buildMs = end.Sub(indexState.startedAt).Milliseconds()
-		}
-		indexState.mu.RUnlock()
 
 		writeJSON(w, map[string]any{
 			"ok": true,
 			"data": map[string]any{
-				"movies":            moviesTable.Count(),
-				"autocompleteReady": ready,
-				"autocompleteBuild": building,
-				"autocompleteItems": total,
-				"autocompleteMs":    buildMs,
-				"autocompleteError": lastErr,
+				"movies": moviesTable.Count(),
 			},
 		})
 	})
@@ -144,13 +85,22 @@ func main() {
 		}
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 		limit := clampInt(queryInt(r, "limit", 10), 1, 20)
-		rows := autocomplete.Query(q, limit)
+		moviesTable := db.Table("movies")
+		if moviesTable == nil || q == "" {
+			writeJSON(w, map[string]any{"ok": true, "data": []any{}})
+			return
+		}
+		rows, err := moviesTable.SearchFullText([]string{"title"}, q, limit)
+		if err != nil {
+			writeJSON(w, map[string]any{"ok": true, "data": []any{}})
+			return
+		}
 		out := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
 			out = append(out, map[string]any{
-				"slug":  row.Key,
-				"title": row.Text,
-				"year":  yearFromAutocompleteData(row.Data),
+				"slug":  row["slug"],
+				"title": row["title"],
+				"year":  row["year"],
 			})
 		}
 		writeJSON(w, map[string]any{"ok": true, "data": out})
@@ -447,12 +397,3 @@ func toInt(v any) int {
 	}
 }
 
-func yearFromAutocompleteData(data any) int {
-	if data == nil {
-		return 0
-	}
-	if m, ok := data.(map[string]interface{}); ok {
-		return toInt(m["year"])
-	}
-	return toInt(data)
-}

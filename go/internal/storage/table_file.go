@@ -159,7 +159,7 @@ func (tf *TableFile) ForEachRow(fn func(ScannedRow) bool) error {
 	for p := uint32(0); p < tf.PageCount; p++ {
 		page, err := tf.GetPage(p)
 		if err != nil {
-			return err
+			continue // skip unreadable pages (truncated file, I/O error)
 		}
 		keepGoing := true
 		page.ForEachSlot(func(slotIndex int, data []byte) bool {
