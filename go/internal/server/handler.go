@@ -16,6 +16,7 @@ import (
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/jsonstd"
 	"github.com/marcisbee/flop/internal/jsonx"
+	"github.com/marcisbee/flop/internal/reqtrace"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/storage"
 )
@@ -343,6 +344,8 @@ func (h *Handler) executeHandler(
 	}
 
 	start := time.Now()
+	traceCollector := reqtrace.Start()
+	defer traceCollector.End()
 	result, err := h.caller.CallHandler(handlerType, name, paramsJSON, authJSON)
 	if h.analytics != nil {
 		details := map[string]interface{}{
@@ -352,6 +355,10 @@ func (h *Handler) executeHandler(
 		}
 		if req != nil {
 			details["queryBytes"] = len(req.URL.RawQuery)
+		}
+		if spans := traceCollector.Spans(); len(spans) > 0 {
+			details["trace"] = spans
+			details["traceSpans"] = len(spans)
 		}
 		h.analytics.Record(AnalyticsEvent{
 			Timestamp:    time.Now(),

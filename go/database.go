@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
+	"github.com/marcisbee/flop/internal/reqtrace"
 	"html/template"
 	"io"
 	"net"
@@ -844,6 +845,8 @@ func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler 
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		traceCollector := reqtrace.Start()
+		defer traceCollector.End()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 
@@ -870,6 +873,16 @@ func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler 
 			}
 		}
 
+		details := map[string]any{
+			"queryBytes": len(r.URL.RawQuery),
+			"hasAuth":    token != "",
+			"source":     "go-middleware",
+		}
+		if spans := traceCollector.Spans(); len(spans) > 0 {
+			details["trace"] = spans
+			details["traceSpans"] = len(spans)
+		}
+
 		analytics.Record(server.AnalyticsEvent{
 			Timestamp:    time.Now(),
 			RouteType:    routeType,
@@ -882,11 +895,7 @@ func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler 
 			StatusCode:   rec.status,
 			ErrorMessage: rec.errorMessage,
 			UserID:       userID,
-			Details: map[string]any{
-				"queryBytes": len(r.URL.RawQuery),
-				"hasAuth":    token != "",
-				"source":     "go-middleware",
-			},
+			Details:      details,
 		})
 	})
 }

@@ -56,7 +56,7 @@ export const FLOP_SPEC = {
           "kind": "string",
           "tsType": "string",
           "primary": true,
-          "autogen": "[a-z0-9]{12}"
+          "primaryStrategy": "uuidv7"
         },
         {
           "goName": "PostID",
@@ -120,7 +120,7 @@ export const FLOP_SPEC = {
           "kind": "string",
           "tsType": "string",
           "primary": true,
-          "autogen": "[a-z0-9]{8}"
+          "primaryStrategy": "uuidv7"
         },
         {
           "goName": "Published",
@@ -173,7 +173,7 @@ export const FLOP_SPEC = {
           "kind": "string",
           "tsType": "string",
           "primary": true,
-          "autogen": "[a-z0-9]{12}"
+          "primaryStrategy": "uuidv7"
         },
         {
           "goName": "Name",

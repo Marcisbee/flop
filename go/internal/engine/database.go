@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/marcisbee/flop/internal/reqtrace"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/storage"
 )
@@ -1413,9 +1414,9 @@ func (ti *TableInstance) SecondaryIndexesReady() bool {
 	return ti.secondaryIndexesReady()
 }
 
-
 // Scan returns rows with limit/offset.
 func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, error) {
+	start := time.Now()
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1423,8 +1424,10 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 	var results []map[string]interface{}
 	skipped := 0
 	count := 0
+	scannedCount := 0
 
 	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		scannedCount++
 		if skipped < offset {
 			skipped++
 			return true
@@ -1445,6 +1448,7 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 	if err != nil {
 		return nil, err
 	}
+	reqtrace.AddDuration("table_scan", ti.Name, "", len(results), scannedCount, "", start)
 
 	return results, nil
 }
@@ -1454,10 +1458,13 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 // Pass limit <= 0 to collect all matches (no pagination).
 // Returns (matched rows, total match count, error).
 func (ti *TableInstance) ScanFilter(match func(map[string]interface{}) bool, limit, offset int) ([]map[string]interface{}, int, error) {
+	start := time.Now()
 	var results []map[string]interface{}
 	total := 0
+	scannedCount := 0
 
 	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		scannedCount++
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
 			return true
@@ -1480,6 +1487,7 @@ func (ti *TableInstance) ScanFilter(match func(map[string]interface{}) bool, lim
 	if err != nil {
 		return nil, 0, err
 	}
+	reqtrace.AddDuration("table_scan_filter", ti.Name, "", total, scannedCount, "", start)
 
 	return results, total, nil
 }
@@ -1489,29 +1497,35 @@ func (ti *TableInstance) ScanFilter(match func(map[string]interface{}) bool, lim
 // Returns (rows, total, used) — used is false if no index exists for the field,
 // in which case the caller should fall back to ScanFilter.
 func (ti *TableInstance) LookupByField(field, value string, limit, offset int) ([]map[string]interface{}, int, bool) {
+	traceStart := time.Now()
 	pkField := ti.def.CompiledSchema.Fields[0].Name
 
 	if field == pkField {
 		row, err := ti.Get(value)
 		if err != nil || row == nil {
+			reqtrace.AddDuration("primary_lookup", ti.Name, pkField, 0, 1, "not found", traceStart)
 			return nil, 0, true
 		}
 		// Single PK match — total is always 1
 		if offset >= 1 {
+			reqtrace.AddDuration("primary_lookup", ti.Name, pkField, 1, 1, "offset excluded row", traceStart)
 			return nil, 1, true
 		}
+		reqtrace.AddDuration("primary_lookup", ti.Name, pkField, 1, 1, "", traceStart)
 		return []map[string]interface{}{row}, 1, true
 	}
 
 	// Check secondary index
 	indexKey := field // single-field index key
 	if _, exists := ti.indexDefsByKey[indexKey]; !exists {
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "index missing; fallback scan", traceStart)
 		return nil, 0, false // no index — caller should scan
 	}
 
 	pointers := ti.FindAllByIndex([]string{field}, value)
 	total := len(pointers)
 	if total == 0 {
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "", traceStart)
 		return nil, 0, true
 	}
 
@@ -1533,6 +1547,7 @@ func (ti *TableInstance) LookupByField(field, value string, limit, offset int) (
 			rows = append(rows, row)
 		}
 	}
+	reqtrace.AddDuration("index_lookup", ti.Name, indexKey, total, len(page), "", traceStart)
 
 	return rows, total, true
 }
@@ -1597,6 +1612,7 @@ func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, pa
 
 // FindByIndex finds a row by a secondary unique index.
 func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema.RowPointer, bool) {
+	start := time.Now()
 	indexKey := strings.Join(fields, ",")
 	indexDef, exists := ti.indexDefsByKey[indexKey]
 	if !exists || normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
@@ -1610,8 +1626,10 @@ func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema
 		}
 		ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 1)
 		if err != nil || len(ptrs) == 0 {
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "fallback scan", start)
 			return schema.RowPointer{}, false
 		}
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "fallback scan", start)
 		return ptrs[0], true
 	}
 
@@ -1621,13 +1639,16 @@ func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema
 		if len(fields) > 1 {
 			matchKey = storage.CompositeKey(anySlice(value))
 		}
-		return hi.Get(matchKey)
+		ptr, ok := hi.Get(matchKey)
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, btoi(ok), 1, "", start)
+		return ptr, ok
 	}
 	return schema.RowPointer{}, false
 }
 
 // FindAllByIndex returns all row pointers for a non-unique index value.
 func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []schema.RowPointer {
+	start := time.Now()
 	indexKey := strings.Join(fields, ",")
 	indexDef, exists := ti.indexDefsByKey[indexKey]
 	if !exists || normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
@@ -1641,8 +1662,10 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 		}
 		ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
 		if err != nil {
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "fallback scan error", start)
 			return nil
 		}
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(ptrs), len(ptrs), "fallback scan", start)
 		return ptrs
 	}
 
@@ -1653,7 +1676,9 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 		if len(fields) > 1 {
 			matchKey = storage.CompositeKey(anySlice(value))
 		}
-		return idx.GetAll(matchKey)
+		ptrs := idx.GetAll(matchKey)
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(ptrs), len(ptrs), "multi-index", start)
+		return ptrs
 	case *storage.HashIndex:
 		matchKey := toString(value)
 		if len(fields) > 1 {
@@ -1661,21 +1686,28 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 		}
 		p, ok := idx.Get(matchKey)
 		if ok {
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index", start)
 			return []schema.RowPointer{p}
 		}
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "unique-index", start)
 	}
 	return nil
 }
 
 // SearchFullText searches a full-text secondary index over the given fields.
 func (ti *TableInstance) SearchFullText(fields []string, query string, limit int) ([]map[string]interface{}, error) {
+	start := time.Now()
 	indexKey := fullTextIndexKey(fields)
 	indexDef, exists := ti.indexDefsByKey[indexKey]
 	if !exists || normalizeIndexType(indexDef.Type) != schema.IndexTypeFullText {
 		return nil, fmt.Errorf("full-text index not found on fields (%s)", strings.Join(fields, ", "))
 	}
 	if !ti.secondaryIndexesReady() {
-		return ti.searchFullTextByScan(fields, query, limit)
+		rows, err := ti.searchFullTextByScan(fields, query, limit)
+		if err == nil {
+			reqtrace.AddDuration("fulltext_search", ti.Name, indexKey, len(rows), 0, "fallback scan", start)
+		}
+		return rows, err
 	}
 	idx := ti.secondaryIdxs[indexKey]
 	fti, ok := idx.(*storage.FullTextIndex)
@@ -1685,6 +1717,7 @@ func (ti *TableInstance) SearchFullText(fields []string, query string, limit int
 
 	pks := fti.Search(query, limit)
 	if len(pks) == 0 {
+		reqtrace.AddDuration("fulltext_search", ti.Name, indexKey, 0, 0, "", start)
 		return []map[string]interface{}{}, nil
 	}
 
@@ -1702,6 +1735,7 @@ func (ti *TableInstance) SearchFullText(fields []string, query string, limit int
 			break
 		}
 	}
+	reqtrace.AddDuration("fulltext_search", ti.Name, indexKey, len(results), len(pks), "", start)
 	return results, nil
 }
 
@@ -1765,8 +1799,11 @@ func (ti *TableInstance) uniqueConflictByScan(fields []string, matchKey, exclude
 }
 
 func (ti *TableInstance) scanPointersByIndexKey(fields []string, matchKey string, limit int) ([]schema.RowPointer, error) {
+	start := time.Now()
 	out := make([]schema.RowPointer, 0, 16)
+	scannedCount := 0
 	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		scannedCount++
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
 			return true
@@ -1786,17 +1823,21 @@ func (ti *TableInstance) scanPointersByIndexKey(fields []string, matchKey string
 	if err != nil {
 		return nil, err
 	}
+	reqtrace.AddDuration("table_scan_index_match", ti.Name, strings.Join(fields, ","), len(out), scannedCount, "", start)
 	return out, nil
 }
 
 func (ti *TableInstance) searchFullTextByScan(fields []string, query string, limit int) ([]map[string]interface{}, error) {
+	start := time.Now()
 	queryTokens := tokenizeFullTextLike(query)
 	if len(queryTokens) == 0 {
 		return []map[string]interface{}{}, nil
 	}
 
 	results := make([]map[string]interface{}, 0, 16)
+	scannedCount := 0
 	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		scannedCount++
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
 			return true
@@ -1821,7 +1862,15 @@ func (ti *TableInstance) searchFullTextByScan(fields []string, query string, lim
 	if err != nil {
 		return nil, err
 	}
+	reqtrace.AddDuration("fulltext_scan", ti.Name, fullTextIndexKey(fields), len(results), scannedCount, "", start)
 	return results, nil
+}
+
+func btoi(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // Checkpoint flushes all dirty pages, indexes, and WAL.

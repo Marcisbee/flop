@@ -181,7 +181,7 @@ tbody tr.selected{background:var(--bg-active)}
 .analytics-chart-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;padding:10px}
 .analytics-chart-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:var(--text-muted);font-size:12px}
 .analytics-chart-box{position:relative}
-.analytics-chart{width:100%;height:220px;display:block}
+.analytics-chart{width:100%;height:156px;display:block}
 .analytics-legend{display:flex;gap:14px;color:var(--text-muted);font-size:11px;margin-top:6px}
 .legend-item{display:flex;align-items:center;gap:6px}
 .legend-line{width:14px;height:2px;border-radius:1px}
@@ -193,6 +193,32 @@ tbody tr.selected{background:var(--bg-active)}
 .analytics-route-chip.active{border-color:var(--accent);color:var(--text-heading)}
 .analytics-logs{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .analytics-empty{padding:24px;color:var(--text-muted);text-align:center}
+.log-row{cursor:pointer}
+.log-row:hover{background:var(--bg-hover)}
+.analytics-layout{display:flex;gap:12px;min-height:0}
+.analytics-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px}
+.analytics-detail{width:320px;max-width:38vw;background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;max-height:min(72vh,780px)}
+.analytics-detail-header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.analytics-detail-title{font-size:13px;font-weight:600;color:var(--text-heading)}
+.analytics-detail-body{padding:10px 12px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.detail-row{display:grid;grid-template-columns:90px minmax(0,1fr);gap:8px;align-items:start}
+.detail-key{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px}
+.detail-val{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px;color:var(--text);word-break:break-word;white-space:pre-wrap}
+.detail-pre{margin:0;padding:8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;max-height:260px;overflow:auto}
+.slow-badge{display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;background:var(--danger-hover-bg);color:var(--danger-hover-text);font-size:10px;font-weight:600}
+.trace-list{display:flex;flex-direction:column;gap:6px}
+.trace-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px}
+.trace-name{font-size:11px;color:var(--text)}
+.trace-meta{font-size:10px;color:var(--text-faint)}
+.trace-timeline{display:flex;flex-direction:column;gap:6px}
+.trace-axis{position:relative;height:18px;border:1px solid var(--border-input);border-radius:4px;background:linear-gradient(90deg, rgba(130,150,170,0.08) 0%, rgba(130,150,170,0.02) 100%)}
+.trace-axis-grid{position:absolute;top:0;bottom:0;width:1px;background:var(--border-input);opacity:0.55}
+.trace-axis-labels{display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);padding:0 1px}
+.trace-bar-wrap{display:flex;flex-direction:column;gap:2px}
+.trace-bar-track{position:relative;height:16px;border:1px solid var(--border-input);border-radius:4px;background:rgba(127,127,127,0.06);overflow:hidden}
+.trace-bar{position:absolute;top:1px;bottom:1px;border-radius:3px;min-width:2px;background:linear-gradient(90deg, rgba(41,179,255,0.95), rgba(30,130,220,0.95))}
+.trace-row-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.trace-row-ms{font-size:10px;color:var(--text-muted)}
 .observe-panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
 .observe-body{flex:1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
 .observe-table-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
@@ -214,6 +240,8 @@ tbody tr.selected{background:var(--bg-active)}
 @media (max-width: 980px) {
   .table-layout{flex-direction:column}
   .row-editor{width:100%;max-width:none;max-height:45vh;border-left:none;border-top:1px solid var(--border)}
+  .analytics-layout{flex-direction:column}
+  .analytics-detail{width:100%;max-width:none}
 }
 
 /* Toast */
@@ -396,7 +424,7 @@ function Toasts() {
 
 // ── Components ──
 
-function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnabled, onSelect, onSelectAnalytics, onSelectObserve, onBackup, onRestore, onLogout }) {
+function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnabled, onSelect, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onBackup, onRestore, onLogout }) {
   const [tableSearch, setTableSearch] = useState('');
   
   const filteredTables = useMemo(() => {
@@ -431,11 +459,18 @@ function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnab
         ${analyticsEnabled && html`
           <div class="sidebar-section-label" style="padding:10px 8px 4px">OBSERVE</div>
           <button
-            class=${"sidebar-item" + (viewMode === 'analytics' ? " active" : "")}
-            onClick=${onSelectAnalytics}
+            class=${"sidebar-item" + (viewMode === 'analytics-volume' ? " active" : "")}
+            onClick=${onSelectAnalyticsVolume}
           >
             <span class="sidebar-item-icon">${icons.chart}</span>
-            <span class="sidebar-item-label">Analytics</span>
+            <span class="sidebar-item-label">Request Volume</span>
+          </button>
+          <button
+            class=${"sidebar-item" + (viewMode === 'analytics-performance' ? " active" : "")}
+            onClick=${onSelectAnalyticsPerformance}
+          >
+            <span class="sidebar-item-icon">${icons.chart}</span>
+            <span class="sidebar-item-label">Request Performance</span>
           </button>
         `}
         ${observeEnabled && html`
@@ -1102,7 +1137,104 @@ function AnalyticsChart({ points }) {
   `;
 }
 
-function AnalyticsPanel() {
+function RequestsBarChart({ points }) {
+  const data = useMemo(() => downsamplePoints(points, 120), [points]);
+  if (!data || data.length === 0) {
+    return html`<div class="analytics-empty">No request volume in selected window</div>`;
+  }
+  const width = 1000;
+  const height = 220;
+  const padX = 12;
+  const padY = 14;
+  const innerW = width - padX * 2;
+  const innerH = height - padY * 2;
+  const maxCount = Math.max(1, ...data.map(p => Number(p.count) || 0));
+  const barW = innerW / Math.max(data.length, 1);
+
+  return html`
+    <div class="analytics-chart-box">
+      <svg class="analytics-chart" viewBox=${`0 0 ${width} ${height}`} preserveAspectRatio="none">
+        <line x1=${padX} y1=${height - padY} x2=${width - padX} y2=${height - padY} stroke="var(--border)" stroke-width="1" />
+        ${data.map((p, i) => {
+          const count = Number(p.count) || 0;
+          const h = (count / maxCount) * innerH;
+          const x = padX + i * barW + Math.max(1, barW * 0.1);
+          const y = height - padY - h;
+          const w = Math.max(1, barW * 0.8);
+          return html`<rect key=${p.ts || i} x=${x} y=${y} width=${w} height=${h} fill="var(--accent)" opacity=${count > 0 ? "0.8" : "0.25"} />`;
+        })}
+      </svg>
+    </div>
+    <div class="analytics-legend">
+      <span class="legend-item"><span class="legend-line" style="background:var(--accent)"></span>Requests per bucket</span>
+    </div>
+  `;
+}
+
+function parseDetailsObject(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  if (typeof raw !== 'string') return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+function extractTraceEvents(detailsObj) {
+  if (!detailsObj || typeof detailsObj !== 'object') return [];
+  if (Array.isArray(detailsObj.trace)) return detailsObj.trace;
+  if (Array.isArray(detailsObj.spans)) return detailsObj.spans;
+  return [];
+}
+
+function toNum(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function buildTraceTimeline(events) {
+  const rows = (Array.isArray(events) ? events : []).map((e, i) => {
+    const ms = toNum(e && (e.ms != null ? e.ms : e.durationMs), 0);
+    const s = toNum(e && e.started, NaN);
+    const f = toNum(e && e.finished, NaN);
+    return {
+      i,
+      raw: e || {},
+      ms: Math.max(0, ms),
+      hasRange: Number.isFinite(s) && Number.isFinite(f) && f >= s,
+      start: s,
+      finish: f,
+    };
+  });
+  if (rows.length === 0) return { rows: [], totalMs: 0 };
+
+  let cursor = 0;
+  for (const r of rows) {
+    if (r.hasRange) {
+      r.relStart = r.start;
+      r.relEnd = r.finish;
+    } else {
+      r.relStart = cursor;
+      r.relEnd = cursor + r.ms;
+      cursor = r.relEnd;
+    }
+  }
+
+  const minStart = Math.min(...rows.map(r => toNum(r.relStart, 0)));
+  const maxEnd = Math.max(...rows.map(r => toNum(r.relEnd, 0)));
+  const totalMs = Math.max(1, maxEnd - minStart);
+
+  for (const r of rows) {
+    const startMs = Math.max(0, toNum(r.relStart, 0) - minStart);
+    const endMs = Math.max(startMs, toNum(r.relEnd, startMs));
+    const dur = Math.max(1, endMs - startMs);
+    r.offsetPct = (startMs / totalMs) * 100;
+    r.widthPct = (dur / totalMs) * 100;
+  }
+
+  return { rows, totalMs };
+}
+
+function AnalyticsPanel({ page = 'volume' }) {
+  const isPerformance = page === 'performance';
   const [supported, setSupported] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [windowSize, setWindowSize] = useState('24h');
@@ -1117,6 +1249,8 @@ function AnalyticsPanel() {
   const [logTotal, setLogTotal] = useState(0);
   const [logSearch, setLogSearch] = useState('');
   const [logSearchQuery, setLogSearchQuery] = useState('');
+  const [selectedLog, setSelectedLog] = useState(null);
+  const [slowMs, setSlowMs] = useState(250);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -1194,6 +1328,13 @@ function AnalyticsPanel() {
   }, [supported, logPage, logSearchQuery, loadLogs]);
 
   useEffect(() => {
+    if (!selectedLog) return;
+    const found = logs.find(l => String(l.id) === String(selectedLog.id));
+    if (!found) setSelectedLog(null);
+    else if (found !== selectedLog) setSelectedLog(found);
+  }, [logs, selectedLog]);
+
+  useEffect(() => {
     if (!supported) return;
     const id = setInterval(() => {
       loadSeries();
@@ -1221,11 +1362,15 @@ function AnalyticsPanel() {
 
   const summary = series.summary || { count: 0, errorCount: 0, errorRate: 0, avgMs: 0, p95Ms: 0 };
   const routeChips = (series.routes || []).slice(0, 12);
+  const slowLogs = (logs || []).filter(r => Number(r.durationMs) >= Number(slowMs || 0));
+  const selectedDetails = parseDetailsObject(selectedLog && selectedLog.details);
+  const traceEvents = extractTraceEvents(selectedDetails);
+  const traceTimeline = buildTraceTimeline(traceEvents);
 
   return html`
     <div class="analytics-panel">
       <div class="analytics-toolbar">
-        <div class="analytics-title">${icons.chart} Request Analytics</div>
+        <div class="analytics-title">${icons.chart} ${isPerformance ? 'Request Performance' : 'Request Volume'}</div>
         <div class="analytics-actions">
           <select class="analytics-select" value=${windowSize} onChange=${e => { setWindowSize(e.target.value); setLogPage(1); }}>
             <option value="1h">Last 1 hour</option>
@@ -1237,95 +1382,176 @@ function AnalyticsPanel() {
       </div>
 
       <div class="analytics-body">
-        <div class="analytics-cards">
-          <div class="analytics-card"><div class="analytics-card-label">Requests</div><div class="analytics-card-value">${fmtCount(summary.count)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Errors</div><div class="analytics-card-value">${fmtCount(summary.errorCount)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Error Rate</div><div class="analytics-card-value">${fmtPct(summary.errorRate)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Avg Duration</div><div class="analytics-card-value">${fmtMs(summary.avgMs)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">P95 Duration</div><div class="analytics-card-value">${fmtMs(summary.p95Ms)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Dropped Events</div><div class="analytics-card-value">${fmtCount(series.droppedEvents)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Heap Alloc</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapAlloc)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Heap In Use</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapInuse)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Heap Idle</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapIdle)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Heap Released</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapReleased)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Heap Sys</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.heapSys)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Go Sys</div><div class="analytics-card-value">${fmtBytes(runtimeStats?.sys)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">Goroutines</div><div class="analytics-card-value">${fmtCount(runtimeStats?.goroutines)}</div></div>
-          <div class="analytics-card"><div class="analytics-card-label">GC Count</div><div class="analytics-card-value">${fmtCount(runtimeStats?.numGC)}</div></div>
-        </div>
-
-        <div class="analytics-chart-wrap">
-          <div class="analytics-chart-title">
-            <span>Average request duration and request count over time</span>
-            <span>Retention: ${Number(series.retentionHours || (config && config.retentionHours) || 168).toFixed(0)}h</span>
-          </div>
-          <${AnalyticsChart} points=${series.points || []} />
-        </div>
-
-        <div class="analytics-route-list">
-          <button class=${"analytics-route-chip" + (!routeName && !routeType ? " active" : "")} onClick=${() => { setRouteType(''); setRouteName(''); }}>All routes</button>
-          ${routeChips.map(rt => html`
-            <button
-              key=${rt.routeType + ':' + rt.routeName}
-              class=${"analytics-route-chip" + (routeType === rt.routeType && routeName === rt.routeName ? " active" : "")}
-              onClick=${() => { setRouteType(rt.routeType); setRouteName(rt.routeName); }}
-            >
-              ${rt.routeType}/${rt.routeName} · ${fmtCount(rt.count)}
-            </button>
-          `)}
-        </div>
-
-        <div class="analytics-logs">
-          <div class="panel-toolbar">
-            <div class="panel-title">
-              <span class="panel-title-icon">${icons.table}</span>
-              Request Logs
-              <span class="panel-meta">${fmtCount(logTotal)} rows</span>
+        <div class="analytics-layout">
+          <div class="analytics-main">
+            <div class="analytics-cards">
+              <div class="analytics-card"><div class="analytics-card-label">Requests</div><div class="analytics-card-value">${fmtCount(summary.count)}</div></div>
+              <div class="analytics-card"><div class="analytics-card-label">Errors</div><div class="analytics-card-value">${fmtCount(summary.errorCount)}</div></div>
+              <div class="analytics-card"><div class="analytics-card-label">Error Rate</div><div class="analytics-card-value">${fmtPct(summary.errorRate)}</div></div>
+              <div class="analytics-card"><div class="analytics-card-label">Avg Duration</div><div class="analytics-card-value">${fmtMs(summary.avgMs)}</div></div>
+              <div class="analytics-card"><div class="analytics-card-label">P95 Duration</div><div class="analytics-card-value">${fmtMs(summary.p95Ms)}</div></div>
+              ${isPerformance && html`<div class="analytics-card"><div class="analytics-card-label">Slow (${fmtMs(slowMs)}+)</div><div class="analytics-card-value">${fmtCount(slowLogs.length)}</div></div>`}
+              ${isPerformance && html`<div class="analytics-card"><div class="analytics-card-label">Routes</div><div class="analytics-card-value">${fmtCount((series.routes || []).length)}</div></div>`}
+              ${!isPerformance && html`<div class="analytics-card"><div class="analytics-card-label">Dropped Events</div><div class="analytics-card-value">${fmtCount(series.droppedEvents)}</div></div>`}
             </div>
-            <div class="panel-actions">
-              <div class="search-box">
-                ${icons.search}
-                <input type="text" placeholder='routeName~"get_" durationMs>=20' value=${logSearch} onInput=${e => setLogSearch(e.target.value)} onKeyDown=${onLogSearchKey} />
-                <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search in route/error/details">?</span>
-                <button class="btn-filter" onClick=${applyLogFilter}>${icons.chevRight}</button>
+
+            <div class="analytics-chart-wrap">
+              <div class="analytics-chart-title">
+                <span>${isPerformance ? 'Request duration and volume over time' : 'Request volume over time'}</span>
+                <span>Retention: ${Number(series.retentionHours || (config && config.retentionHours) || 168).toFixed(0)}h</span>
               </div>
+              ${isPerformance
+                ? html`<${AnalyticsChart} points=${series.points || []} />`
+                : html`<${RequestsBarChart} points=${series.points || []} />`}
             </div>
-          </div>
 
-          <div class="table-container panel-table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th><span class="th-name">time</span></th>
-                  <th><span class="th-name">route</span></th>
-                  <th><span class="th-name">status</span></th>
-                  <th><span class="th-name">duration</span></th>
-                  <th><span class="th-name">error</span></th>
-                  <th><span class="th-name">details</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                ${logs.length === 0 && html`<tr><td colspan="6" class="empty-row">No logs found</td></tr>`}
-                ${logs.map(row => html`
-                  <tr key=${row.id}>
-                    <td>${fmtTime(row.ts)}</td>
-                    <td>${row.routeType}/${row.routeName}</td>
-                    <td>${row.status}</td>
-                    <td>${fmtMs(row.durationMs)}</td>
-                    <td>${row.errorMessage ? truncate(row.errorMessage, 90) : html`<span class="null">-</span>`}</td>
-                    <td title=${row.details || ''}>${row.details ? truncate(row.details, 120) : html`<span class="null">-</span>`}</td>
-                  </tr>
+            ${isPerformance && html`
+              <div class="analytics-route-list">
+                <button class=${"analytics-route-chip" + (!routeName && !routeType ? " active" : "")} onClick=${() => { setRouteType(''); setRouteName(''); }}>All routes</button>
+                ${routeChips.map(rt => html`
+                  <button
+                    key=${rt.routeType + ':' + rt.routeName}
+                    class=${"analytics-route-chip" + (routeType === rt.routeType && routeName === rt.routeName ? " active" : "")}
+                    onClick=${() => { setRouteType(rt.routeType); setRouteName(rt.routeName); setLogPage(1); }}
+                  >
+                    ${rt.routeType}/${rt.routeName} · ${fmtCount(rt.count)}
+                  </button>
                 `)}
-              </tbody>
-            </table>
+              </div>
+            `}
+
+            <div class="analytics-logs">
+              <div class="panel-toolbar">
+                <div class="panel-title">
+                  <span class="panel-title-icon">${icons.table}</span>
+                  ${isPerformance ? 'Request Performance' : 'Request Events'}
+                  <span class="panel-meta">${fmtCount(logTotal)} rows</span>
+                </div>
+                <div class="panel-actions">
+                  ${isPerformance && html`
+                    <div class="search-box">
+                      <span style="color:var(--text-faint);font-size:11px">slow ≥</span>
+                      <input type="number" min="1" value=${String(slowMs)} onInput=${e => setSlowMs(Number(e.target.value) || 0)} style="width:80px" />
+                      <span style="color:var(--text-faint);font-size:11px">ms</span>
+                    </div>
+                  `}
+                  <div class="search-box">
+                    ${icons.search}
+                    <input type="text" placeholder='routeName~"get_" durationMs>=20' value=${logSearch} onInput=${e => setLogSearch(e.target.value)} onKeyDown=${onLogSearchKey} />
+                    <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search in route/error/details">?</span>
+                    <button class="btn-filter" onClick=${applyLogFilter}>${icons.chevRight}</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="table-container panel-table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th><span class="th-name">time</span></th>
+                      <th><span class="th-name">route</span></th>
+                      <th><span class="th-name">status</span></th>
+                      <th><span class="th-name">duration</span></th>
+                      <th><span class="th-name">error</span></th>
+                      <th><span class="th-name">details</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${logs.length === 0 && html`<tr><td colspan="6" class="empty-row">No logs found</td></tr>`}
+                    ${logs.map(row => html`
+                      <tr key=${row.id} class="log-row" onClick=${() => setSelectedLog(row)}>
+                        <td>${fmtTime(row.ts)}</td>
+                        <td>${row.routeType}/${row.routeName}</td>
+                        <td>${row.status}</td>
+                        <td>
+                          ${fmtMs(row.durationMs)}
+                          ${isPerformance && Number(row.durationMs) >= Number(slowMs || 0) && html`<span class="slow-badge">slow</span>`}
+                        </td>
+                        <td>${row.errorMessage ? truncate(row.errorMessage, 90) : html`<span class="null">-</span>`}</td>
+                        <td title=${row.details || ''}>${row.details ? truncate(row.details, 120) : html`<span class="null">-</span>`}</td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+
+              ${logPages > 1 && html`
+                <div class="pagination">
+                  <button class="btn-icon" disabled=${logPage <= 1} onClick=${() => setLogPage(p => p - 1)}>${icons.chevLeft}</button>
+                  <span class="page-info">Page ${logPage} of ${logPages}</span>
+                  <button class="btn-icon" disabled=${logPage >= logPages} onClick=${() => setLogPage(p => p + 1)}>${icons.chevRight}</button>
+                </div>
+              `}
+            </div>
           </div>
 
-          ${logPages > 1 && html`
-            <div class="pagination">
-              <button class="btn-icon" disabled=${logPage <= 1} onClick=${() => setLogPage(p => p - 1)}>${icons.chevLeft}</button>
-              <span class="page-info">Page ${logPage} of ${logPages}</span>
-              <button class="btn-icon" disabled=${logPage >= logPages} onClick=${() => setLogPage(p => p + 1)}>${icons.chevRight}</button>
-            </div>
+          ${selectedLog && html`
+            <aside class="analytics-detail">
+              <div class="analytics-detail-header">
+                <div>
+                  <div class="analytics-detail-title">Request Detail</div>
+                  <div class="panel-meta">${selectedLog.routeType}/${selectedLog.routeName}</div>
+                </div>
+                <button class="btn-icon" onClick=${() => setSelectedLog(null)}>&times;</button>
+              </div>
+              <div class="analytics-detail-body">
+                <div class="detail-row"><div class="detail-key">time</div><div class="detail-val">${fmtTime(selectedLog.ts)}</div></div>
+                <div class="detail-row"><div class="detail-key">status</div><div class="detail-val">${String(selectedLog.status ?? '-')}</div></div>
+                <div class="detail-row"><div class="detail-key">duration</div><div class="detail-val">${fmtMs(selectedLog.durationMs)}</div></div>
+                <div class="detail-row"><div class="detail-key">route</div><div class="detail-val">${selectedLog.routeType}/${selectedLog.routeName}</div></div>
+                <div class="detail-row"><div class="detail-key">error</div><div class="detail-val">${selectedLog.errorMessage || '-'}</div></div>
+                <div class="detail-row">
+                  <div class="detail-key">trace</div>
+                  <div class="detail-val">
+                    ${traceEvents.length > 0
+                      ? html`<div class="trace-timeline">
+                        <div class="trace-axis">
+                          <div class="trace-axis-grid" style=${{ left: '25%' }}></div>
+                          <div class="trace-axis-grid" style=${{ left: '50%' }}></div>
+                          <div class="trace-axis-grid" style=${{ left: '75%' }}></div>
+                        </div>
+                        <div class="trace-axis-labels">
+                          <span>0ms</span>
+                          <span>${fmtMs(traceTimeline.totalMs / 2)}</span>
+                          <span>${fmtMs(traceTimeline.totalMs)}</span>
+                        </div>
+                        <div class="trace-list">
+                        ${traceTimeline.rows.map((r) => {
+                          const t = r.raw;
+                          return html`
+                          <div key=${String(r.i)} class="trace-item">
+                            <div>
+                              <div class="trace-row-top">
+                                <div class="trace-name">${t.op || t.name || t.stage || 'operation'}</div>
+                                <div class="trace-row-ms">${fmtMs(r.ms)}</div>
+                              </div>
+                              <div class="trace-meta">
+                                ${t.table ? ('table=' + t.table + ' ') : ''}${t.index ? ('index=' + t.index + ' ') : ''}${t.rows != null ? ('rows=' + t.rows + ' ') : ''}${t.note || ''}
+                              </div>
+                              <div class="trace-bar-wrap">
+                                <div class="trace-bar-track">
+                                  <div class="trace-bar" style=${{ left: `${r.offsetPct}%`, width: `${r.widthPct}%` }}></div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        `;
+                        })}
+                        </div>
+                      </div>`
+                      : 'Per-request DB trace not available from backend yet (no scan/index timing emitted).'}
+                  </div>
+                </div>
+                <div class="detail-row">
+                  <div class="detail-key">details</div>
+                  <div class="detail-val">
+                    ${selectedDetails
+                      ? html`<pre class="detail-pre">${JSON.stringify(selectedDetails, null, 2)}</pre>`
+                      : (selectedLog.details ? html`<pre class="detail-pre">${String(selectedLog.details)}</pre>` : '-')}
+                  </div>
+                </div>
+              </div>
+            </aside>
           `}
         </div>
       </div>
@@ -1570,8 +1796,12 @@ function App() {
       const h = window.location.hash.slice(1);
       if (!h) return;
       const decoded = decodeURIComponent(h.split('/')[0]);
-      if (decoded === '_analytics') {
-        setViewMode('analytics');
+      if (decoded === '_analytics' || decoded === '_analytics-volume') {
+        setViewMode('analytics-volume');
+        return;
+      }
+      if (decoded === '_analytics-performance') {
+        setViewMode('analytics-performance');
         return;
       }
       if (decoded === '_observe') {
@@ -1592,9 +1822,14 @@ function App() {
     window.location.hash = name;
   }, []);
 
-  const selectAnalytics = useCallback(() => {
-    setViewMode('analytics');
-    window.location.hash = '_analytics';
+  const selectAnalyticsVolume = useCallback(() => {
+    setViewMode('analytics-volume');
+    window.location.hash = '_analytics-volume';
+  }, []);
+
+  const selectAnalyticsPerformance = useCallback(() => {
+    setViewMode('analytics-performance');
+    window.location.hash = '_analytics-performance';
   }, []);
 
   const selectObserve = useCallback(() => {
@@ -1638,15 +1873,16 @@ function App() {
       analyticsEnabled=${analyticsEnabled}
       observeEnabled=${observeEnabled}
       onSelect=${selectTable}
-      onSelectAnalytics=${selectAnalytics}
+      onSelectAnalyticsVolume=${selectAnalyticsVolume}
+      onSelectAnalyticsPerformance=${selectAnalyticsPerformance}
       onSelectObserve=${selectObserve}
       onBackup=${handleBackup}
       onRestore=${handleRestore}
       onLogout=${logout}
     />
     <div class="main">
-      ${viewMode === 'analytics' && analyticsEnabled
-        ? html`<${AnalyticsPanel} />`
+      ${(viewMode === 'analytics-volume' || viewMode === 'analytics-performance') && analyticsEnabled
+        ? html`<${AnalyticsPanel} page=${viewMode === 'analytics-performance' ? 'performance' : 'volume'} />`
         : viewMode === 'observe' && observeEnabled
         ? html`<${ObservePanel} />`
         : currentTable
