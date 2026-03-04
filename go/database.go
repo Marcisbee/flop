@@ -40,6 +40,10 @@ type TableInstance struct {
 	ti *engine.TableInstance
 }
 
+func (ti *TableInstance) isNil() bool {
+	return ti == nil || ti.ti == nil
+}
+
 // AutocompleteEntry represents one row in an autocomplete index.
 type AutocompleteEntry = engine.AutocompleteEntry
 
@@ -262,47 +266,74 @@ func (d *Database) RequestAnalytics() *server.RequestAnalytics {
 // Insert inserts a row into the table. Returns the inserted row
 // (with auto-generated fields filled).
 func (ti *TableInstance) Insert(data map[string]any) (map[string]any, error) {
+	if ti.isNil() {
+		return nil, fmt.Errorf("table is nil")
+	}
 	return ti.ti.Insert(data, nil)
 }
 
 // InsertMany inserts rows in buffered batches for higher import throughput.
 // Returns the number of inserted rows.
 func (ti *TableInstance) InsertMany(rows []map[string]any, flushEvery int) (int, error) {
+	if ti.isNil() {
+		return 0, fmt.Errorf("table is nil")
+	}
 	return ti.ti.BulkInsert(rows, flushEvery)
 }
 
 // Get retrieves a row by primary key.
 func (ti *TableInstance) Get(pk string) (map[string]any, error) {
+	if ti.isNil() {
+		return nil, fmt.Errorf("table is nil")
+	}
 	return ti.ti.Get(pk)
 }
 
 // Update updates a row by primary key. Returns the updated row.
 func (ti *TableInstance) Update(pk string, fields map[string]any) (map[string]any, error) {
+	if ti.isNil() {
+		return nil, fmt.Errorf("table is nil")
+	}
 	return ti.ti.Update(pk, fields, nil)
 }
 
 // Delete deletes a row by primary key. Returns true if the row existed.
 func (ti *TableInstance) Delete(pk string) (bool, error) {
+	if ti.isNil() {
+		return false, fmt.Errorf("table is nil")
+	}
 	return ti.ti.Delete(pk, nil)
 }
 
 // Scan returns rows with pagination.
 func (ti *TableInstance) Scan(limit, offset int) ([]map[string]any, error) {
+	if ti.isNil() {
+		return nil, fmt.Errorf("table is nil")
+	}
 	return ti.ti.Scan(limit, offset)
 }
 
 // Count returns the number of rows.
 func (ti *TableInstance) Count() int {
+	if ti.isNil() {
+		return 0
+	}
 	return ti.ti.Count()
 }
 
 // SecondaryIndexesReady reports whether non-primary indexes are fully built.
 func (ti *TableInstance) SecondaryIndexesReady() bool {
+	if ti.isNil() {
+		return false
+	}
 	return ti.ti.SecondaryIndexesReady()
 }
 
 // FindByEmail finds a row by the "email" unique index.
 func (ti *TableInstance) FindByEmail(email string) (map[string]any, bool) {
+	if ti.isNil() {
+		return nil, false
+	}
 	ptr, ok := ti.ti.FindByIndex([]string{"email"}, email)
 	if !ok {
 		return nil, false
@@ -316,6 +347,9 @@ func (ti *TableInstance) FindByEmail(email string) (map[string]any, bool) {
 
 // FindByUniqueIndex finds a row by a unique index on the given field.
 func (ti *TableInstance) FindByUniqueIndex(field string, value any) (map[string]any, bool) {
+	if ti.isNil() {
+		return nil, false
+	}
 	ptr, ok := ti.ti.FindByIndex([]string{field}, value)
 	if !ok {
 		return nil, false
@@ -330,6 +364,9 @@ func (ti *TableInstance) FindByUniqueIndex(field string, value any) (map[string]
 // FindByUniqueCompositeIndex finds a row by a unique composite index.
 // Values are matched against fields in order.
 func (ti *TableInstance) FindByUniqueCompositeIndex(fields []string, values ...any) (map[string]any, bool) {
+	if ti.isNil() {
+		return nil, false
+	}
 	if len(fields) == 0 || len(fields) != len(values) {
 		return nil, false
 	}
@@ -346,11 +383,17 @@ func (ti *TableInstance) FindByUniqueCompositeIndex(fields []string, values ...a
 
 // CountByIndex returns the number of rows matching a non-unique index value.
 func (ti *TableInstance) CountByIndex(field string, value any) int {
+	if ti.isNil() {
+		return 0
+	}
 	return len(ti.ti.FindAllByIndex([]string{field}, value))
 }
 
 // FindByIndex returns all rows matching a non-unique index value.
 func (ti *TableInstance) FindByIndex(field string, value any) ([]map[string]any, error) {
+	if ti.isNil() {
+		return nil, fmt.Errorf("table is nil")
+	}
 	ptrs := ti.ti.FindAllByIndex([]string{field}, value)
 	rows := make([]map[string]any, 0, len(ptrs))
 	for _, ptr := range ptrs {
@@ -366,6 +409,9 @@ func (ti *TableInstance) FindByIndex(field string, value any) ([]map[string]any,
 // FindByCompositeIndex returns all rows matching a composite index value.
 // Values are matched against fields in order.
 func (ti *TableInstance) FindByCompositeIndex(fields []string, values ...any) ([]map[string]any, error) {
+	if ti.isNil() {
+		return nil, fmt.Errorf("table is nil")
+	}
 	if len(fields) == 0 || len(fields) != len(values) {
 		return []map[string]any{}, nil
 	}
@@ -383,6 +429,9 @@ func (ti *TableInstance) FindByCompositeIndex(fields []string, values ...any) ([
 
 // SearchFullText searches a configured full-text index on the selected fields.
 func (ti *TableInstance) SearchFullText(fields []string, query string, limit int) ([]map[string]any, error) {
+	if ti.isNil() {
+		return nil, fmt.Errorf("table is nil")
+	}
 	return ti.ti.SearchFullText(fields, query, limit)
 }
 
@@ -410,7 +459,7 @@ func (a *AutocompleteIndex) Query(prefix string, limit int) []AutocompleteEntry 
 // BuildAutocompleteEntries scans this table and builds entries for reuse
 // in NewAutocompleteIndex.
 func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, payloadFields ...string) ([]AutocompleteEntry, error) {
-	if ti == nil || ti.ti == nil {
+	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
 	return ti.ti.BuildAutocompleteEntries(keyField, textField, payloadFields...)
