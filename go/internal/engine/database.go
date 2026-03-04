@@ -1019,6 +1019,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 
 	// WAL
 	txID := ti.wal.BeginTransaction()
+	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpInsert, serialized)
 	failpoint.Hit("insert_after_wal_record")
 
@@ -1066,11 +1067,12 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 			entry = &walBufEntry{}
 			txBuf[ti.Name] = entry
 		}
+		entry.records = append(entry.records, beginRecord)
 		entry.records = append(entry.records, walRecord)
 		entry.txIDs = append(entry.txIDs, txID)
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
+			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}},
 		}
 		failpoint.Hit("insert_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
@@ -1244,6 +1246,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
 
 	txID := ti.wal.BeginTransaction()
+	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
 	failpoint.Hit("update_after_wal_record")
 
@@ -1286,11 +1289,12 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 			entry = &walBufEntry{}
 			txBuf[ti.Name] = entry
 		}
+		entry.records = append(entry.records, beginRecord)
 		entry.records = append(entry.records, walRecord)
 		entry.txIDs = append(entry.txIDs, txID)
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
+			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}},
 		}
 		failpoint.Hit("update_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
@@ -1359,6 +1363,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
 	txID := ti.wal.BeginTransaction()
+	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
 	failpoint.Hit("update_slow_after_wal_record")
 
@@ -1415,11 +1420,12 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 			entry = &walBufEntry{}
 			txBuf[ti.Name] = entry
 		}
+		entry.records = append(entry.records, beginRecord)
 		entry.records = append(entry.records, walRecord)
 		entry.txIDs = append(entry.txIDs, txID)
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
+			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}},
 		}
 		failpoint.Hit("update_slow_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
@@ -1551,6 +1557,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	storage.DeleteRowFiles(ti.dataDir, ti.Name, key)
 
 	txID := ti.wal.BeginTransaction()
+	beginRecord := ti.wal.BuildBeginRecord(txID)
 	deleteData := []byte(key)
 	walRecord := ti.wal.BuildRecord(txID, storage.WALOpDelete, deleteData)
 	failpoint.Hit("delete_after_wal_record")
@@ -1592,11 +1599,12 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 			entry = &walBufEntry{}
 			txBuf[ti.Name] = entry
 		}
+		entry.records = append(entry.records, beginRecord)
 		entry.records = append(entry.records, walRecord)
 		entry.txIDs = append(entry.txIDs, txID)
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}},
+			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}},
 		}
 		failpoint.Hit("delete_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {

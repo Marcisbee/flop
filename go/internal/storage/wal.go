@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 
 // WAL operation codes.
 const (
+	WALOpBegin  = 0
 	WALOpInsert = 1
 	WALOpUpdate = 2
 	WALOpDelete = 3
@@ -19,11 +21,14 @@ const (
 )
 
 const walHeaderSize = 16
+const walVersionLegacyV1 = 1
+const walVersionCurrent = 2
 
 // WALEntry is a single WAL record after replay.
 type WALEntry struct {
 	TxID uint32
 	Op   byte
+	LSN  uint64
 	Data []byte
 }
 
@@ -32,8 +37,10 @@ type WAL struct {
 	Path      string
 	file      *os.File
 	txCounter atomic.Uint32
+	lsn       atomic.Uint64
 	mu        sync.Mutex
 	closed    bool
+	version   uint32
 }
 
 // OpenWAL opens or creates a WAL file.
@@ -42,7 +49,7 @@ func OpenWAL(path string) (*WAL, error) {
 	if err != nil {
 		return nil, err
 	}
-	w := &WAL{Path: path, file: f}
+	w := &WAL{Path: path, file: f, version: walVersionCurrent}
 
 	stat, err := f.Stat()
 	if err != nil {
@@ -58,8 +65,12 @@ func OpenWAL(path string) (*WAL, error) {
 	} else {
 		if err := w.readHeader(); err != nil {
 			// Reset on bad header
-			f.Truncate(0)
-			w.writeHeader()
+			_ = f.Truncate(0)
+			w.version = walVersionCurrent
+			if err := w.writeHeader(); err != nil {
+				f.Close()
+				return nil, err
+			}
 		}
 	}
 
@@ -69,7 +80,7 @@ func OpenWAL(path string) (*WAL, error) {
 func (w *WAL) writeHeader() error {
 	buf := make([]byte, walHeaderSize)
 	copy(buf[0:4], schema.WALFileMagic[:])
-	binary.LittleEndian.PutUint32(buf[4:8], 1)   // version
+	binary.LittleEndian.PutUint32(buf[4:8], w.version)
 	binary.LittleEndian.PutUint32(buf[8:12], 0)  // checkpoint LSN
 	binary.LittleEndian.PutUint32(buf[12:16], 0) // reserved
 	_, err := w.file.WriteAt(buf, 0)
@@ -86,12 +97,21 @@ func (w *WAL) readHeader() error {
 			return ErrShortBuffer
 		}
 	}
+	version := binary.LittleEndian.Uint32(buf[4:8])
+	if version != walVersionLegacyV1 && version != walVersionCurrent {
+		return fmt.Errorf("unsupported wal version: %d", version)
+	}
+	w.version = version
 	return nil
 }
 
 // BeginTransaction returns a new transaction ID.
 func (w *WAL) BeginTransaction() uint32 {
 	return w.txCounter.Add(1)
+}
+
+func (w *WAL) nextLSN() uint64 {
+	return w.lsn.Add(1)
 }
 
 // Append writes a WAL entry to disk.
@@ -124,6 +144,18 @@ func (w *WAL) Commit(txID uint32) error {
 
 // BuildRecord creates a WAL record in memory (no I/O).
 func (w *WAL) BuildRecord(txID uint32, op byte, data []byte) []byte {
+	if w.version == walVersionLegacyV1 {
+		return buildRecordV1(txID, op, data)
+	}
+	return buildRecordV2(txID, op, w.nextLSN(), data)
+}
+
+// BuildBeginRecord creates a WAL BEGIN record for the transaction.
+func (w *WAL) BuildBeginRecord(txID uint32) []byte {
+	return w.BuildRecord(txID, WALOpBegin, nil)
+}
+
+func buildRecordV1(txID uint32, op byte, data []byte) []byte {
 	if data == nil {
 		data = []byte{}
 	}
@@ -146,6 +178,33 @@ func (w *WAL) BuildRecord(txID uint32, op byte, data []byte) []byte {
 	checksum := util.CRC32(buf[:offset])
 	binary.LittleEndian.PutUint32(buf[offset:], checksum)
 
+	return buf
+}
+
+func buildRecordV2(txID uint32, op byte, lsn uint64, data []byte) []byte {
+	if data == nil {
+		data = []byte{}
+	}
+	// recordLen(4) + txID(4) + op(1) + lsn(8) + dataLen(4) + data + crc32(4)
+	recordLen := uint32(4 + 1 + 8 + 4 + len(data) + 4)
+	buf := make([]byte, 4+recordLen)
+
+	offset := 0
+	binary.LittleEndian.PutUint32(buf[offset:], recordLen)
+	offset += 4
+	binary.LittleEndian.PutUint32(buf[offset:], txID)
+	offset += 4
+	buf[offset] = op
+	offset++
+	binary.LittleEndian.PutUint64(buf[offset:], lsn)
+	offset += 8
+	binary.LittleEndian.PutUint32(buf[offset:], uint32(len(data)))
+	offset += 4
+	copy(buf[offset:], data)
+	offset += len(data)
+
+	checksum := util.CRC32(buf[:offset])
+	binary.LittleEndian.PutUint32(buf[offset:], checksum)
 	return buf
 }
 
@@ -210,35 +269,71 @@ func (w *WAL) Replay() ([]WALEntry, error) {
 		fullBuf = fullBuf[:n]
 	}
 
-	var entries []WALEntry
+	entries := make([]WALEntry, 0, 64)
 	offset := 0
+	var maxLSN uint64
 
 	for offset+4 <= len(fullBuf) {
-		recordLen := binary.LittleEndian.Uint32(fullBuf[offset : offset+4])
-		if recordLen == 0 || offset+4+int(recordLen) > len(fullBuf) {
+		recordLen := int(binary.LittleEndian.Uint32(fullBuf[offset : offset+4]))
+		if recordLen <= 0 || offset+4+recordLen > len(fullBuf) {
 			break
 		}
 
 		recordStart := offset + 4
-		txID := binary.LittleEndian.Uint32(fullBuf[recordStart : recordStart+4])
-		op := fullBuf[recordStart+4]
-		dataLen := binary.LittleEndian.Uint32(fullBuf[recordStart+5 : recordStart+9])
-		data := make([]byte, dataLen)
-		copy(data, fullBuf[recordStart+9:recordStart+9+int(dataLen)])
-
-		// Verify CRC32
-		expectedCRC := binary.LittleEndian.Uint32(fullBuf[recordStart+9+int(dataLen):])
-		actualCRC := util.CRC32(fullBuf[offset : recordStart+9+int(dataLen)])
-
-		if expectedCRC == actualCRC {
-			entries = append(entries, WALEntry{TxID: txID, Op: op, Data: data})
-		} else {
-			break // corrupted entry
+		recordEnd := recordStart + recordLen
+		if recordEnd-recordStart < 9 {
+			break
+		}
+		if recordEnd-recordStart < 13 {
+			break
 		}
 
-		offset += 4 + int(recordLen)
+		var (
+			txID         uint32
+			op           byte
+			lsn          uint64
+			dataLen      uint32
+			dataStartPos int
+		)
+		txID = binary.LittleEndian.Uint32(fullBuf[recordStart : recordStart+4])
+		op = fullBuf[recordStart+4]
+
+		if w.version >= walVersionCurrent {
+			if recordEnd-recordStart < 21 {
+				break
+			}
+			lsn = binary.LittleEndian.Uint64(fullBuf[recordStart+5 : recordStart+13])
+			dataLen = binary.LittleEndian.Uint32(fullBuf[recordStart+13 : recordStart+17])
+			dataStartPos = recordStart + 17
+		} else {
+			dataLen = binary.LittleEndian.Uint32(fullBuf[recordStart+5 : recordStart+9])
+			dataStartPos = recordStart + 9
+		}
+
+		dataEnd := dataStartPos + int(dataLen)
+		crcPos := dataEnd
+		if dataEnd < dataStartPos || crcPos+4 > recordEnd {
+			break
+		}
+
+		expectedCRC := binary.LittleEndian.Uint32(fullBuf[crcPos : crcPos+4])
+		actualCRC := util.CRC32(fullBuf[offset:crcPos])
+		if expectedCRC != actualCRC {
+			break // stop at first corrupted/torn record
+		}
+
+		data := make([]byte, dataLen)
+		copy(data, fullBuf[dataStartPos:dataEnd])
+		entries = append(entries, WALEntry{TxID: txID, Op: op, LSN: lsn, Data: data})
+		if lsn > maxLSN {
+			maxLSN = lsn
+		}
+		offset += 4 + recordLen
 	}
 
+	if maxLSN > 0 {
+		w.lsn.Store(maxLSN)
+	}
 	return entries, nil
 }
 
@@ -260,6 +355,9 @@ func (w *WAL) Truncate() error {
 
 	if err := w.file.Truncate(walHeaderSize); err != nil {
 		return err
+	}
+	if w.version < walVersionCurrent {
+		w.version = walVersionCurrent
 	}
 	return w.writeHeader()
 }
