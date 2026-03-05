@@ -18,7 +18,18 @@ const (
 	WALOpUpdate = 2
 	WALOpDelete = 3
 	WALOpCommit = 4
+
+	// WALOpFlagAutoCommit is a flag bit set on the op byte to indicate the
+	// record is self-committing (no separate commit record needed). Used for
+	// single-operation non-transaction writes to reduce WAL overhead.
+	WALOpFlagAutoCommit byte = 0x80
 )
+
+// WALOpBase strips the auto-commit flag to get the underlying operation.
+func WALOpBase(op byte) byte { return op &^ WALOpFlagAutoCommit }
+
+// WALOpIsAutoCommit reports whether the op has the auto-commit flag set.
+func WALOpIsAutoCommit(op byte) bool { return op&WALOpFlagAutoCommit != 0 }
 
 const walHeaderSize = 16
 const walVersionLegacyV1 = 1
@@ -193,6 +204,11 @@ func (w *WAL) BuildRecordWithLSN(txID uint32, op byte, data []byte) ([]byte, uin
 	}
 	lsn := w.nextLSN()
 	return buildRecordV2(txID, op, lsn, data), lsn
+}
+
+// BuildRecordAutoCommit creates a self-committing WAL record (no separate commit needed).
+func (w *WAL) BuildRecordAutoCommit(txID uint32, op byte, data []byte) ([]byte, uint64) {
+	return w.BuildRecordWithLSN(txID, op|WALOpFlagAutoCommit, data)
 }
 
 // BuildBeginRecord creates a WAL BEGIN record for the transaction.
@@ -386,7 +402,7 @@ func (w *WAL) Replay() ([]WALEntry, error) {
 func FindCommittedTxIDs(entries []WALEntry) map[uint32]bool {
 	committed := make(map[uint32]bool)
 	for _, e := range entries {
-		if e.Op == WALOpCommit {
+		if e.Op == WALOpCommit || WALOpIsAutoCommit(e.Op) {
 			committed[e.TxID] = true
 		}
 	}
@@ -397,7 +413,7 @@ func FindCommittedTxIDs(entries []WALEntry) map[uint32]bool {
 func FindCommittedTxLSN(entries []WALEntry) map[uint32]uint64 {
 	committed := make(map[uint32]uint64)
 	for _, e := range entries {
-		if e.Op == WALOpCommit {
+		if e.Op == WALOpCommit || WALOpIsAutoCommit(e.Op) {
 			committed[e.TxID] = e.LSN
 		}
 	}
