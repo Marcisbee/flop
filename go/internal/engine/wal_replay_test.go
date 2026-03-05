@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -362,4 +363,70 @@ func TestWALReplaySkipsWhenPageLSNAhead(t *testing.T) {
 	if title := fmt.Sprintf("%v", got["title"]); title != "old" {
 		t.Fatalf("expected replay skip due pageLSN (title old), got %q", title)
 	}
+}
+
+func TestOpenRebuildsPrimaryIndexOnManifestMismatch(t *testing.T) {
+	dataDir := t.TempDir()
+	db, ti, err := openReplayTestDB(dataDir)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	for i := 0; i < 32; i++ {
+		id := fmt.Sprintf("id-%06d", i)
+		if _, err := ti.Insert(map[string]interface{}{
+			"id": id, "slug": id, "title": "seed-" + id, "value": float64(i),
+		}, nil); err != nil {
+			_ = db.Close()
+			t.Fatalf("seed insert %d: %v", i, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	midxPath := filepath.Join(dataDir, "items.midx")
+	if err := corruptMappedIndexFirstPointer(midxPath); err != nil {
+		t.Fatalf("corrupt mapped index: %v", err)
+	}
+
+	db2, ti2, err := openReplayTestDB(dataDir)
+	if err != nil {
+		t.Fatalf("open after corruption: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	row, err := ti2.Get("id-000000")
+	if err != nil {
+		t.Fatalf("get after reopen: %v", err)
+	}
+	if row == nil {
+		t.Fatal("expected row to be recoverable after manifest mismatch rebuild")
+	}
+}
+
+func corruptMappedIndexFirstPointer(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(data) < 14 {
+		return fmt.Errorf("mapped index too short")
+	}
+	count := int(binary.LittleEndian.Uint32(data[6:10]))
+	if count <= 0 {
+		return fmt.Errorf("mapped index has no entries")
+	}
+	dataStart := 10 + count*4
+	off0 := int(binary.LittleEndian.Uint32(data[10:14]))
+	entry := dataStart + off0
+	if entry+2 > len(data) {
+		return fmt.Errorf("mapped index entry out of range")
+	}
+	keyLen := int(binary.LittleEndian.Uint16(data[entry : entry+2]))
+	pagePos := entry + 2 + keyLen
+	if pagePos+4 > len(data) {
+		return fmt.Errorf("mapped index pointer out of range")
+	}
+	binary.LittleEndian.PutUint32(data[pagePos:pagePos+4], 0x7fffffff)
+	return os.WriteFile(path, data, 0o644)
 }

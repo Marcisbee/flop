@@ -399,6 +399,7 @@ type TableInstance struct {
 	walCountMu    sync.Mutex
 	pendingMu     sync.RWMutex
 	pendingRows   map[string]uint32
+	checkpointGen uint64
 	walEntryCount int
 	autoIDNext    map[string]int64
 }
@@ -476,13 +477,24 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		return err
 	}
 	ti.wal = wal
+	manifest, err := storage.ReadLatestCheckpointManifest(dataDir, ti.Name)
+	if err != nil {
+		return err
+	}
+	manifestValid := false
+	if manifest != nil {
+		ti.checkpointGen = manifest.Generation
+		manifestValid = storage.ValidateCheckpointManifest(dataDir, ti.Name, manifest)
+	}
+
 	ti.primaryIndex = storage.NewHashIndex()
 	replayed, err := ti.replayWAL()
 	if err != nil {
 		return err
 	}
 
-	if !replayed {
+	forcePrimaryRebuild := manifest != nil && !manifestValid
+	if !replayed && !forcePrimaryRebuild {
 		// Load primary index from mapped .midx first, then fallback to .idx, or rebuild.
 		idx, err := storage.ReadMappedIndexFile(midxPath)
 		if err == nil && idx.Size() > 0 {
@@ -499,10 +511,14 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 				}
 			}
 		}
+	} else if !replayed {
+		if err := ti.rebuildIndex(); err != nil {
+			return err
+		}
 	}
 	ti.initializeAutoIncrementCounters()
 
-	forceSecondaryRebuild := replayed
+	forceSecondaryRebuild := replayed || forcePrimaryRebuild
 
 	// Auto-create unique indexes for fields with Unique flag
 	for _, field := range ti.def.CompiledSchema.Fields {
@@ -2297,10 +2313,12 @@ func (ti *TableInstance) Checkpoint() error {
 	if err := storage.WriteIndexFile(idxPath, ti.primaryIndex); err != nil {
 		return err
 	}
+	persistedFiles := []string{idxPath}
 	midxPath := filepath.Join(ti.dataDir, ti.Name+".midx")
 	if err := storage.WriteMappedIndexFile(midxPath, ti.primaryIndex); err != nil {
 		return err
 	}
+	persistedFiles = append(persistedFiles, midxPath)
 	for indexKey, indexDef := range ti.indexDefsByKey {
 		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
 			continue
@@ -2311,10 +2329,12 @@ func (ti *TableInstance) Checkpoint() error {
 			if err := storage.WriteMappedIndexFile(path, idx); err != nil {
 				return err
 			}
+			persistedFiles = append(persistedFiles, path)
 		case *storage.MultiIndex:
 			if err := storage.WriteMappedMultiIndexFile(path, idx); err != nil {
 				return err
 			}
+			persistedFiles = append(persistedFiles, path)
 		}
 	}
 	failpoint.Hit("checkpoint_after_index_write")
@@ -2322,9 +2342,32 @@ func (ti *TableInstance) Checkpoint() error {
 		return err
 	}
 	failpoint.Hit("checkpoint_after_wal_fsync")
-	if err := ti.wal.SetCheckpointLSN(ti.wal.CurrentLSN()); err != nil {
+	checkpointLSN := ti.wal.CurrentLSN()
+	if err := ti.wal.SetCheckpointLSN(checkpointLSN); err != nil {
 		return err
 	}
+
+	manifestFiles := make(map[string]uint32, len(persistedFiles))
+	for _, p := range persistedFiles {
+		hash, err := storage.ComputeFileCRC32(p)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(ti.dataDir, p)
+		if err != nil {
+			rel = filepath.Base(p)
+		}
+		manifestFiles[rel] = hash
+	}
+	manifest := &storage.CheckpointManifest{
+		Generation:    ti.checkpointGen + 1,
+		CheckpointLSN: checkpointLSN,
+		Files:         manifestFiles,
+	}
+	if err := storage.WriteCheckpointManifest(ti.dataDir, ti.Name, manifest); err != nil {
+		return err
+	}
+	ti.checkpointGen = manifest.Generation
 	return ti.wal.Truncate()
 }
 
