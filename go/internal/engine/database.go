@@ -636,17 +636,17 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 func (ti *TableInstance) applyWALEntry(entry storage.WALEntry) error {
 	switch entry.Op {
 	case storage.WALOpInsert:
-		return ti.applyWALInsert(entry.Data)
+		return ti.applyWALInsert(entry.Data, entry.LSN)
 	case storage.WALOpUpdate:
-		return ti.applyWALUpdate(entry.Data)
+		return ti.applyWALUpdate(entry.Data, entry.LSN)
 	case storage.WALOpDelete:
-		return ti.applyWALDelete(string(entry.Data))
+		return ti.applyWALDelete(string(entry.Data), entry.LSN)
 	default:
 		return nil
 	}
 }
 
-func (ti *TableInstance) applyWALInsert(serialized []byte) error {
+func (ti *TableInstance) applyWALInsert(serialized []byte, recordLSN uint64) error {
 	row, err := ti.deserializeCurrentRow(serialized)
 	if err != nil {
 		return nil
@@ -667,13 +667,14 @@ func (ti *TableInstance) applyWALInsert(serialized []byte) error {
 	if slotIndex == -1 {
 		return fmt.Errorf("wal replay insert failed: no slot")
 	}
+	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pageNum)
 	ti.tableFile.TotalRows++
 	ti.primaryIndex.Set(pk, schema.RowPointer{PageNumber: pageNum, SlotIndex: uint16(slotIndex)})
 	return nil
 }
 
-func (ti *TableInstance) applyWALUpdate(serialized []byte) error {
+func (ti *TableInstance) applyWALUpdate(serialized []byte, recordLSN uint64) error {
 	row, err := ti.deserializeCurrentRow(serialized)
 	if err != nil {
 		return nil
@@ -685,19 +686,24 @@ func (ti *TableInstance) applyWALUpdate(serialized []byte) error {
 
 	pointer, ok := ti.primaryIndex.Get(pk)
 	if !ok {
-		return ti.applyWALInsert(serialized)
+		return ti.applyWALInsert(serialized, recordLSN)
 	}
 
 	page, err := ti.tableFile.GetPage(pointer.PageNumber)
 	if err != nil {
 		return err
 	}
+	if pageLSNAtLeast(page, recordLSN) {
+		return nil
+	}
 	if page.UpdateRow(int(pointer.SlotIndex), serialized) {
+		page.SetPageLSN(recordLSN)
 		ti.tableFile.MarkPageDirty(pointer.PageNumber)
 		return nil
 	}
 
 	page.DeleteRow(int(pointer.SlotIndex))
+	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 
 	newPageNum, newPage, err := ti.tableFile.FindOrAllocatePage(len(serialized))
@@ -708,12 +714,13 @@ func (ti *TableInstance) applyWALUpdate(serialized []byte) error {
 	if newSlot == -1 {
 		return fmt.Errorf("wal replay update failed: reinsert")
 	}
+	newPage.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(newPageNum)
 	ti.primaryIndex.Set(pk, schema.RowPointer{PageNumber: newPageNum, SlotIndex: uint16(newSlot)})
 	return nil
 }
 
-func (ti *TableInstance) applyWALDelete(pk string) error {
+func (ti *TableInstance) applyWALDelete(pk string, recordLSN uint64) error {
 	if pk == "" {
 		return nil
 	}
@@ -725,13 +732,24 @@ func (ti *TableInstance) applyWALDelete(pk string) error {
 	if err != nil {
 		return err
 	}
+	if pageLSNAtLeast(page, recordLSN) {
+		return nil
+	}
 	page.DeleteRow(int(pointer.SlotIndex))
+	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	if ti.tableFile.TotalRows > 0 {
 		ti.tableFile.TotalRows--
 	}
 	ti.primaryIndex.Delete(pk)
 	return nil
+}
+
+func pageLSNAtLeast(page *storage.Page, recordLSN uint64) bool {
+	if page == nil || recordLSN == 0 {
+		return false
+	}
+	return uint64(page.PageLSN) >= uint64(uint32(recordLSN))
 }
 
 func (ti *TableInstance) rebuildIndex() error {
@@ -1028,7 +1046,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	// WAL
 	txID := ti.wal.BeginTransaction()
 	beginRecord := ti.wal.BuildBeginRecord(txID)
-	walRecord := ti.wal.BuildRecord(txID, storage.WALOpInsert, serialized)
+	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpInsert, serialized)
 	failpoint.Hit("insert_after_wal_record")
 
 	// Write to page
@@ -1040,6 +1058,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	if slotIndex == -1 {
 		return nil, fmt.Errorf("failed to insert row into page")
 	}
+	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pageNum)
 	ti.tableFile.TotalRows++
 	failpoint.Hit("insert_after_page_write")
@@ -1255,7 +1274,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 
 	txID := ti.wal.BeginTransaction()
 	beginRecord := ti.wal.BuildBeginRecord(txID)
-	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
+	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpUpdate, serialized)
 	failpoint.Hit("update_after_wal_record")
 
 	pageLock := ti.pageLockFor(pointer.PageNumber)
@@ -1282,6 +1301,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		locked = false
 		return ti.updateSlowLocked(key, updates, txBuf, silent)
 	}
+	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	pageLock.Unlock()
 	failpoint.Hit("update_after_page_write")
@@ -1372,7 +1392,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
 	txID := ti.wal.BeginTransaction()
 	beginRecord := ti.wal.BuildBeginRecord(txID)
-	walRecord := ti.wal.BuildRecord(txID, storage.WALOpUpdate, serialized)
+	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpUpdate, serialized)
 	failpoint.Hit("update_slow_after_wal_record")
 
 	// Apply index changes (remove old keys, add new keys with current pointer)
@@ -1386,6 +1406,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 
 	if !updated {
 		page.DeleteRow(int(pointer.SlotIndex))
+		page.SetPageLSN(recordLSN)
 		ti.tableFile.MarkPageDirty(pointer.PageNumber)
 
 		newPageNum, newPage, err := ti.tableFile.FindOrAllocatePage(len(serialized))
@@ -1396,6 +1417,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		if newSlot == -1 {
 			return nil, fmt.Errorf("failed to re-insert row during update")
 		}
+		newPage.SetPageLSN(recordLSN)
 		ti.tableFile.MarkPageDirty(newPageNum)
 
 		newPointer := schema.RowPointer{PageNumber: newPageNum, SlotIndex: uint16(newSlot)}
@@ -1418,6 +1440,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 			}
 		}
 	} else {
+		page.SetPageLSN(recordLSN)
 		ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	}
 	failpoint.Hit("update_slow_after_page_write")
@@ -1567,7 +1590,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	txID := ti.wal.BeginTransaction()
 	beginRecord := ti.wal.BuildBeginRecord(txID)
 	deleteData := []byte(key)
-	walRecord := ti.wal.BuildRecord(txID, storage.WALOpDelete, deleteData)
+	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpDelete, deleteData)
 	failpoint.Hit("delete_after_wal_record")
 
 	page, err := ti.tableFile.GetPage(pointer.PageNumber)
@@ -1575,6 +1598,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 		return false, err
 	}
 	page.DeleteRow(int(pointer.SlotIndex))
+	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	ti.tableFile.TotalRows--
 	failpoint.Hit("delete_after_page_write")

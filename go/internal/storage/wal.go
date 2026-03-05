@@ -182,15 +182,23 @@ func (w *WAL) Commit(txID uint32) error {
 
 // BuildRecord creates a WAL record in memory (no I/O).
 func (w *WAL) BuildRecord(txID uint32, op byte, data []byte) []byte {
+	record, _ := w.BuildRecordWithLSN(txID, op, data)
+	return record
+}
+
+// BuildRecordWithLSN creates a WAL record and returns the assigned record LSN.
+func (w *WAL) BuildRecordWithLSN(txID uint32, op byte, data []byte) ([]byte, uint64) {
 	if w.version == walVersionLegacyV1 {
-		return buildRecordV1(txID, op, data)
+		return buildRecordV1(txID, op, data), 0
 	}
-	return buildRecordV2(txID, op, w.nextLSN(), data)
+	lsn := w.nextLSN()
+	return buildRecordV2(txID, op, lsn, data), lsn
 }
 
 // BuildBeginRecord creates a WAL BEGIN record for the transaction.
 func (w *WAL) BuildBeginRecord(txID uint32) []byte {
-	return w.BuildRecord(txID, WALOpBegin, nil)
+	record, _ := w.BuildRecordWithLSN(txID, WALOpBegin, nil)
+	return record
 }
 
 func buildRecordV1(txID uint32, op byte, data []byte) []byte {

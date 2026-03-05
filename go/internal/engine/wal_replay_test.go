@@ -288,3 +288,78 @@ func TestWALReplaySkipsCheckpointedTransactions(t *testing.T) {
 		t.Fatalf("unexpected id-new row: %q", got)
 	}
 }
+
+func TestWALReplaySkipsWhenPageLSNAhead(t *testing.T) {
+	dataDir := t.TempDir()
+	db, ti, err := openReplayTestDB(dataDir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	inserted, err := ti.Insert(map[string]interface{}{
+		"id": "id-1", "slug": "id-1", "title": "old", "value": float64(1),
+	}, nil)
+	if err != nil || inserted == nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+
+	ptr, ok := ti.primaryIndex.Get("id-1")
+	if !ok {
+		t.Fatalf("missing pointer for id-1")
+	}
+	page, err := ti.tableFile.GetPage(ptr.PageNumber)
+	if err != nil {
+		t.Fatalf("get page: %v", err)
+	}
+	page.SetPageLSN(900)
+	ti.tableFile.MarkPageDirty(ptr.PageNumber)
+	if err := ti.tableFile.Flush(); err != nil {
+		t.Fatalf("flush page lsn: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	walPath := filepath.Join(dataDir, "items.wal")
+	wal, err := storage.OpenWAL(walPath)
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	row := map[string]interface{}{
+		"id": "id-1", "slug": "id-1", "title": "new", "value": float64(2),
+	}
+	serialized := storage.SerializeRow(row, replayTestDefs()["items"].CompiledSchema, 1)
+
+	tx := wal.BeginTransaction()
+	begin := wal.BuildBeginRecord(tx)
+	updateRecord, updateLSN := wal.BuildRecordWithLSN(tx, storage.WALOpUpdate, serialized)
+	if updateLSN == 0 {
+		t.Fatalf("expected non-zero update lsn")
+	}
+	if updateLSN >= 900 {
+		t.Fatalf("test expects updateLSN < 900, got %d", updateLSN)
+	}
+	if err := wal.FlushBatch([][]byte{begin, updateRecord}, []uint32{tx}); err != nil {
+		_ = wal.Close()
+		t.Fatalf("flush wal update: %v", err)
+	}
+	if err := wal.Close(); err != nil {
+		t.Fatalf("close wal: %v", err)
+	}
+
+	db2, ti2, err := openReplayTestDB(dataDir)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	got, err := ti2.Get("id-1")
+	if err != nil {
+		t.Fatalf("get id-1: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected id-1 row")
+	}
+	if title := fmt.Sprintf("%v", got["title"]); title != "old" {
+		t.Fatalf("expected replay skip due pageLSN (title old), got %q", title)
+	}
+}

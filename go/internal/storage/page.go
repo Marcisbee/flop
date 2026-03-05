@@ -13,7 +13,7 @@ type Page struct {
 	PageNumber uint32
 	SlotCount  uint16
 	FreeOff    uint16 // freeSpaceOffset in header
-	Flags      byte
+	PageLSN    uint32
 }
 
 // NewPage creates a page from raw bytes (read from disk).
@@ -30,7 +30,7 @@ func CreatePage(pageNumber uint32) *Page {
 		PageNumber: pageNumber,
 		SlotCount:  0,
 		FreeOff:    schema.PageHeaderSize,
-		Flags:      0,
+		PageLSN:    0,
 	}
 	p.writeHeader()
 	return p
@@ -40,17 +40,26 @@ func (p *Page) readHeader() {
 	p.PageNumber = binary.LittleEndian.Uint32(p.Data[0:4])
 	p.SlotCount = binary.LittleEndian.Uint16(p.Data[4:6])
 	p.FreeOff = binary.LittleEndian.Uint16(p.Data[6:8])
-	p.Flags = p.Data[8]
+	p.PageLSN = binary.LittleEndian.Uint32(p.Data[8:12])
 }
 
 func (p *Page) writeHeader() {
 	binary.LittleEndian.PutUint32(p.Data[0:4], p.PageNumber)
 	binary.LittleEndian.PutUint16(p.Data[4:6], p.SlotCount)
 	binary.LittleEndian.PutUint16(p.Data[6:8], p.FreeOff)
-	p.Data[8] = p.Flags
-	p.Data[9] = 0
-	p.Data[10] = 0
-	p.Data[11] = 0
+	binary.LittleEndian.PutUint32(p.Data[8:12], p.PageLSN)
+}
+
+// SetPageLSN updates the page-level LSN watermark stored in the page header.
+func (p *Page) SetPageLSN(lsn uint64) {
+	if lsn == 0 {
+		return
+	}
+	if uint64(p.PageLSN) >= lsn {
+		return
+	}
+	p.PageLSN = uint32(lsn)
+	p.writeHeader()
 }
 
 // GetSlot reads slot entry at the given index.
