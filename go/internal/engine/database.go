@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -384,10 +385,13 @@ type TableInstance struct {
 	db               *Database
 
 	// mu coordinates checkpoints/schema-changing writes.
-	// Insert/Delete/Checkpoint take Lock; Update fast path uses RLock.
+	// Checkpoint and slow-path rewrites take Lock.
+	// Hot write paths (insert/delete/update) take RLock.
 	mu            sync.RWMutex
 	rowLocks      [updateLockShards]sync.Mutex
 	pageLocks     [updateLockShards]sync.Mutex
+	uniqueLocks   [updateLockShards]sync.Mutex
+	allocMu       sync.Mutex
 	walEntryCount int
 	autoIDNext    map[string]int64
 }
@@ -939,10 +943,10 @@ func (ti *TableInstance) GetDef() *schema.TableDef {
 // Insert inserts a new row. If txBuf is non-nil, WAL records are buffered
 // into it for batch commit later (transaction mode). Otherwise commits immediately.
 func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*walBufEntry) (map[string]interface{}, error) {
-	ti.mu.Lock()
+	ti.mu.RLock()
 	var change *ChangeEvent
 	defer func() {
-		ti.mu.Unlock()
+		ti.mu.RUnlock()
 		if change != nil {
 			ti.pubsub.Publish(*change)
 		}
@@ -1012,6 +1016,8 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		rowLock.Lock()
 		defer rowLock.Unlock()
 	}
+	unlockUnique := ti.lockUniqueKeys(ti.uniqueLockTokensForRow(row))
+	defer unlockUnique()
 	if pk != "" && ti.primaryIndex.Has(pk) {
 		return nil, fmt.Errorf("duplicate primary key: %s", pk)
 	}
@@ -1050,17 +1056,32 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	failpoint.Hit("insert_after_wal_record")
 
 	// Write to page
-	pageNum, page, err := ti.tableFile.FindOrAllocatePage(len(serialized))
-	if err != nil {
-		return nil, err
+	var (
+		pageNum   uint32
+		slotIndex int
+	)
+	for {
+		ti.allocMu.Lock()
+		pageNum_, page, err := ti.tableFile.FindOrAllocatePage(len(serialized))
+		if err != nil {
+			ti.allocMu.Unlock()
+			return nil, err
+		}
+		pageLock := ti.pageLockFor(pageNum_)
+		pageLock.Lock()
+		slotIndex = page.InsertRow(serialized)
+		if slotIndex != -1 {
+			page.SetPageLSN(recordLSN)
+			ti.tableFile.MarkPageDirty(pageNum_)
+			ti.tableFile.TotalRows++
+			pageLock.Unlock()
+			ti.allocMu.Unlock()
+			pageNum = pageNum_
+			break
+		}
+		pageLock.Unlock()
+		ti.allocMu.Unlock()
 	}
-	slotIndex := page.InsertRow(serialized)
-	if slotIndex == -1 {
-		return nil, fmt.Errorf("failed to insert row into page")
-	}
-	page.SetPageLSN(recordLSN)
-	ti.tableFile.MarkPageDirty(pageNum)
-	ti.tableFile.TotalRows++
 	failpoint.Hit("insert_after_page_write")
 
 	// Update indexes
@@ -1220,7 +1241,9 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
 	locked := true
+	unlockUnique := func() {}
 	defer func() {
+		unlockUnique()
 		if locked {
 			rowLock.Unlock()
 			ti.mu.RUnlock()
@@ -1240,6 +1263,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	for k, v := range updates {
 		newRow[k] = v
 	}
+	unlockUnique = ti.lockUniqueKeys(ti.uniqueLockTokensForUpdate(existing, newRow))
 
 	// Validate
 	for _, field := range ti.def.CompiledSchema.Fields {
@@ -1288,6 +1312,8 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	_, oldLen := page.GetSlot(int(pointer.SlotIndex))
 	if oldLen == 0 || uint16(len(serialized)) > oldLen {
 		pageLock.Unlock()
+		unlockUnique()
+		unlockUnique = func() {}
 		rowLock.Unlock()
 		ti.mu.RUnlock()
 		locked = false
@@ -1296,6 +1322,8 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 
 	if !page.UpdateRow(int(pointer.SlotIndex), serialized) {
 		pageLock.Unlock()
+		unlockUnique()
+		unlockUnique = func() {}
 		rowLock.Unlock()
 		ti.mu.RUnlock()
 		locked = false
@@ -1347,8 +1375,10 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	ti.mu.Lock()
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
+	unlockUnique := func() {}
 	var change *ChangeEvent
 	defer func() {
+		unlockUnique()
 		rowLock.Unlock()
 		ti.mu.Unlock()
 		if change != nil && !silent {
@@ -1369,6 +1399,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	for k, v := range updates {
 		newRow[k] = v
 	}
+	unlockUnique = ti.lockUniqueKeys(ti.uniqueLockTokensForUpdate(existing, newRow))
 
 	for _, field := range ti.def.CompiledSchema.Fields {
 		val := newRow[field.Name]
@@ -1559,13 +1590,13 @@ func (ti *TableInstance) applyIndexChanges(existing, newRow map[string]interface
 // Delete removes a row by primary key. If txBuf is non-nil, WAL records are buffered
 // into it for batch commit later (transaction mode). Otherwise commits immediately.
 func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool, error) {
-	ti.mu.Lock()
+	ti.mu.RLock()
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
 	var change *ChangeEvent
 	defer func() {
 		rowLock.Unlock()
-		ti.mu.Unlock()
+		ti.mu.RUnlock()
 		if change != nil {
 			ti.pubsub.Publish(*change)
 		}
@@ -1597,10 +1628,13 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	if err != nil {
 		return false, err
 	}
+	pageLock := ti.pageLockFor(pointer.PageNumber)
+	pageLock.Lock()
 	page.DeleteRow(int(pointer.SlotIndex))
 	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	ti.tableFile.TotalRows--
+	pageLock.Unlock()
 	failpoint.Hit("delete_after_page_write")
 
 	// Remove from indexes
@@ -2213,6 +2247,71 @@ func (ti *TableInstance) rowLockForKey(key string) *sync.Mutex {
 
 func (ti *TableInstance) pageLockFor(pageNumber uint32) *sync.Mutex {
 	return &ti.pageLocks[pageNumber%updateLockShards]
+}
+
+func (ti *TableInstance) uniqueLockTokensForRow(row map[string]interface{}) []string {
+	tokens := make([]string, 0, len(ti.def.Indexes))
+	for _, indexDef := range ti.def.Indexes {
+		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText || !indexDef.Unique {
+			continue
+		}
+		indexKey := secondaryIndexKey(indexDef)
+		valueKey := secondaryIndexRowKey(indexDef.Fields, row)
+		tokens = append(tokens, indexKey+"\x00"+valueKey)
+	}
+	return tokens
+}
+
+func (ti *TableInstance) uniqueLockTokensForUpdate(existing, newRow map[string]interface{}) []string {
+	tokens := make([]string, 0, len(ti.def.Indexes))
+	for _, indexDef := range ti.def.Indexes {
+		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText || !indexDef.Unique {
+			continue
+		}
+
+		oldValues := make([]interface{}, len(indexDef.Fields))
+		newValues := make([]interface{}, len(indexDef.Fields))
+		for i, f := range indexDef.Fields {
+			oldValues[i] = existing[f]
+			newValues[i] = newRow[f]
+		}
+		oldKey := storage.CompositeKey(oldValues)
+		newKey := storage.CompositeKey(newValues)
+		oldHas := !allIndexValuesUnset(oldValues)
+		newHas := !allIndexValuesUnset(newValues)
+		if oldHas == newHas && oldKey == newKey {
+			continue
+		}
+		indexKey := secondaryIndexKey(indexDef)
+		tokens = append(tokens, indexKey+"\x00"+newKey)
+	}
+	return tokens
+}
+
+func (ti *TableInstance) lockUniqueKeys(tokens []string) func() {
+	if len(tokens) == 0 {
+		return func() {}
+	}
+
+	shardsSeen := make(map[uint32]struct{}, len(tokens))
+	for _, token := range tokens {
+		shardsSeen[hashString(token)%updateLockShards] = struct{}{}
+	}
+
+	shards := make([]int, 0, len(shardsSeen))
+	for shard := range shardsSeen {
+		shards = append(shards, int(shard))
+	}
+	sort.Ints(shards)
+
+	for _, shard := range shards {
+		ti.uniqueLocks[shard].Lock()
+	}
+	return func() {
+		for i := len(shards) - 1; i >= 0; i-- {
+			ti.uniqueLocks[shards[i]].Unlock()
+		}
+	}
 }
 
 func hashString(s string) uint32 {

@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,6 +146,106 @@ func TestSecondaryIndexFallbackUniqueConstraints(t *testing.T) {
 	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "duplicate unique constraint") {
 		t.Fatalf("expected duplicate unique constraint on update, got: %v", err)
+	}
+}
+
+func TestConcurrentInsertsPreserveAllRows(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+
+	const workers = 8
+	const perWorker = 120
+
+	start := make(chan struct{})
+	errCh := make(chan error, workers*perWorker)
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < perWorker; i++ {
+				id := fmt.Sprintf("id-%02d-%04d", worker, i)
+				slug := fmt.Sprintf("slug-%02d-%04d", worker, i)
+				_, err := ti.Insert(map[string]interface{}{
+					"id":    id,
+					"slug":  slug,
+					"title": fmt.Sprintf("Movie %s", id),
+					"genre": "action",
+				}, nil)
+				if err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}(w)
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent insert error: %v", err)
+	}
+
+	want := workers * perWorker
+	if got := ti.Count(); got != want {
+		t.Fatalf("unexpected row count: got %d want %d", got, want)
+	}
+}
+
+func TestConcurrentInsertHonorsUniqueConstraint(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+
+	const contenders = 48
+	start := make(chan struct{})
+	var success atomic.Int32
+	var duplicate atomic.Int32
+	errCh := make(chan error, contenders)
+	var wg sync.WaitGroup
+
+	for i := 0; i < contenders; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, err := ti.Insert(map[string]interface{}{
+				"id":    fmt.Sprintf("id-race-%03d", i),
+				"slug":  "slug-race-shared",
+				"title": fmt.Sprintf("Race Title %03d", i),
+				"genre": "drama",
+			}, nil)
+			if err == nil {
+				success.Add(1)
+				return
+			}
+			if strings.Contains(err.Error(), "duplicate unique constraint") {
+				duplicate.Add(1)
+				return
+			}
+			errCh <- err
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("unexpected insert error: %v", err)
+	}
+
+	if got := success.Load(); got != 1 {
+		t.Fatalf("expected exactly one success, got %d", got)
+	}
+	if got := duplicate.Load(); got != contenders-1 {
+		t.Fatalf("expected %d duplicate errors, got %d", contenders-1, got)
+	}
+	if got := ti.Count(); got != 1 {
+		t.Fatalf("unexpected row count: got %d want 1", got)
 	}
 }
 
