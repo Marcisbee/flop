@@ -674,6 +674,10 @@ func (ti *TableInstance) applyWALEntry(entry storage.WALEntry) error {
 }
 
 func (ti *TableInstance) applyWALInsert(serialized []byte, recordLSN uint64) error {
+	if err := storage.ValidateRowDataSize(len(serialized)); err != nil {
+		return err
+	}
+
 	row, err := ti.deserializeCurrentRow(serialized)
 	if err != nil {
 		return nil
@@ -702,6 +706,10 @@ func (ti *TableInstance) applyWALInsert(serialized []byte, recordLSN uint64) err
 }
 
 func (ti *TableInstance) applyWALUpdate(serialized []byte, recordLSN uint64) error {
+	if err := storage.ValidateRowDataSize(len(serialized)); err != nil {
+		return err
+	}
+
 	row, err := ti.deserializeCurrentRow(serialized)
 	if err != nil {
 		return nil
@@ -1069,6 +1077,9 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 
 	// Serialize
 	serialized := storage.SerializeRow(row, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	if err := storage.ValidateRowDataSize(len(serialized)); err != nil {
+		return nil, err
+	}
 
 	// WAL
 	txID := ti.wal.BeginTransaction()
@@ -1492,6 +1503,9 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	}
 
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	if err := storage.ValidateRowDataSize(len(serialized)); err != nil {
+		return nil, err
+	}
 	txID := ti.wal.BeginTransaction()
 	isTx := txBuf != nil
 	var walRecord []byte

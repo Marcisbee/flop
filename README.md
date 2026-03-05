@@ -216,9 +216,9 @@ Files are stored on disk at `data/_files/{table}/{rowId}/{field}/`, served at `G
 ## Storage Details
 
 - **Per-table files**: each table gets `.flop` (data pages), `.idx` (index), `.wal` (write-ahead log)
-- **Page format**: 64B file header + 4KB pages with slot directory
+- **Page format**: 64B file header + ~64KB pages with slot directory
 - **Indexes in memory**: ~14 bytes per entry, ~14MB for 1M rows
-- **Page cache**: LRU, default 1024 pages (4MB)
+- **Page cache**: LRU, default 256 pages (~16MB)
 - **Crash recovery**: WAL replayed on startup, periodic checkpoints every 30s
 
 ## API Endpoints

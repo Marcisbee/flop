@@ -77,6 +77,10 @@ func (tf *TableFile) readFileHeader() error {
 			return fmt.Errorf("invalid table file: bad magic at %s", tf.Path)
 		}
 	}
+	filePageSize := binary.LittleEndian.Uint16(buf[6:8])
+	if filePageSize != uint16(schema.PageSize) {
+		return fmt.Errorf("%w at %s: file=%d engine=%d", ErrPageSizeMismatch, tf.Path, filePageSize, schema.PageSize)
+	}
 	tf.PageCount = binary.LittleEndian.Uint32(buf[8:12])
 	tf.TotalRows = binary.LittleEndian.Uint32(buf[12:16])
 	tf.SchemaVersion = binary.LittleEndian.Uint16(buf[16:18])
@@ -215,6 +219,10 @@ func (tf *TableFile) FindOrAllocatePage(rowDataSize int) (uint32, *Page, error) 
 
 // FindOrAllocatePageForShard picks/allocates a page using shard-local hints.
 func (tf *TableFile) FindOrAllocatePageForShard(rowDataSize int, shard uint32) (uint32, *Page, error) {
+	if err := ValidateRowDataSize(rowDataSize); err != nil {
+		return 0, nil, err
+	}
+
 	shardIdx := int(shard % allocHintShards)
 	hintMu := &tf.allocHintMu[shardIdx]
 	hintMu.Lock()
