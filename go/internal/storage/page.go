@@ -51,6 +51,9 @@ func (p *Page) writeHeader() {
 }
 
 // SetPageLSN updates the page-level LSN watermark stored in the page header.
+// NOTE: Callers (InsertRow, UpdateRow, DeleteRow) already call writeHeader(),
+// so we only update the field here and write the 4-byte LSN directly to avoid
+// a redundant full header encode.
 func (p *Page) SetPageLSN(lsn uint64) {
 	if lsn == 0 {
 		return
@@ -59,7 +62,7 @@ func (p *Page) SetPageLSN(lsn uint64) {
 		return
 	}
 	p.PageLSN = uint32(lsn)
-	p.writeHeader()
+	binary.LittleEndian.PutUint32(p.Data[8:12], p.PageLSN)
 }
 
 // GetSlot reads slot entry at the given index.

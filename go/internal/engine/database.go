@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -397,8 +398,7 @@ type TableInstance struct {
 	pageLocks     [updateLockShards]sync.Mutex
 	uniqueLocks   [updateLockShards]sync.Mutex
 	walCountMu    sync.Mutex
-	pendingMu     sync.RWMutex
-	pendingRows   map[string]uint32
+	pendingRows   sync.Map // key (string) → *int32 refcount
 	checkpointGen uint64
 	walEntryCount int
 	autoIDNext    map[string]int64
@@ -414,7 +414,6 @@ func newTableInstance(name string, def *schema.TableDef, db *Database) (*TableIn
 		indexesToRebuild: make(map[string]bool),
 		migChains:        make(map[int]*schema.MigrationChain),
 		autoIDNext:       make(map[string]int64),
-		pendingRows:      make(map[string]uint32),
 		db:               db,
 	}, nil
 }
@@ -1073,7 +1072,6 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 
 	// WAL
 	txID := ti.wal.BeginTransaction()
-	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpInsert, serialized)
 	failpoint.Hit("insert_after_wal_record")
 	pendingKey := pk
@@ -1117,6 +1115,8 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 			break
 		}
 		pageLock.Unlock()
+		// Page was full — invalidate the shard hint so next iteration allocates fresh.
+		ti.tableFile.InvalidateAllocHint(allocShard)
 	}
 	failpoint.Hit("insert_after_page_write")
 
@@ -1146,6 +1146,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 
 	// WAL commit: buffer into transaction or commit immediately
 	if txBuf != nil {
+		beginRecord := ti.wal.BuildBeginRecord(txID)
 		entry := txBuf[ti.Name]
 		if entry == nil {
 			entry = &walBufEntry{}
@@ -1164,7 +1165,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 			pendingKeys = []string{pendingKey}
 		}
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}, pending: pendingKeys},
+			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}, pending: pendingKeys},
 		}
 		failpoint.Hit("insert_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
@@ -1342,7 +1343,6 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
 
 	txID := ti.wal.BeginTransaction()
-	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpUpdate, serialized)
 	failpoint.Hit("update_after_wal_record")
 	pendingAdded := false
@@ -1393,6 +1393,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 
 	// WAL commit: buffer into transaction or commit immediately
 	if txBuf != nil {
+		beginRecord := ti.wal.BuildBeginRecord(txID)
 		entry := txBuf[ti.Name]
 		if entry == nil {
 			entry = &walBufEntry{}
@@ -1405,7 +1406,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		pendingAdded = false
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
+			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
 		}
 		failpoint.Hit("update_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
@@ -1478,7 +1479,6 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 
 	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
 	txID := ti.wal.BeginTransaction()
-	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpUpdate, serialized)
 	failpoint.Hit("update_slow_after_wal_record")
 	pendingAdded := false
@@ -1541,6 +1541,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	failpoint.Hit("update_slow_after_page_write")
 
 	if txBuf != nil {
+		beginRecord := ti.wal.BuildBeginRecord(txID)
 		entry := txBuf[ti.Name]
 		if entry == nil {
 			entry = &walBufEntry{}
@@ -1553,7 +1554,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		pendingAdded = false
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
+			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
 		}
 		failpoint.Hit("update_slow_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
@@ -1686,7 +1687,6 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	storage.DeleteRowFiles(ti.dataDir, ti.Name, key)
 
 	txID := ti.wal.BeginTransaction()
-	beginRecord := ti.wal.BuildBeginRecord(txID)
 	deleteData := []byte(key)
 	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpDelete, deleteData)
 	failpoint.Hit("delete_after_wal_record")
@@ -1735,6 +1735,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 
 	// WAL commit: buffer into transaction or commit immediately
 	if txBuf != nil {
+		beginRecord := ti.wal.BuildBeginRecord(txID)
 		entry := txBuf[ti.Name]
 		if entry == nil {
 			entry = &walBufEntry{}
@@ -1747,7 +1748,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 		pendingAdded = false
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
+			ti.Name: {records: [][]byte{walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
 		}
 		failpoint.Hit("delete_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
@@ -1790,28 +1791,44 @@ func (ti *TableInstance) addPendingKey(key string) {
 	if key == "" {
 		return
 	}
-	ti.pendingMu.Lock()
-	ti.pendingRows[key]++
-	ti.pendingMu.Unlock()
+	for {
+		if v, ok := ti.pendingRows.Load(key); ok {
+			p := v.(*int32)
+			old := atomic.LoadInt32(p)
+			if old > 0 && atomic.CompareAndSwapInt32(p, old, old+1) {
+				return
+			}
+			// Ref dropped to 0 and was (or is being) deleted — retry via LoadOrStore.
+		}
+		var initial int32 = 1
+		if _, loaded := ti.pendingRows.LoadOrStore(key, &initial); !loaded {
+			return
+		}
+		// Another goroutine raced; loop back and try incrementing.
+	}
 }
 
 func (ti *TableInstance) clearPendingKeys(keys []string) {
-	if len(keys) == 0 {
-		return
-	}
-	ti.pendingMu.Lock()
 	for _, key := range keys {
 		if key == "" {
 			continue
 		}
-		count := ti.pendingRows[key]
-		if count <= 1 {
-			delete(ti.pendingRows, key)
+		v, ok := ti.pendingRows.Load(key)
+		if !ok {
 			continue
 		}
-		ti.pendingRows[key] = count - 1
+		p := v.(*int32)
+		for {
+			old := atomic.LoadInt32(p)
+			if old <= 1 {
+				ti.pendingRows.Delete(key)
+				break
+			}
+			if atomic.CompareAndSwapInt32(p, old, old-1) {
+				break
+			}
+		}
 	}
-	ti.pendingMu.Unlock()
 }
 
 func (ti *TableInstance) rowVisibleToScans(row map[string]interface{}) bool {
@@ -1822,9 +1839,7 @@ func (ti *TableInstance) rowVisibleToScans(row map[string]interface{}) bool {
 	if pk == "" {
 		return true
 	}
-	ti.pendingMu.RLock()
-	_, pending := ti.pendingRows[pk]
-	ti.pendingMu.RUnlock()
+	_, pending := ti.pendingRows.Load(pk)
 	return !pending
 }
 
@@ -2302,20 +2317,22 @@ func btoi(v bool) int {
 // Checkpoint flushes all dirty pages, indexes, and WAL.
 func (ti *TableInstance) Checkpoint() error {
 	ti.mu.Lock()
-	defer ti.mu.Unlock()
 
 	failpoint.Hit("checkpoint_start")
 	if err := ti.tableFile.Flush(); err != nil {
+		ti.mu.Unlock()
 		return err
 	}
 	failpoint.Hit("checkpoint_after_table_flush")
 	idxPath := filepath.Join(ti.dataDir, ti.Name+".idx")
 	if err := storage.WriteIndexFile(idxPath, ti.primaryIndex); err != nil {
+		ti.mu.Unlock()
 		return err
 	}
 	persistedFiles := []string{idxPath}
 	midxPath := filepath.Join(ti.dataDir, ti.Name+".midx")
 	if err := storage.WriteMappedIndexFile(midxPath, ti.primaryIndex); err != nil {
+		ti.mu.Unlock()
 		return err
 	}
 	persistedFiles = append(persistedFiles, midxPath)
@@ -2327,11 +2344,13 @@ func (ti *TableInstance) Checkpoint() error {
 		switch idx := ti.secondaryIdxs[indexKey].(type) {
 		case *storage.HashIndex:
 			if err := storage.WriteMappedIndexFile(path, idx); err != nil {
+				ti.mu.Unlock()
 				return err
 			}
 			persistedFiles = append(persistedFiles, path)
 		case *storage.MultiIndex:
 			if err := storage.WriteMappedMultiIndexFile(path, idx); err != nil {
+				ti.mu.Unlock()
 				return err
 			}
 			persistedFiles = append(persistedFiles, path)
@@ -2339,13 +2358,21 @@ func (ti *TableInstance) Checkpoint() error {
 	}
 	failpoint.Hit("checkpoint_after_index_write")
 	if err := ti.wal.Fsync(); err != nil {
+		ti.mu.Unlock()
 		return err
 	}
 	failpoint.Hit("checkpoint_after_wal_fsync")
 	checkpointLSN := ti.wal.CurrentLSN()
 	if err := ti.wal.SetCheckpointLSN(checkpointLSN); err != nil {
+		ti.mu.Unlock()
 		return err
 	}
+	nextGen := ti.checkpointGen + 1
+
+	// Release the table lock before computing CRCs — index files are already
+	// atomically written, so reading them back is safe and avoids blocking
+	// concurrent writes during the I/O-heavy CRC computation.
+	ti.mu.Unlock()
 
 	manifestFiles := make(map[string]uint32, len(persistedFiles))
 	for _, p := range persistedFiles {
@@ -2360,14 +2387,19 @@ func (ti *TableInstance) Checkpoint() error {
 		manifestFiles[rel] = hash
 	}
 	manifest := &storage.CheckpointManifest{
-		Generation:    ti.checkpointGen + 1,
+		Generation:    nextGen,
 		CheckpointLSN: checkpointLSN,
 		Files:         manifestFiles,
 	}
 	if err := storage.WriteCheckpointManifest(ti.dataDir, ti.Name, manifest); err != nil {
 		return err
 	}
+
+	// Update checkpoint gen under lock.
+	ti.mu.Lock()
 	ti.checkpointGen = manifest.Generation
+	ti.mu.Unlock()
+
 	return ti.wal.Truncate()
 }
 

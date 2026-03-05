@@ -256,13 +256,10 @@ func buildRecordV2(txID uint32, op byte, lsn uint64, data []byte) []byte {
 
 // FlushBatch writes multiple pre-built records + commit markers in one write.
 func (w *WAL) FlushBatch(records [][]byte, txIDs []uint32) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// Build commit records
-	var commitRecords [][]byte
-	for _, txID := range txIDs {
-		commitRecords = append(commitRecords, w.BuildRecord(txID, WALOpCommit, nil))
+	// Build commit records outside the lock to minimize time holding w.mu.
+	commitRecords := make([][]byte, len(txIDs))
+	for i, txID := range txIDs {
+		commitRecords[i] = w.BuildRecord(txID, WALOpCommit, nil)
 	}
 
 	totalSize := 0
@@ -281,6 +278,8 @@ func (w *WAL) FlushBatch(records [][]byte, txIDs []uint32) error {
 		buf = append(buf, r...)
 	}
 
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if _, err := w.file.Seek(0, os.SEEK_END); err != nil {
 		return err
 	}

@@ -15,8 +15,20 @@ PB_WORKERS ?= 4
 PB_SYNC_MODE ?= full
 PB_MODE ?= all
 PB_RESULTS_DIR ?= .pillarbench/results
+PB_GATE_ROWS ?= 2000
+PB_GATE_OPS ?= 4000
+PB_GATE_WORKERS ?= 4
+PB_GATE_SYNC_MODE ?= full
+PB_GATE_CRASH_RUNS ?= 1
+PB_GATE_RESULTS_DIR ?= .pillarbench/results
+PB_GATE_MIN_TPS ?= 250
+PB_GATE_MAX_INSERT_P99_US ?= 50000
+PB_GATE_MAX_UPDATE_P99_US ?= 120000
+PB_GATE_MAX_DELETE_P99_US ?= 50000
+PB_GATE_MAX_ALLOC_PER_OP ?= 20000
+PB_GATE_MAX_RECOVERY_MS ?= 5000
 
-.PHONY: test quickbench quickbench-save quickbench-compare-last quickbench-list pillarbench pillarbench-save
+.PHONY: test quickbench quickbench-save quickbench-compare-last quickbench-list pillarbench pillarbench-save pillar-gate
 
 test:
 	GOCACHE=$(GOCACHE) go test ./...
@@ -100,3 +112,27 @@ pillarbench-save:
 		-workers $(PB_WORKERS) \
 		-json \
 		-out "$$out"
+
+pillar-gate:
+	@mkdir -p $(PB_GATE_RESULTS_DIR)
+	@stamp=$$(date -u +%Y%m%dT%H%M%SZ); \
+	out="$(PB_GATE_RESULTS_DIR)/gate-$${stamp}-$(PB_GATE_SYNC_MODE)-r$(PB_GATE_ROWS)-o$(PB_GATE_OPS).json"; \
+	echo "Running pillarbench gate report -> $$out"; \
+	GOCACHE=$(GOCACHE) go run ./cmd/pillarbench \
+		-mode all \
+		-sync-mode $(PB_GATE_SYNC_MODE) \
+		-rows $(PB_GATE_ROWS) \
+		-ops $(PB_GATE_OPS) \
+		-workers $(PB_GATE_WORKERS) \
+		-crash-runs $(PB_GATE_CRASH_RUNS) \
+		-json=false \
+		-out "$$out"; \
+	echo "Validating gate thresholds"; \
+	GOCACHE=$(GOCACHE) go run ./cmd/pillargate \
+		-report "$$out" \
+		-min-workload-tps $(PB_GATE_MIN_TPS) \
+		-max-insert-p99-us $(PB_GATE_MAX_INSERT_P99_US) \
+		-max-update-p99-us $(PB_GATE_MAX_UPDATE_P99_US) \
+		-max-delete-p99-us $(PB_GATE_MAX_DELETE_P99_US) \
+		-max-alloc-per-op $(PB_GATE_MAX_ALLOC_PER_OP) \
+		-max-recovery-ms $(PB_GATE_MAX_RECOVERY_MS)

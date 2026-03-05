@@ -256,6 +256,15 @@ func (tf *TableFile) initAllocHints() {
 	}
 }
 
+// InvalidateAllocHint resets the shard hint so the next call allocates a fresh page
+// instead of retrying the same full page.
+func (tf *TableFile) InvalidateAllocHint(shard uint32) {
+	shardIdx := int(shard % allocHintShards)
+	tf.allocHintMu[shardIdx].Lock()
+	tf.allocHints[shardIdx] = -1
+	tf.allocHintMu[shardIdx].Unlock()
+}
+
 func (tf *TableFile) IncrementTotalRows() {
 	atomic.AddUint32(&tf.TotalRows, 1)
 }
