@@ -19,6 +19,7 @@
     "test": "deno test --allow-read --allow-write --allow-net --allow-env ts/tests/",
     "check": "deno check ts/mod.ts ts/client.ts ts/cli.ts",
     "bench": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts",
+    "bench:dev": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --profile=smoke --engines=flop-go --scenarios=writes,edits --users=30 --duration-sec=3",
     "bench:micro": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/micro/run.ts",
     "bench:clean": "deno run --allow-read --allow-write benchmarks/compare/clean.ts",
     "bench:report": "deno run --allow-net --allow-read jsr:@std/http/file-server benchmarks/compare --port=8090"

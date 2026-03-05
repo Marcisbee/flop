@@ -227,38 +227,29 @@ const QUICK_SCENARIOS: Scenario[] = [
   {
     name: "high-load-rw",
     kind: "mixed",
-    users: 320,
+    users: 80,
     setupConcurrency: 40,
-    concurrency: 140,
-    durationSec: 8,
+    concurrency: 80,
+    durationSec: 4,
     readShare: 0.55,
-    accountsPerUser: 3,
-  },
-  {
-    name: "reads",
-    kind: "reads",
-    users: 320,
-    setupConcurrency: 40,
-    concurrency: 140,
-    durationSec: 8,
     accountsPerUser: 3,
   },
   {
     name: "writes",
     kind: "writes",
-    users: 320,
+    users: 80,
     setupConcurrency: 40,
-    concurrency: 110,
-    durationSec: 8,
+    concurrency: 80,
+    durationSec: 4,
     accountsPerUser: 3,
   },
   {
     name: "edits",
     kind: "edits",
-    users: 320,
+    users: 80,
     setupConcurrency: 40,
-    concurrency: 110,
-    durationSec: 8,
+    concurrency: 80,
+    durationSec: 4,
     accountsPerUser: 3,
   },
 ];
@@ -391,7 +382,6 @@ function parseRepeats(profile: BenchmarkProfile): number {
   const raw = Number(arg("repeats", "0"));
   if (raw >= 1) return Math.floor(raw);
   if (profile === "full") return 3;
-  if (profile === "quick") return 2;
   return 1;
 }
 
@@ -416,7 +406,6 @@ function parseWarmupSec(profile: BenchmarkProfile): number {
   const raw = Number(arg("warmup-sec", "-1"));
   if (raw >= 0) return raw;
   if (profile === "full") return 3;
-  if (profile === "quick") return 2;
   return 0;
 }
 
