@@ -37,6 +37,7 @@ type Database struct {
 	tableNames          []string
 	tableNameToID       map[string]int
 	tableSpecs          map[string]*tableSpec
+	tablePolicy         map[string]tablePolicyMeta
 }
 
 // TableInstance wraps internal engine table and provides CRUD operations.
@@ -47,7 +48,18 @@ type TableInstance struct {
 	tracker       *tableAccessTracker
 	auth          *AuthContext
 	spec          *tableSpec
+	policy        tablePolicyMeta
 	enforcePolicy bool
+}
+
+type tablePolicyMeta struct {
+	requiresReadFiltering bool
+	requiresRowRead       bool
+	hasFieldReadFiltering bool
+	hasInsertPolicy       bool
+	hasUpdatePolicy       bool
+	hasDeletePolicy       bool
+	writableFields        map[string]struct{}
 }
 
 func (ti *TableInstance) isNil() bool {
@@ -90,9 +102,11 @@ func (a *App) Open() (*Database, error) {
 		enablePprof:         a.config.EnablePprof,
 		tableNameToID:       make(map[string]int),
 		tableSpecs:          make(map[string]*tableSpec),
+		tablePolicy:         make(map[string]tablePolicyMeta),
 	}
 	for name, spec := range a.tables {
 		d.tableSpecs[name] = spec
+		d.tablePolicy[name] = buildTablePolicyMeta(spec)
 	}
 
 	names := make([]string, 0, len(db.Tables))
@@ -237,6 +251,7 @@ func (d *Database) Table(name string) *TableInstance {
 		name:          name,
 		tableID:       d.tableNameToID[name],
 		spec:          d.tableSpecs[name],
+		policy:        d.tablePolicy[name],
 		enforcePolicy: false,
 	}
 }
@@ -306,18 +321,20 @@ func (ti *TableInstance) Insert(data map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("table is nil")
 	}
 	if ti.enforcePolicy {
-		if !ti.allowInsert(data) {
+		if ti.requiresInsertPolicy() && !ti.allowInsert(data) {
 			return nil, ErrAccessDenied
 		}
-		if err := ti.checkWritableFields(nil, data, data); err != nil {
-			return nil, err
+		if ti.requiresFieldWritePolicyForIncoming(data) {
+			if err := ti.checkWritableFields(nil, data, data); err != nil {
+				return nil, err
+			}
 		}
 	}
 	row, err := ti.ti.Insert(data, nil)
 	if err != nil {
 		return nil, err
 	}
-	if ti.enforcePolicy {
+	if ti.enforcePolicy && ti.requiresReadFiltering() {
 		row, ok := ti.filterReadableRow(row)
 		if !ok {
 			return nil, nil
@@ -335,12 +352,15 @@ func (ti *TableInstance) InsertMany(rows []map[string]any, flushEvery int) (int,
 		return 0, fmt.Errorf("table is nil")
 	}
 	if ti.enforcePolicy {
+		checkInsert := ti.requiresInsertPolicy()
 		for _, row := range rows {
-			if !ti.allowInsert(row) {
+			if checkInsert && !ti.allowInsert(row) {
 				return 0, ErrAccessDenied
 			}
-			if err := ti.checkWritableFields(nil, row, row); err != nil {
-				return 0, err
+			if ti.requiresFieldWritePolicyForIncoming(row) {
+				if err := ti.checkWritableFields(nil, row, row); err != nil {
+					return 0, err
+				}
 			}
 		}
 	}
@@ -357,7 +377,7 @@ func (ti *TableInstance) Get(pk string) (map[string]any, error) {
 	if err != nil || row == nil {
 		return row, err
 	}
-	if !ti.enforcePolicy {
+	if !ti.enforcePolicy || !ti.requiresReadFiltering() {
 		return row, nil
 	}
 	filtered, ok := ti.filterReadableRow(row)
@@ -373,7 +393,9 @@ func (ti *TableInstance) Update(pk string, fields map[string]any) (map[string]an
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
-	if ti.enforcePolicy {
+	needsUpdatePolicy := ti.enforcePolicy && ti.requiresUpdatePolicy()
+	needsFieldWrite := ti.enforcePolicy && ti.requiresFieldWritePolicyForIncoming(fields)
+	if needsUpdatePolicy || needsFieldWrite {
 		oldRow, err := ti.ti.Get(pk)
 		if err != nil {
 			return nil, err
@@ -385,18 +407,20 @@ func (ti *TableInstance) Update(pk string, fields map[string]any) (map[string]an
 		for k, v := range fields {
 			nextRow[k] = v
 		}
-		if !ti.allowUpdate(oldRow, nextRow) {
+		if needsUpdatePolicy && !ti.allowUpdate(oldRow, nextRow) {
 			return nil, ErrAccessDenied
 		}
-		if err := ti.checkWritableFields(oldRow, nextRow, fields); err != nil {
-			return nil, err
+		if needsFieldWrite {
+			if err := ti.checkWritableFields(oldRow, nextRow, fields); err != nil {
+				return nil, err
+			}
 		}
 	}
 	row, err := ti.ti.Update(pk, fields, nil)
 	if err != nil {
 		return nil, err
 	}
-	if ti.enforcePolicy {
+	if ti.enforcePolicy && ti.requiresReadFiltering() {
 		row, ok := ti.filterReadableRow(row)
 		if !ok {
 			return nil, nil
@@ -412,7 +436,7 @@ func (ti *TableInstance) Delete(pk string) (bool, error) {
 	if ti.isNil() {
 		return false, fmt.Errorf("table is nil")
 	}
-	if ti.enforcePolicy {
+	if ti.enforcePolicy && ti.requiresDeletePolicy() {
 		row, err := ti.ti.Get(pk)
 		if err != nil {
 			return false, err
@@ -740,22 +764,35 @@ func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, pa
 }
 
 func (ti *TableInstance) requiresReadFiltering() bool {
-	if ti == nil || !ti.enforcePolicy || ti.spec == nil {
+	return ti != nil && ti.enforcePolicy && ti.policy.requiresReadFiltering
+}
+
+func (ti *TableInstance) requiresRowReadFiltering() bool {
+	return ti != nil && ti.enforcePolicy && ti.policy.requiresRowRead
+}
+
+func (ti *TableInstance) requiresInsertPolicy() bool {
+	return ti != nil && ti.enforcePolicy && ti.policy.hasInsertPolicy
+}
+
+func (ti *TableInstance) requiresUpdatePolicy() bool {
+	return ti != nil && ti.enforcePolicy && ti.policy.hasUpdatePolicy
+}
+
+func (ti *TableInstance) requiresDeletePolicy() bool {
+	return ti != nil && ti.enforcePolicy && ti.policy.hasDeletePolicy
+}
+
+func (ti *TableInstance) requiresFieldWritePolicyForIncoming(incoming map[string]any) bool {
+	if ti == nil || !ti.enforcePolicy || len(incoming) == 0 || len(ti.policy.writableFields) == 0 {
 		return false
 	}
-	if ti.spec.Access.Read != nil {
-		return true
-	}
-	for _, fs := range ti.spec.Fields {
-		if fs.Access.Read != nil {
+	for key := range incoming {
+		if _, ok := ti.policy.writableFields[key]; ok {
 			return true
 		}
 	}
 	return false
-}
-
-func (ti *TableInstance) requiresRowReadFiltering() bool {
-	return ti != nil && ti.enforcePolicy && ti.spec != nil && ti.spec.Access.Read != nil
 }
 
 func (ti *TableInstance) allowRead(row map[string]any) bool {
@@ -796,14 +833,7 @@ func (ti *TableInstance) filterReadableRow(row map[string]any) (map[string]any, 
 	if ti == nil || !ti.enforcePolicy || ti.spec == nil {
 		return row, true
 	}
-	needsFieldFilter := false
-	for _, fs := range ti.spec.Fields {
-		if fs.Access.Read != nil {
-			needsFieldFilter = true
-			break
-		}
-	}
-	if !needsFieldFilter {
+	if !ti.policy.hasFieldReadFiltering {
 		return row, true
 	}
 	out := cloneRow(row)
@@ -851,6 +881,34 @@ func (ti *TableInstance) fieldByJSONName(name string) *fieldSpec {
 		}
 	}
 	return nil
+}
+
+func buildTablePolicyMeta(spec *tableSpec) tablePolicyMeta {
+	if spec == nil {
+		return tablePolicyMeta{}
+	}
+	meta := tablePolicyMeta{
+		hasInsertPolicy: spec.Access.Insert != nil,
+		hasUpdatePolicy: spec.Access.Update != nil,
+		hasDeletePolicy: spec.Access.Delete != nil,
+		requiresRowRead: spec.Access.Read != nil,
+	}
+	if meta.requiresRowRead {
+		meta.requiresReadFiltering = true
+	}
+	for _, fs := range spec.Fields {
+		if fs.Access.Read != nil {
+			meta.hasFieldReadFiltering = true
+			meta.requiresReadFiltering = true
+		}
+		if fs.Access.Write != nil {
+			if meta.writableFields == nil {
+				meta.writableFields = make(map[string]struct{})
+			}
+			meta.writableFields[fs.JSONName] = struct{}{}
+		}
+	}
+	return meta
 }
 
 func cloneRow(row map[string]any) map[string]any {

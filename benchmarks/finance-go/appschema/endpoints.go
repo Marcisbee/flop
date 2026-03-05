@@ -4,9 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	flop "github.com/marcisbee/flop"
 )
@@ -15,8 +18,10 @@ const benchmarkStatsID = "singleton"
 
 var (
 	accountLocks [1024]sync.Mutex
-	statsMu      sync.Mutex
+	liveStats    runtimeStats
 )
+
+const statsScale = 10000.0
 
 type tableStore interface {
 	Table(name string) *flop.TableInstance
@@ -52,13 +57,16 @@ type TransferIn struct {
 	Description   string  `json:"description"`
 }
 
-type statsDelta struct {
-	AccountCount          int
-	TransactionCount      int
-	CompletedTransactions int
-	FailedTransactions    int
-	TotalVolume           float64
-	TotalBalance          float64
+type runtimeStats struct {
+	initMu sync.Mutex
+
+	initialized           atomic.Bool
+	accountCount          atomic.Int64
+	transactionCount      atomic.Int64
+	completedTransactions atomic.Int64
+	failedTransactions    atomic.Int64
+	totalVolumeScaled     atomic.Int64
+	totalBalanceScaled    atomic.Int64
 }
 
 func RegisterEndpoints(app *flop.App) {
@@ -82,47 +90,27 @@ func Initialize(db *flop.Database) error {
 	if err != nil {
 		return err
 	}
-	statsTable := db.Table("benchmark_stats")
-	if statsTable == nil {
-		return errors.New("benchmark_stats table not found")
-	}
-	if row, _ := statsTable.Get(benchmarkStatsID); row == nil {
-		_, err = statsTable.Insert(stats)
-		return err
-	}
-	_, err = statsTable.Update(benchmarkStatsID, stats)
-	return err
+	liveStats.setFromSnapshot(stats)
+	return FlushStatsSnapshot(db)
 }
 
 func GetStatsView(ctx *flop.ViewCtx, _ struct{}) (map[string]any, error) {
 	users := ctx.DB.Table("users")
-	statsTable := ctx.DB.Table("benchmark_stats")
-	if users == nil || statsTable == nil {
+	if users == nil {
 		return nil, errors.New("required tables not found")
 	}
-
-	row, err := statsTable.Get(benchmarkStatsID)
-	if err != nil {
+	if err := ensureLiveStats(ctx.DB); err != nil {
 		return nil, err
-	}
-	if row == nil {
-		row, err = rebuildStats(ctx.DB)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := statsTable.Insert(row); err != nil {
-			return nil, err
-		}
 	}
 
 	return map[string]any{
 		"userCount":             users.Count(),
-		"accountCount":          intValue(row["accountCount"]),
-		"transactionCount":      intValue(row["transactionCount"]),
-		"completedTransactions": intValue(row["completedTransactions"]),
-		"failedTransactions":    intValue(row["failedTransactions"]),
-		"totalVolume":           floatValue(row["totalVolume"]),
-		"totalBalance":          floatValue(row["totalBalance"]),
+		"accountCount":          int(liveStats.accountCount.Load()),
+		"transactionCount":      int(liveStats.transactionCount.Load()),
+		"completedTransactions": int(liveStats.completedTransactions.Load()),
+		"failedTransactions":    int(liveStats.failedTransactions.Load()),
+		"totalVolume":           scaledToFloat(liveStats.totalVolumeScaled.Load()),
+		"totalBalance":          scaledToFloat(liveStats.totalBalanceScaled.Load()),
 	}, nil
 }
 
@@ -247,9 +235,7 @@ func CreateAccountReducer(ctx *flop.ReducerCtx, in CreateAccountIn) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	if err := applyStatsDelta(ctx.DB, statsDelta{AccountCount: 1}); err != nil {
-		return nil, err
-	}
+	liveStats.accountCount.Add(1)
 	return row, nil
 }
 
@@ -309,14 +295,10 @@ func DepositReducer(ctx *flop.ReducerCtx, in DepositIn) (map[string]any, error) 
 		return nil, err
 	}
 
-	if err := applyStatsDelta(ctx.DB, statsDelta{
-		TransactionCount:      1,
-		CompletedTransactions: 1,
-		TotalVolume:           in.Amount,
-		TotalBalance:          in.Amount,
-	}); err != nil {
-		return nil, err
-	}
+	liveStats.transactionCount.Add(1)
+	liveStats.completedTransactions.Add(1)
+	liveStats.totalVolumeScaled.Add(floatToScaled(in.Amount))
+	liveStats.totalBalanceScaled.Add(floatToScaled(in.Amount))
 
 	return map[string]any{
 		"balance":       newBalance,
@@ -382,12 +364,8 @@ func TransferReducer(ctx *flop.ReducerCtx, in TransferIn) (map[string]any, error
 		if err != nil {
 			return nil, err
 		}
-		if err := applyStatsDelta(ctx.DB, statsDelta{
-			TransactionCount:   1,
-			FailedTransactions: 1,
-		}); err != nil {
-			return nil, err
-		}
+		liveStats.transactionCount.Add(1)
+		liveStats.failedTransactions.Add(1)
 		return map[string]any{
 			"status":        "failed",
 			"reason":        "insufficient_funds",
@@ -437,13 +415,9 @@ func TransferReducer(ctx *flop.ReducerCtx, in TransferIn) (map[string]any, error
 		return nil, err
 	}
 
-	if err := applyStatsDelta(ctx.DB, statsDelta{
-		TransactionCount:      1,
-		CompletedTransactions: 1,
-		TotalVolume:           in.Amount,
-	}); err != nil {
-		return nil, err
-	}
+	liveStats.transactionCount.Add(1)
+	liveStats.completedTransactions.Add(1)
+	liveStats.totalVolumeScaled.Add(floatToScaled(in.Amount))
 
 	return map[string]any{
 		"status":        "completed",
@@ -451,38 +425,102 @@ func TransferReducer(ctx *flop.ReducerCtx, in TransferIn) (map[string]any, error
 	}, nil
 }
 
-func applyStatsDelta(db tableStore, d statsDelta) error {
-	statsMu.Lock()
-	defer statsMu.Unlock()
+func ensureLiveStats(db tableStore) error {
+	if liveStats.initialized.Load() {
+		return nil
+	}
+	liveStats.initMu.Lock()
+	defer liveStats.initMu.Unlock()
+	if liveStats.initialized.Load() {
+		return nil
+	}
+	snapshot, err := rebuildStats(db)
+	if err != nil {
+		return err
+	}
+	liveStats.setFromSnapshot(snapshot)
+	return nil
+}
 
+func (s *runtimeStats) setFromSnapshot(snapshot map[string]any) {
+	s.accountCount.Store(int64(intValue(snapshot["accountCount"])))
+	s.transactionCount.Store(int64(intValue(snapshot["transactionCount"])))
+	s.completedTransactions.Store(int64(intValue(snapshot["completedTransactions"])))
+	s.failedTransactions.Store(int64(intValue(snapshot["failedTransactions"])))
+	s.totalVolumeScaled.Store(floatToScaled(floatValue(snapshot["totalVolume"])))
+	s.totalBalanceScaled.Store(floatToScaled(floatValue(snapshot["totalBalance"])))
+	s.initialized.Store(true)
+}
+
+func FlushStatsSnapshot(db tableStore) error {
+	if db == nil {
+		return errors.New("database is nil")
+	}
+	if err := ensureLiveStats(db); err != nil {
+		return err
+	}
 	statsTable := db.Table("benchmark_stats")
 	if statsTable == nil {
 		return errors.New("benchmark_stats table not found")
+	}
+	snapshot := map[string]any{
+		"id":                    benchmarkStatsID,
+		"accountCount":          int(liveStats.accountCount.Load()),
+		"transactionCount":      int(liveStats.transactionCount.Load()),
+		"completedTransactions": int(liveStats.completedTransactions.Load()),
+		"failedTransactions":    int(liveStats.failedTransactions.Load()),
+		"totalVolume":           scaledToFloat(liveStats.totalVolumeScaled.Load()),
+		"totalBalance":          scaledToFloat(liveStats.totalBalanceScaled.Load()),
 	}
 	row, err := statsTable.Get(benchmarkStatsID)
 	if err != nil {
 		return err
 	}
 	if row == nil {
-		row, err = rebuildStats(db)
-		if err != nil {
+		if _, err := statsTable.Insert(snapshot); err != nil {
 			return err
 		}
-		if _, err := statsTable.Insert(row); err != nil {
-			return err
-		}
+		return nil
 	}
-
-	next := map[string]any{
-		"accountCount":          intValue(row["accountCount"]) + d.AccountCount,
-		"transactionCount":      intValue(row["transactionCount"]) + d.TransactionCount,
-		"completedTransactions": intValue(row["completedTransactions"]) + d.CompletedTransactions,
-		"failedTransactions":    intValue(row["failedTransactions"]) + d.FailedTransactions,
-		"totalVolume":           floatValue(row["totalVolume"]) + d.TotalVolume,
-		"totalBalance":          floatValue(row["totalBalance"]) + d.TotalBalance,
-	}
-	_, err = statsTable.Update(benchmarkStatsID, next)
+	_, err = statsTable.Update(benchmarkStatsID, snapshot)
 	return err
+}
+
+func StartStatsSnapshotLoop(db *flop.Database, interval time.Duration) func() {
+	if db == nil || interval <= 0 {
+		return func() {}
+	}
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				_ = FlushStatsSnapshot(db)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(stopCh)
+			<-doneCh
+			_ = FlushStatsSnapshot(db)
+		})
+	}
+}
+
+func floatToScaled(v float64) int64 {
+	return int64(math.Round(v * statsScale))
+}
+
+func scaledToFloat(v int64) float64 {
+	return float64(v) / statsScale
 }
 
 func rebuildStats(db tableStore) (map[string]any, error) {

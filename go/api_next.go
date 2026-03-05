@@ -348,6 +348,7 @@ func (a *DBAccessor) Table(name string) *TableInstance {
 		tracker:       a.tracker,
 		auth:          a.auth,
 		spec:          a.db.tableSpecs[name],
+		policy:        a.db.tablePolicy[name],
 		enforcePolicy: a.enforcePolicy,
 	}
 }

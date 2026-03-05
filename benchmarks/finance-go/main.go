@@ -50,6 +50,7 @@ func main() {
 	if err := financeapp.Initialize(db); err != nil {
 		log.Fatalf("initialize benchmark state: %v", err)
 	}
+	stopStatsSnapshot := financeapp.StartStatsSnapshotLoop(db, 2*time.Second)
 
 	mux := http.NewServeMux()
 	mounts := flop.MountDefaultHandlers(mux, app, db)
@@ -88,9 +89,12 @@ func main() {
 			"deno run --allow-net benchmarks/finance-go/seed.ts",
 		},
 	}, flop.DefaultServeOptions{
-		Server:             srv,
-		Checkpoint:         db.Checkpoint,
-		Close:              db.Close,
+		Server:     srv,
+		Checkpoint: db.Checkpoint,
+		Close: func() error {
+			stopStatsSnapshot()
+			return db.Close()
+		},
 		CheckpointInterval: 30 * time.Second,
 	}); err != nil {
 		log.Fatalf("server error: %v", err)
