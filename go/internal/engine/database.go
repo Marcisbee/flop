@@ -177,11 +177,7 @@ func (db *Database) directFlush(walBuffers map[string]*walBufEntry, locksHeld bo
 			table.mu.Lock()
 		}
 		err := table.wal.FlushBatch(entry.records, entry.txIDs)
-		table.walEntryCount += len(entry.records) + len(entry.txIDs)
-		needCheckpoint := table.walEntryCount >= walCheckpointThreshold
-		if needCheckpoint {
-			table.walEntryCount = 0
-		}
+		needCheckpoint := table.bumpWALEntryCount(len(entry.records) + len(entry.txIDs))
 		if !locksHeld {
 			table.mu.Unlock()
 		}
@@ -261,8 +257,7 @@ func (db *Database) drainCommitQueue() {
 						flushErr = err
 					}
 				}
-				table.walEntryCount += len(entry.records) + len(entry.txIDs)
-				if table.walEntryCount >= walCheckpointThreshold {
+				if table.bumpWALEntryCount(len(entry.records) + len(entry.txIDs)) {
 					checkpointTables = append(checkpointTables, table)
 				}
 			}
@@ -286,11 +281,11 @@ func (db *Database) drainCommitQueue() {
 						err = t.wal.Fsync()
 					}
 					count := len(e.records) + len(e.txIDs)
-					t.walEntryCount += count
+					needCheckpoint := t.bumpWALEntryCount(count)
 					results <- tableResult{
 						table:          t,
 						entryCount:     count,
-						needCheckpoint: t.walEntryCount >= walCheckpointThreshold,
+						needCheckpoint: needCheckpoint,
 						err:            err,
 					}
 				}(table, entry)
@@ -315,7 +310,6 @@ func (db *Database) drainCommitQueue() {
 		if len(checkpointTables) > 0 {
 			go func(tables []*TableInstance) {
 				for _, table := range tables {
-					table.walEntryCount = 0
 					table.Checkpoint() // ignore error
 				}
 			}(checkpointTables)
@@ -391,7 +385,7 @@ type TableInstance struct {
 	rowLocks      [updateLockShards]sync.Mutex
 	pageLocks     [updateLockShards]sync.Mutex
 	uniqueLocks   [updateLockShards]sync.Mutex
-	allocMu       sync.Mutex
+	walCountMu    sync.Mutex
 	walEntryCount int
 	autoIDNext    map[string]int64
 }
@@ -673,7 +667,7 @@ func (ti *TableInstance) applyWALInsert(serialized []byte, recordLSN uint64) err
 	}
 	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pageNum)
-	ti.tableFile.TotalRows++
+	ti.tableFile.IncrementTotalRows()
 	ti.primaryIndex.Set(pk, schema.RowPointer{PageNumber: pageNum, SlotIndex: uint16(slotIndex)})
 	return nil
 }
@@ -742,9 +736,7 @@ func (ti *TableInstance) applyWALDelete(pk string, recordLSN uint64) error {
 	page.DeleteRow(int(pointer.SlotIndex))
 	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
-	if ti.tableFile.TotalRows > 0 {
-		ti.tableFile.TotalRows--
-	}
+	ti.tableFile.DecrementTotalRows()
 	ti.primaryIndex.Delete(pk)
 	return nil
 }
@@ -1060,11 +1052,13 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		pageNum   uint32
 		slotIndex int
 	)
+	allocShard := uint32(txID)
+	if pk != "" {
+		allocShard = hashString(pk)
+	}
 	for {
-		ti.allocMu.Lock()
-		pageNum_, page, err := ti.tableFile.FindOrAllocatePage(len(serialized))
+		pageNum_, page, err := ti.tableFile.FindOrAllocatePageForShard(len(serialized), allocShard)
 		if err != nil {
-			ti.allocMu.Unlock()
 			return nil, err
 		}
 		pageLock := ti.pageLockFor(pageNum_)
@@ -1073,14 +1067,12 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		if slotIndex != -1 {
 			page.SetPageLSN(recordLSN)
 			ti.tableFile.MarkPageDirty(pageNum_)
-			ti.tableFile.TotalRows++
+			ti.tableFile.IncrementTotalRows()
 			pageLock.Unlock()
-			ti.allocMu.Unlock()
 			pageNum = pageNum_
 			break
 		}
 		pageLock.Unlock()
-		ti.allocMu.Unlock()
 	}
 	failpoint.Hit("insert_after_page_write")
 
@@ -1633,7 +1625,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	page.DeleteRow(int(pointer.SlotIndex))
 	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
-	ti.tableFile.TotalRows--
+	ti.tableFile.DecrementTotalRows()
 	pageLock.Unlock()
 	failpoint.Hit("delete_after_page_write")
 
@@ -1692,6 +1684,20 @@ func (ti *TableInstance) Count() int {
 // SecondaryIndexesReady reports whether non-primary indexes are fully built.
 func (ti *TableInstance) SecondaryIndexesReady() bool {
 	return ti.secondaryIndexesReady()
+}
+
+func (ti *TableInstance) bumpWALEntryCount(delta int) bool {
+	if delta <= 0 {
+		return false
+	}
+	ti.walCountMu.Lock()
+	defer ti.walCountMu.Unlock()
+	ti.walEntryCount += delta
+	if ti.walEntryCount >= walCheckpointThreshold {
+		ti.walEntryCount = 0
+		return true
+	}
+	return false
 }
 
 // Scan returns rows with limit/offset.
