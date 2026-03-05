@@ -455,25 +455,12 @@ function disconnect() {
 // ── SSE Subscription (single multiplexed connection) ──────────────────────
 
 function startSSE() {
-  const views = 'get_stats,get_recent_transactions,get_all_accounts';
-  sse = new EventSource(
-    `${host}/api/sse?views=${views}&get_recent_transactions.limit=${MAX_TX_ROWS}`
-  );
+  $('perfMode').textContent = 'SSE (realtime)';
+  hydrateFromViews();
+  sse = new EventSource(`${host}/api/sse`);
 
-  // Snapshots — namespaced by view
-  sse.addEventListener('snapshot:get_stats', (e) => {
-    stats = JSON.parse(e.data);
-    renderStats();
-  });
-  sse.addEventListener('snapshot:get_recent_transactions', (e) => {
-    renderTransactionsFull(JSON.parse(e.data));
-  });
-  sse.addEventListener('snapshot:get_all_accounts', (e) => {
-    const accounts = JSON.parse(e.data);
-    accountsMap.clear();
-    for (const a of accounts) accountsMap.set(a.id, a);
-    renderAccountsFull(accounts);
-  });
+  // Initial snapshot currently includes table counts only; we keep view hydrate for full data.
+  sse.addEventListener('snapshot', () => {});
 
   // Changes — single stream, dispatch by table
   let pendingTx = [];
@@ -483,7 +470,7 @@ function startSSE() {
     updateCount++;
     rateCounter++;
 
-    // Stats (derived from all table changes)
+    // Stats (derived from table change stream)
     applyStatsChange(evt);
     if (!statsDirty) {
       statsDirty = true;
@@ -527,6 +514,38 @@ function startSSE() {
     }
   });
   sse.onerror = () => {};
+}
+
+async function hydrateFromViews() {
+  try {
+    const [statsRes, txRes, accountsRes] = await Promise.all([
+      fetch(`${host}/api/view/get_stats`, {
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      }),
+      fetch(`${host}/api/view/get_recent_transactions?limit=${MAX_TX_ROWS}`, {
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      }),
+      fetch(`${host}/api/view/get_all_accounts`, {
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      }),
+    ]);
+    if (!statsRes.ok || !txRes.ok || !accountsRes.ok) return;
+
+    const statsJson = await statsRes.json();
+    const txJson = await txRes.json();
+    const accountsJson = await accountsRes.json();
+
+    stats = statsJson.data || stats;
+    renderStats();
+
+    const txs = txJson.data || [];
+    renderTransactionsFull(txs);
+
+    const accounts = accountsJson.data || [];
+    accountsMap.clear();
+    for (const a of accounts) accountsMap.set(a.id, a);
+    renderAccountsFull(accounts);
+  } catch {}
 }
 
 // Apply a change event to in-memory stats (no server round-trip)

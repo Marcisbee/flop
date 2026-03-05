@@ -5,8 +5,29 @@ import (
 	"github.com/marcisbee/flop/internal/schema"
 )
 
+type BuildOptions struct {
+	DataDir  string
+	SyncMode string
+}
+
 func Build() *flop.App {
-	app := flop.New(flop.Config{})
+	return BuildWithOptions(BuildOptions{})
+}
+
+func BuildWithOptions(opts BuildOptions) *flop.App {
+	cfg := flop.Config{
+		DataDir:               opts.DataDir,
+		SyncMode:              opts.SyncMode,
+		AsyncSecondaryIndexes: true,
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = "./data"
+	}
+	if cfg.SyncMode == "" {
+		cfg.SyncMode = "normal"
+	}
+
+	app := flop.New(cfg)
 
 	users := flop.Define(app, "users", func(s *flop.SchemaBuilder) {
 		s.String("id").Primary("uuidv7").Required().Unique()
@@ -46,6 +67,18 @@ func Build() *flop.App {
 		s.Enum("type", "debit", "credit").Required()
 		s.Timestamp("createdAt").DefaultNow()
 	})
+
+	flop.Define(app, "benchmark_stats", func(s *flop.SchemaBuilder) {
+		s.String("id").Primary().Required().Unique()
+		s.Integer("accountCount").Required().Default(0)
+		s.Integer("transactionCount").Required().Default(0)
+		s.Integer("completedTransactions").Required().Default(0)
+		s.Integer("failedTransactions").Required().Default(0)
+		s.Number("totalVolume").Required().Default(0)
+		s.Number("totalBalance").Required().Default(0)
+	})
+
+	RegisterEndpoints(app)
 
 	return app
 }

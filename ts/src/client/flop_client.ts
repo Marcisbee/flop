@@ -1,6 +1,10 @@
 // Flop<T> client class — typed endpoint calls with auto-batched views.
 
-import { type TokenStore, LocalStorageTokenStore, MemoryTokenStore } from "./token_store.ts";
+import {
+  LocalStorageTokenStore,
+  MemoryTokenStore,
+  type TokenStore,
+} from "./token_store.ts";
 import { AuthClient } from "./auth_client.ts";
 
 export interface FlopClientConfig {
@@ -8,6 +12,7 @@ export interface FlopClientConfig {
   tokenStore?: TokenStore;
   batchViews?: "frame" | "none";
   autoRefetch?: boolean;
+  realtime?: "sse" | "none";
 }
 
 export class FlopRequestError extends Error {
@@ -25,10 +30,16 @@ export class FlopRequestError extends Error {
 type ViewDef = { input: any; output: any };
 type ReducerDef = { input: any; output: any };
 
-type ViewInput<V, K extends keyof V> = V[K] extends ViewDef ? V[K]["input"] : never;
-type ViewOutput<V, K extends keyof V> = V[K] extends ViewDef ? V[K]["output"] : unknown;
-type ReducerInput<R, K extends keyof R> = R[K] extends ReducerDef ? R[K]["input"] : never;
-type ReducerOutput<R, K extends keyof R> = R[K] extends ReducerDef ? R[K]["output"] : unknown;
+type ViewInput<V, K extends keyof V> = V[K] extends ViewDef ? V[K]["input"]
+  : never;
+type ViewOutput<V, K extends keyof V> = V[K] extends ViewDef ? V[K]["output"]
+  : unknown;
+type ReducerInput<R, K extends keyof R> = R[K] extends ReducerDef
+  ? R[K]["input"]
+  : never;
+type ReducerOutput<R, K extends keyof R> = R[K] extends ReducerDef
+  ? R[K]["output"]
+  : unknown;
 
 interface BatchCall {
   id: string;
@@ -56,17 +67,21 @@ interface WatchEntry {
   id: number;
   name: string;
   params: unknown;
+  realtime: boolean;
   reads: Set<string>;
   onData: (value: unknown) => void;
   onError?: (error: Error) => void;
 }
 
-export class Flop<T extends { reducers: Record<string, any>; views: Record<string, any> }> {
+export class Flop<
+  T extends { reducers: Record<string, any>; views: Record<string, any> },
+> {
   private readonly host: string;
   private readonly tokenStore: TokenStore;
   private readonly refreshTokenStore: TokenStore;
   private readonly batchViews: "frame" | "none";
   private readonly autoRefetch: boolean;
+  private readonly realtime: "sse" | "none";
 
   private nextBatchCallID = 1;
   private nextWatchID = 1;
@@ -75,6 +90,9 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
   private readonly watches = new Map<number, WatchEntry>();
   private readonly dirtyWatches = new Set<number>();
   private watchFlushScheduled = false;
+  private sse: EventSource | null = null;
+  private sseTablesKey = "";
+  private sseReconnectTimer: number | null = null;
 
   readonly users: AuthClient;
 
@@ -82,6 +100,7 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
     this.host = config.host.replace(/\/$/, "");
     this.batchViews = config.batchViews ?? "frame";
     this.autoRefetch = config.autoRefetch ?? true;
+    this.realtime = config.realtime ?? "sse";
 
     if (config.tokenStore) {
       this.tokenStore = config.tokenStore;
@@ -95,21 +114,34 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
       ? new LocalStorageTokenStore("flop_refresh_token")
       : new MemoryTokenStore();
 
-    this.users = new AuthClient(this.host, this.tokenStore, this.refreshTokenStore);
+    this.users = new AuthClient(
+      this.host,
+      this.tokenStore,
+      this.refreshTokenStore,
+    );
   }
 
-  view<K extends keyof T["views"]>(name: K, params: ViewInput<T["views"], K>): Promise<ViewOutput<T["views"], K>> {
-    return this.enqueueViewCall(String(name), params) as Promise<ViewOutput<T["views"], K>>;
+  view<K extends keyof T["views"]>(
+    name: K,
+    params: ViewInput<T["views"], K>,
+  ): Promise<ViewOutput<T["views"], K>> {
+    return this.enqueueViewCall(String(name), params) as Promise<
+      ViewOutput<T["views"], K>
+    >;
   }
 
   async reducer<K extends keyof T["reducers"]>(
     name: K,
     params: ReducerInput<T["reducers"], K>,
   ): Promise<ReducerOutput<T["reducers"], K>> {
-    const { data, headers } = await this.requestJSON("POST", `/api/reduce/${String(name)}`, params);
+    const { data, headers } = await this.requestJSON(
+      "POST",
+      `/api/reduce/${String(name)}`,
+      params,
+    );
     const writes = parseCSVHeader(headers.get("X-Flop-Writes"));
     if (this.autoRefetch && writes.length > 0) {
-      this.invalidateViewsByTouchedTables(writes);
+      this.invalidateViewsByTouchedTables(writes, true);
     }
     return data as ReducerOutput<T["reducers"], K>;
   }
@@ -120,11 +152,31 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
     onData: (value: ViewOutput<T["views"], K>) => void,
     onError?: (error: Error) => void,
   ): () => void {
+    return this.registerWatcher(name, params, onData, onError, false);
+  }
+
+  subscribe<K extends keyof T["views"]>(
+    name: K,
+    params: ViewInput<T["views"], K>,
+    onData: (value: ViewOutput<T["views"], K>) => void,
+    onError?: (error: Error) => void,
+  ): () => void {
+    return this.registerWatcher(name, params, onData, onError, true);
+  }
+
+  private registerWatcher<K extends keyof T["views"]>(
+    name: K,
+    params: ViewInput<T["views"], K>,
+    onData: (value: ViewOutput<T["views"], K>) => void,
+    onError: ((error: Error) => void) | undefined,
+    realtime: boolean,
+  ): () => void {
     const watchID = this.nextWatchID++;
     const entry: WatchEntry = {
       id: watchID,
       name: String(name),
       params,
+      realtime,
       reads: new Set<string>(),
       onData: onData as (value: unknown) => void,
       onError,
@@ -137,10 +189,15 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
     return () => {
       this.watches.delete(watchID);
       this.dirtyWatches.delete(watchID);
+      this.syncRealtimeSubscription();
     };
   }
 
-  private enqueueViewCall(name: string, params: unknown, watchId?: number): Promise<unknown> {
+  private enqueueViewCall(
+    name: string,
+    params: unknown,
+    watchId?: number,
+  ): Promise<unknown> {
     if (this.batchViews === "none") {
       return this.runSingleView(name, params, watchId);
     }
@@ -180,7 +237,11 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
     if (calls.length === 1) {
       const call = calls[0];
       try {
-        const value = await this.runSingleView(call.name, call.params, call.watchId);
+        const value = await this.runSingleView(
+          call.name,
+          call.params,
+          call.watchId,
+        );
         call.resolve(value);
       } catch (err) {
         call.reject(err);
@@ -189,11 +250,19 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
     }
 
     const payload = {
-      calls: calls.map((c): BatchCall => ({ id: c.id, name: c.name, params: c.params ?? {} })),
+      calls: calls.map((c): BatchCall => ({
+        id: c.id,
+        name: c.name,
+        params: c.params ?? {},
+      })),
     };
 
     try {
-      const { data } = await this.requestJSON("POST", "/api/view/_batch", payload);
+      const { data } = await this.requestJSON(
+        "POST",
+        "/api/view/_batch",
+        payload,
+      );
       const results = asBatchResults(data);
       const byID = new Map(results.map((r) => [r.id, r]));
       for (const call of calls) {
@@ -210,6 +279,9 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
           const watch = this.watches.get(call.watchId);
           if (watch) {
             watch.reads = new Set(result.reads ?? []);
+            if (watch.realtime) {
+              this.syncRealtimeSubscription();
+            }
           }
         }
         call.resolve(result.data);
@@ -219,11 +291,19 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
     }
   }
 
-  private async runSingleView(name: string, params: unknown, watchId?: number): Promise<unknown> {
+  private async runSingleView(
+    name: string,
+    params: unknown,
+    watchId?: number,
+  ): Promise<unknown> {
     const query = new URLSearchParams();
     if (params && typeof params === "object") {
-      for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
-        if (value !== undefined && value !== null) query.set(key, String(value));
+      for (
+        const [key, value] of Object.entries(params as Record<string, unknown>)
+      ) {
+        if (value !== undefined && value !== null) {
+          query.set(key, String(value));
+        }
       }
     }
     const path = `/api/view/${name}${query.toString() ? `?${query}` : ""}`;
@@ -232,14 +312,23 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
       const watch = this.watches.get(watchId);
       if (watch) {
         watch.reads = new Set(parseCSVHeader(headers.get("X-Flop-Reads")));
+        if (watch.realtime) {
+          this.syncRealtimeSubscription();
+        }
       }
     }
     return data;
   }
 
-  private invalidateViewsByTouchedTables(touchedTables: string[]): void {
+  private invalidateViewsByTouchedTables(
+    touchedTables: string[],
+    includeLocalWatches: boolean,
+  ): void {
     const touched = new Set(touchedTables);
     for (const [watchID, watch] of this.watches.entries()) {
+      if (!includeLocalWatches && !watch.realtime) {
+        continue;
+      }
       for (const table of watch.reads) {
         if (touched.has(table)) {
           this.dirtyWatches.add(watchID);
@@ -273,7 +362,11 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
       const watch = this.watches.get(watchID);
       if (!watch) return;
       try {
-        const value = await this.enqueueViewCall(watch.name, watch.params, watchID);
+        const value = await this.enqueueViewCall(
+          watch.name,
+          watch.params,
+          watchID,
+        );
         watch.onData(value);
       } catch (err) {
         watch.onError?.(toError(err));
@@ -281,12 +374,76 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
     }));
   }
 
+  private syncRealtimeSubscription(): void {
+    if (
+      !this.autoRefetch || this.realtime !== "sse" || !supportsEventSource()
+    ) {
+      this.closeRealtime();
+      return;
+    }
+    const tables = this.collectWatchedTables();
+    const key = tables.join(",");
+    if (key === this.sseTablesKey) return;
+    this.closeRealtime();
+    this.sseTablesKey = key;
+    if (tables.length === 0) return;
+
+    const query = new URLSearchParams();
+    query.set("tables", key);
+    const token = this.tokenStore.get();
+    if (token) query.set("_token", token);
+    const es = new EventSource(`${this.host}/api/sse?${query.toString()}`);
+    this.sse = es;
+    es.addEventListener("change", (event: MessageEvent<string>) => {
+      const parsed = parseSSEChange(event.data);
+      if (!parsed?.table) return;
+      this.invalidateViewsByTouchedTables([parsed.table], false);
+    });
+    es.onerror = () => {
+      if (this.sse !== es) return;
+      this.closeRealtime();
+      this.sseReconnectTimer = setTimeout(() => {
+        this.sseReconnectTimer = null;
+        this.syncRealtimeSubscription();
+      }, 1000);
+    };
+  }
+
+  private collectWatchedTables(): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const watch of this.watches.values()) {
+      if (!watch.realtime) continue;
+      for (const table of watch.reads) {
+        if (seen.has(table)) continue;
+        seen.add(table);
+        out.push(table);
+      }
+    }
+    out.sort();
+    return out;
+  }
+
+  private closeRealtime(): void {
+    if (this.sseReconnectTimer !== null) {
+      clearTimeout(this.sseReconnectTimer);
+      this.sseReconnectTimer = null;
+    }
+    if (this.sse) {
+      this.sse.close();
+      this.sse = null;
+    }
+    this.sseTablesKey = "";
+  }
+
   private async requestJSON(
     method: "GET" | "POST",
     path: string,
     body?: unknown,
   ): Promise<{ data: unknown; headers: Headers }> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
     const token = this.tokenStore.get();
     if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -312,7 +469,11 @@ export class Flop<T extends { reducers: Record<string, any>; views: Record<strin
 
     const payload = await safeJSON(res);
     if (!res.ok) {
-      throw new FlopRequestError(res.status, String(payload?.error ?? `Request failed: ${res.status}`), payload);
+      throw new FlopRequestError(
+        res.status,
+        String(payload?.error ?? `Request failed: ${res.status}`),
+        payload,
+      );
     }
     return { data: payload?.data ?? payload, headers: res.headers };
   }
@@ -348,7 +509,9 @@ function asBatchResults(data: unknown): BatchResult[] {
     out.push({
       id,
       data: r.data,
-      reads: Array.isArray(r.reads) ? r.reads.filter((x): x is string => typeof x === "string") : undefined,
+      reads: Array.isArray(r.reads)
+        ? r.reads.filter((x): x is string => typeof x === "string")
+        : undefined,
       error: typeof r.error === "string" ? r.error : undefined,
     });
   }
@@ -363,4 +526,20 @@ function getAnimationFrame(): ((cb: (time: number) => void) => number) | null {
     return g.requestAnimationFrame.bind(g);
   }
   return null;
+}
+
+function supportsEventSource(): boolean {
+  return typeof (globalThis as { EventSource?: unknown }).EventSource ===
+    "function";
+}
+
+function parseSSEChange(data: string): { table?: string } | null {
+  try {
+    const parsed = JSON.parse(data) as { table?: unknown };
+    if (!parsed || typeof parsed !== "object") return null;
+    if (typeof parsed.table !== "string") return null;
+    return { table: parsed.table };
+  } catch {
+    return null;
+  }
 }

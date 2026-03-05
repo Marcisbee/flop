@@ -12,7 +12,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/server"
 )
 
@@ -355,6 +357,11 @@ type APIHandler struct {
 	db  *Database
 }
 
+const (
+	apiSSEEventBufferSize = 1024
+	apiSSEHeartbeat       = 15 * time.Second
+)
+
 func (a *App) APIHandler(db *Database) *APIHandler {
 	if a == nil {
 		panic("flop: app is nil")
@@ -380,6 +387,9 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.handleSchema(w)
 		return
+	case path == "/api/sse":
+		h.handleSSE(w, r)
+		return
 	case strings.HasPrefix(path, "/api/auth/"):
 		h.handleAuth(w, r)
 		return
@@ -395,6 +405,149 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		jsonError(w, "not found", http.StatusNotFound)
 		return
+	}
+}
+
+func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		jsonError(w, "sse not supported", http.StatusBadRequest)
+		return
+	}
+
+	tables := parseCSVQuery(r.URL.Query().Get("tables"))
+	if len(tables) == 0 {
+		tables = append([]string(nil), h.db.tableNames...)
+	}
+	auth := h.authFromRequest(r)
+	accessor := h.db.trackedAccessor(nil, auth)
+	rowFilterTables := make(map[string]bool, len(tables))
+	for _, tableName := range tables {
+		ti := accessor.Table(tableName)
+		if ti == nil {
+			continue
+		}
+		rowFilterTables[tableName] = ti.requiresRowReadFiltering()
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	done := r.Context().Done()
+	changeCh := make(chan engine.ChangeEvent, apiSSEEventBufferSize)
+	unsubscribe := h.db.db.GetPubSub().Subscribe(tables, func(event engine.ChangeEvent) {
+		select {
+		case changeCh <- event:
+		default:
+			// Drop if subscriber cannot keep up; never block writes.
+		}
+	})
+	defer unsubscribe()
+
+	heartbeat := time.NewTicker(apiSSEHeartbeat)
+	defer heartbeat.Stop()
+
+	type changePayload struct {
+		Table string `json:"table"`
+		Op    string `json:"op"`
+		RowID string `json:"rowId"`
+	}
+	visibleRows := make(map[string]map[string]struct{})
+	isReadable := func(event engine.ChangeEvent) bool {
+		ti := accessor.Table(event.Table)
+		if ti == nil {
+			return false
+		}
+		if !rowFilterTables[event.Table] {
+			return true
+		}
+		return ti.allowRead(event.Data)
+	}
+	wasVisible := func(event engine.ChangeEvent) bool {
+		rows := visibleRows[event.Table]
+		if rows == nil {
+			return false
+		}
+		_, ok := rows[event.RowID]
+		return ok
+	}
+	markVisible := func(event engine.ChangeEvent) {
+		rows := visibleRows[event.Table]
+		if rows == nil {
+			rows = make(map[string]struct{})
+			visibleRows[event.Table] = rows
+		}
+		rows[event.RowID] = struct{}{}
+	}
+	markHidden := func(event engine.ChangeEvent) {
+		rows := visibleRows[event.Table]
+		if rows == nil {
+			return
+		}
+		delete(rows, event.RowID)
+	}
+	shouldEmit := func(event engine.ChangeEvent) (bool, bool) {
+		if !rowFilterTables[event.Table] {
+			return true, false
+		}
+		readable := isReadable(event)
+		visibleBefore := wasVisible(event)
+		switch event.Op {
+		case "insert":
+			if readable {
+				markVisible(event)
+				return true, false
+			}
+			return false, false
+		case "delete":
+			if readable || visibleBefore {
+				markHidden(event)
+				return true, false
+			}
+			return false, false
+		default: // update and unknown future ops
+			if readable {
+				markVisible(event)
+				return true, false
+			}
+			if visibleBefore {
+				markHidden(event)
+				return true, false
+			}
+			// Row may have been visible in initial snapshot; emit table touch without row details.
+			return true, true
+		}
+	}
+
+	for {
+		select {
+		case <-done:
+			return
+		case event := <-changeCh:
+			emit, scrub := shouldEmit(event)
+			if !emit {
+				continue
+			}
+			if scrub {
+				event.Op = "touch"
+				event.RowID = ""
+			}
+			payload, _ := json.Marshal(changePayload{
+				Table: event.Table,
+				Op:    event.Op,
+				RowID: event.RowID,
+			})
+			fmt.Fprintf(w, "event: change\ndata: %s\n\n", payload)
+			flusher.Flush()
+		case <-heartbeat.C:
+			fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
+		}
 	}
 }
 
@@ -754,4 +907,25 @@ func jsonResponse(w http.ResponseWriter, status int, payload any) {
 
 func jsonError(w http.ResponseWriter, message string, status int) {
 	jsonResponse(w, status, map[string]any{"error": message})
+}
+
+func parseCSVQuery(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, ok := seen[part]; ok {
+			continue
+		}
+		seen[part] = struct{}{}
+		out = append(out, part)
+	}
+	return out
 }

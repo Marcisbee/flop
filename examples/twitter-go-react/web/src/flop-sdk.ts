@@ -11,6 +11,7 @@ export interface FlopClientConfig {
   tokenStore?: TokenStore;
   batchViews?: 'frame' | 'none';
   autoRefetch?: boolean;
+  realtime?: 'sse' | 'none';
 }
 
 type ViewDef = { input: any; output: any };
@@ -27,6 +28,18 @@ export interface FlopClient<T extends { reducers: Record<string, any>; views: Re
     name: K,
     params: ReducerInput<T['reducers'], K>,
   ): Promise<ReducerOutput<T['reducers'], K>>;
+  subscribe<K extends keyof T['views']>(
+    name: K,
+    params: ViewInput<T['views'], K>,
+    onData: (value: ViewOutput<T['views'], K>) => void,
+    onError?: (error: Error) => void,
+  ): () => void;
+  watch<K extends keyof T['views']>(
+    name: K,
+    params: ViewInput<T['views'], K>,
+    onData: (value: ViewOutput<T['views'], K>) => void,
+    onError?: (error: Error) => void,
+  ): () => void;
 }
 
 // @ts-expect-error runtime ESM bundle has no declaration file

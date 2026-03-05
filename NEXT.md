@@ -9,6 +9,7 @@ This document describes the proposed **NEXT** app API:
 - JS SDK uses `client.view(name, params)` and `client.reducer(name, params)`
 - multiple `view()` calls in one frame are auto-batched (single call stays direct)
 - reducer writes auto-trigger refetch of affected watched views
+- live subscriptions use core `/api/sse` (not admin endpoints)
 
 ## Goals
 
@@ -232,6 +233,7 @@ const client = new Flop<AppSchema>({
   host: "http://localhost:1985",
   batchViews: "frame",
   autoRefetch: true,
+  realtime: "sse",
 });
 
 const board = await client.view("get_project_board", { projectId: "p1" });
@@ -277,10 +279,10 @@ When reducer response includes `X-Flop-Writes`, SDK:
 2. compares touched tables vs each view's last tracked reads
 3. re-fetches only affected views (also batched)
 
-## 6. Watch API for UI
+## 6. Subscribe API for UI
 
 ```ts
-const stop = client.watch("get_project_board", { projectId: "p1" }, (nextBoard) => {
+const stop = client.subscribe("get_project_board", { projectId: "p1" }, (nextBoard) => {
   renderBoard(nextBoard);
 });
 
@@ -294,7 +296,14 @@ await client.reducer("move_task", {
 stop();
 ```
 
-`watch()` automatically benefits from batched re-fetch and reducer-based invalidation.
+`subscribe()` automatically:
+
+1. does an initial typed `view()` fetch
+2. tracks read tables from `X-Flop-Reads`
+3. opens core `/api/sse?tables=...`
+4. re-fetches only affected subscriptions on change events
+
+`watch()` is local-only (same-client invalidation after reducers), without opening SSE.
 
 ## 7. Generated TypeScript types
 

@@ -208,6 +208,7 @@ var Flop = class {
     __publicField(this, "refreshTokenStore");
     __publicField(this, "batchViews");
     __publicField(this, "autoRefetch");
+    __publicField(this, "realtime");
     __publicField(this, "nextBatchCallID", 1);
     __publicField(this, "nextWatchID", 1);
     __publicField(this, "pendingViewCalls", []);
@@ -215,10 +216,14 @@ var Flop = class {
     __publicField(this, "watches", /* @__PURE__ */ new Map());
     __publicField(this, "dirtyWatches", /* @__PURE__ */ new Set());
     __publicField(this, "watchFlushScheduled", false);
+    __publicField(this, "sse", null);
+    __publicField(this, "sseTablesKey", "");
+    __publicField(this, "sseReconnectTimer", null);
     __publicField(this, "users");
     this.host = config.host.replace(/\/$/, "");
     this.batchViews = config.batchViews ?? "frame";
     this.autoRefetch = config.autoRefetch ?? true;
+    this.realtime = config.realtime ?? "sse";
     if (config.tokenStore) {
       this.tokenStore = config.tokenStore;
     } else if (typeof localStorage !== "undefined") {
@@ -227,25 +232,40 @@ var Flop = class {
       this.tokenStore = new MemoryTokenStore();
     }
     this.refreshTokenStore = typeof localStorage !== "undefined" ? new LocalStorageTokenStore("flop_refresh_token") : new MemoryTokenStore();
-    this.users = new AuthClient(this.host, this.tokenStore, this.refreshTokenStore);
+    this.users = new AuthClient(
+      this.host,
+      this.tokenStore,
+      this.refreshTokenStore
+    );
   }
   view(name, params) {
     return this.enqueueViewCall(String(name), params);
   }
   async reducer(name, params) {
-    const { data, headers } = await this.requestJSON("POST", `/api/reduce/${String(name)}`, params);
+    const { data, headers } = await this.requestJSON(
+      "POST",
+      `/api/reduce/${String(name)}`,
+      params
+    );
     const writes = parseCSVHeader(headers.get("X-Flop-Writes"));
     if (this.autoRefetch && writes.length > 0) {
-      this.invalidateViewsByTouchedTables(writes);
+      this.invalidateViewsByTouchedTables(writes, true);
     }
     return data;
   }
   watch(name, params, onData, onError) {
+    return this.registerWatcher(name, params, onData, onError, false);
+  }
+  subscribe(name, params, onData, onError) {
+    return this.registerWatcher(name, params, onData, onError, true);
+  }
+  registerWatcher(name, params, onData, onError, realtime) {
     const watchID = this.nextWatchID++;
     const entry = {
       id: watchID,
       name: String(name),
       params,
+      realtime,
       reads: /* @__PURE__ */ new Set(),
       onData,
       onError
@@ -258,6 +278,7 @@ var Flop = class {
     return () => {
       this.watches.delete(watchID);
       this.dirtyWatches.delete(watchID);
+      this.syncRealtimeSubscription();
     };
   }
   enqueueViewCall(name, params, watchId) {
@@ -296,7 +317,11 @@ var Flop = class {
     if (calls.length === 1) {
       const call = calls[0];
       try {
-        const value = await this.runSingleView(call.name, call.params, call.watchId);
+        const value = await this.runSingleView(
+          call.name,
+          call.params,
+          call.watchId
+        );
         call.resolve(value);
       } catch (err) {
         call.reject(err);
@@ -304,10 +329,18 @@ var Flop = class {
       return;
     }
     const payload = {
-      calls: calls.map((c) => ({ id: c.id, name: c.name, params: c.params ?? {} }))
+      calls: calls.map((c) => ({
+        id: c.id,
+        name: c.name,
+        params: c.params ?? {}
+      }))
     };
     try {
-      const { data } = await this.requestJSON("POST", "/api/view/_batch", payload);
+      const { data } = await this.requestJSON(
+        "POST",
+        "/api/view/_batch",
+        payload
+      );
       const results = asBatchResults(data);
       const byID = new Map(results.map((r) => [r.id, r]));
       for (const call of calls) {
@@ -324,6 +357,9 @@ var Flop = class {
           const watch = this.watches.get(call.watchId);
           if (watch) {
             watch.reads = new Set(result.reads ?? []);
+            if (watch.realtime) {
+              this.syncRealtimeSubscription();
+            }
           }
         }
         call.resolve(result.data);
@@ -336,7 +372,9 @@ var Flop = class {
     const query = new URLSearchParams();
     if (params && typeof params === "object") {
       for (const [key, value] of Object.entries(params)) {
-        if (value !== void 0 && value !== null) query.set(key, String(value));
+        if (value !== void 0 && value !== null) {
+          query.set(key, String(value));
+        }
       }
     }
     const path = `/api/view/${name}${query.toString() ? `?${query}` : ""}`;
@@ -345,13 +383,19 @@ var Flop = class {
       const watch = this.watches.get(watchId);
       if (watch) {
         watch.reads = new Set(parseCSVHeader(headers.get("X-Flop-Reads")));
+        if (watch.realtime) {
+          this.syncRealtimeSubscription();
+        }
       }
     }
     return data;
   }
-  invalidateViewsByTouchedTables(touchedTables) {
+  invalidateViewsByTouchedTables(touchedTables, includeLocalWatches) {
     const touched = new Set(touchedTables);
     for (const [watchID, watch] of this.watches.entries()) {
+      if (!includeLocalWatches && !watch.realtime) {
+        continue;
+      }
       for (const table of watch.reads) {
         if (touched.has(table)) {
           this.dirtyWatches.add(watchID);
@@ -383,15 +427,77 @@ var Flop = class {
       const watch = this.watches.get(watchID);
       if (!watch) return;
       try {
-        const value = await this.enqueueViewCall(watch.name, watch.params, watchID);
+        const value = await this.enqueueViewCall(
+          watch.name,
+          watch.params,
+          watchID
+        );
         watch.onData(value);
       } catch (err) {
         watch.onError?.(toError(err));
       }
     }));
   }
+  syncRealtimeSubscription() {
+    if (!this.autoRefetch || this.realtime !== "sse" || !supportsEventSource()) {
+      this.closeRealtime();
+      return;
+    }
+    const tables = this.collectWatchedTables();
+    const key = tables.join(",");
+    if (key === this.sseTablesKey) return;
+    this.closeRealtime();
+    this.sseTablesKey = key;
+    if (tables.length === 0) return;
+    const query = new URLSearchParams();
+    query.set("tables", key);
+    const token = this.tokenStore.get();
+    if (token) query.set("_token", token);
+    const es = new EventSource(`${this.host}/api/sse?${query.toString()}`);
+    this.sse = es;
+    es.addEventListener("change", (event) => {
+      const parsed = parseSSEChange(event.data);
+      if (!parsed?.table) return;
+      this.invalidateViewsByTouchedTables([parsed.table], false);
+    });
+    es.onerror = () => {
+      if (this.sse !== es) return;
+      this.closeRealtime();
+      this.sseReconnectTimer = setTimeout(() => {
+        this.sseReconnectTimer = null;
+        this.syncRealtimeSubscription();
+      }, 1e3);
+    };
+  }
+  collectWatchedTables() {
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const watch of this.watches.values()) {
+      if (!watch.realtime) continue;
+      for (const table of watch.reads) {
+        if (seen.has(table)) continue;
+        seen.add(table);
+        out.push(table);
+      }
+    }
+    out.sort();
+    return out;
+  }
+  closeRealtime() {
+    if (this.sseReconnectTimer !== null) {
+      clearTimeout(this.sseReconnectTimer);
+      this.sseReconnectTimer = null;
+    }
+    if (this.sse) {
+      this.sse.close();
+      this.sse = null;
+    }
+    this.sseTablesKey = "";
+  }
   async requestJSON(method, path, body) {
-    const headers = { "Content-Type": "application/json" };
+    const headers = {
+      "Content-Type": "application/json"
+    };
     const token = this.tokenStore.get();
     if (token) headers.Authorization = `Bearer ${token}`;
     const execute = async () => {
@@ -413,7 +519,11 @@ var Flop = class {
     }
     const payload = await safeJSON(res);
     if (!res.ok) {
-      throw new FlopRequestError(res.status, String(payload?.error ?? `Request failed: ${res.status}`), payload);
+      throw new FlopRequestError(
+        res.status,
+        String(payload?.error ?? `Request failed: ${res.status}`),
+        payload
+      );
     }
     return { data: payload?.data ?? payload, headers: res.headers };
   }
@@ -457,6 +567,19 @@ function getAnimationFrame() {
     return g.requestAnimationFrame.bind(g);
   }
   return null;
+}
+function supportsEventSource() {
+  return typeof globalThis.EventSource === "function";
+}
+function parseSSEChange(data) {
+  try {
+    const parsed = JSON.parse(data);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (typeof parsed.table !== "string") return null;
+    return { table: parsed.table };
+  } catch {
+    return null;
+  }
 }
 export {
   AuthClient,
