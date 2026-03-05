@@ -1,0 +1,339 @@
+{
+  "createdAt": "2026-03-05T00:33:02Z",
+  "mode": "all",
+  "syncMode": "full",
+  "dataDir": "/var/folders/xw/b9z5h6ss31zcgby_vh5v_dmc0000gn/T/flop-pillarbench-406432149/data",
+  "rows": 2000,
+  "ops": 4000,
+  "workers": 4,
+  "seed": 42,
+  "metrics": [
+    {
+      "name": "seed_ms",
+      "value": 28,
+      "unit": "ms"
+    },
+    {
+      "name": "seed_rows_per_sec",
+      "value": 71029.3484389081,
+      "unit": "rows/s"
+    },
+    {
+      "name": "workload_ms",
+      "value": 8800,
+      "unit": "ms"
+    },
+    {
+      "name": "workload_tps",
+      "value": 454.5403215972206,
+      "unit": "ops/s"
+    },
+    {
+      "name": "workload_alloc_bytes",
+      "value": 12977744,
+      "unit": "bytes"
+    },
+    {
+      "name": "workload_alloc_per_op",
+      "value": 3244.436,
+      "unit": "bytes/op"
+    },
+    {
+      "name": "ops_get",
+      "value": 1797,
+      "unit": "ops"
+    },
+    {
+      "name": "ops_update",
+      "value": 1007,
+      "unit": "ops"
+    },
+    {
+      "name": "ops_insert",
+      "value": 604,
+      "unit": "ops"
+    },
+    {
+      "name": "ops_delete",
+      "value": 414,
+      "unit": "ops"
+    },
+    {
+      "name": "ops_scan",
+      "value": 178,
+      "unit": "ops"
+    },
+    {
+      "name": "get_count",
+      "value": 1797,
+      "unit": "ops"
+    },
+    {
+      "name": "get_avg_us",
+      "value": 24.278241513633834,
+      "unit": "us"
+    },
+    {
+      "name": "get_p50_us",
+      "value": 4,
+      "unit": "us"
+    },
+    {
+      "name": "get_p95_us",
+      "value": 17,
+      "unit": "us"
+    },
+    {
+      "name": "get_p99_us",
+      "value": 60,
+      "unit": "us"
+    },
+    {
+      "name": "update_count",
+      "value": 1007,
+      "unit": "ops"
+    },
+    {
+      "name": "update_avg_us",
+      "value": 22723.91757696127,
+      "unit": "us"
+    },
+    {
+      "name": "update_p50_us",
+      "value": 21018,
+      "unit": "us"
+    },
+    {
+      "name": "update_p95_us",
+      "value": 45881,
+      "unit": "us"
+    },
+    {
+      "name": "update_p99_us",
+      "value": 56982,
+      "unit": "us"
+    },
+    {
+      "name": "insert_count",
+      "value": 604,
+      "unit": "ops"
+    },
+    {
+      "name": "insert_avg_us",
+      "value": 10897.940397350992,
+      "unit": "us"
+    },
+    {
+      "name": "insert_p50_us",
+      "value": 9973,
+      "unit": "us"
+    },
+    {
+      "name": "insert_p95_us",
+      "value": 18824,
+      "unit": "us"
+    },
+    {
+      "name": "insert_p99_us",
+      "value": 24895,
+      "unit": "us"
+    },
+    {
+      "name": "delete_count",
+      "value": 414,
+      "unit": "ops"
+    },
+    {
+      "name": "delete_avg_us",
+      "value": 11673.393719806763,
+      "unit": "us"
+    },
+    {
+      "name": "delete_p50_us",
+      "value": 10049,
+      "unit": "us"
+    },
+    {
+      "name": "delete_p95_us",
+      "value": 19369,
+      "unit": "us"
+    },
+    {
+      "name": "delete_p99_us",
+      "value": 25984,
+      "unit": "us"
+    },
+    {
+      "name": "scan_count",
+      "value": 178,
+      "unit": "ops"
+    },
+    {
+      "name": "scan_avg_us",
+      "value": 185.81460674157304,
+      "unit": "us"
+    },
+    {
+      "name": "scan_p50_us",
+      "value": 141,
+      "unit": "us"
+    },
+    {
+      "name": "scan_p95_us",
+      "value": 363,
+      "unit": "us"
+    },
+    {
+      "name": "scan_p99_us",
+      "value": 507,
+      "unit": "us"
+    },
+    {
+      "name": "checkpoint_ms",
+      "value": 65,
+      "unit": "ms"
+    },
+    {
+      "name": "close_ms",
+      "value": 59,
+      "unit": "ms"
+    },
+    {
+      "name": "recovery_open_ms",
+      "value": 22,
+      "unit": "ms"
+    },
+    {
+      "name": "recovery_consistent",
+      "value": 1,
+      "unit": "bool"
+    },
+    {
+      "name": "recovery_rows",
+      "value": 2190,
+      "unit": "rows"
+    }
+  ],
+  "crashResults": [
+    {
+      "scenario": "insert_after_wal_record",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 82,
+      "consistent": true,
+      "rows": 200
+    },
+    {
+      "scenario": "insert_after_page_write",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 83,
+      "consistent": true,
+      "rows": 200
+    },
+    {
+      "scenario": "insert_after_index_update",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 82,
+      "consistent": true,
+      "rows": 200
+    },
+    {
+      "scenario": "insert_before_commit",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 92,
+      "consistent": true,
+      "rows": 200
+    },
+    {
+      "scenario": "update_after_wal_record",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 69,
+      "consistent": true,
+      "rows": 200
+    },
+    {
+      "scenario": "update_after_page_write",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 64,
+      "consistent": true,
+      "rows": 200
+    },
+    {
+      "scenario": "update_after_index_update",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 63,
+      "consistent": true,
+      "rows": 200
+    },
+    {
+      "scenario": "update_before_commit",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 63,
+      "consistent": true,
+      "rows": 200
+    },
+    {
+      "scenario": "delete_after_wal_record",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 79,
+      "consistent": true,
+      "rows": 201
+    },
+    {
+      "scenario": "delete_after_page_write",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 104,
+      "consistent": true,
+      "rows": 201
+    },
+    {
+      "scenario": "delete_after_index_update",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 86,
+      "consistent": true,
+      "rows": 201
+    },
+    {
+      "scenario": "delete_before_commit",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 77,
+      "consistent": true,
+      "rows": 201
+    },
+    {
+      "scenario": "checkpoint_after_table_flush",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 84,
+      "consistent": true,
+      "rows": 201
+    },
+    {
+      "scenario": "checkpoint_after_index_write",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 88,
+      "consistent": true,
+      "rows": 201
+    },
+    {
+      "scenario": "checkpoint_after_wal_fsync",
+      "run": 1,
+      "workerExitCode": 197,
+      "recoveryMs": 88,
+      "consistent": true,
+      "rows": 201
+    }
+  ]
+}

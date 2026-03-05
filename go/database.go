@@ -34,11 +34,20 @@ type Database struct {
 	analyticsMu         sync.Mutex
 	analytics           *server.RequestAnalytics
 	cronRunner          *cron.Runner
+	tableNames          []string
+	tableNameToID       map[string]int
+	tableSpecs          map[string]*tableSpec
 }
 
 // TableInstance wraps internal engine table and provides CRUD operations.
 type TableInstance struct {
-	ti *engine.TableInstance
+	ti            *engine.TableInstance
+	name          string
+	tableID       int
+	tracker       *tableAccessTracker
+	auth          *AuthContext
+	spec          *tableSpec
+	enforcePolicy bool
 }
 
 func (ti *TableInstance) isNil() bool {
@@ -79,6 +88,21 @@ func (a *App) Open() (*Database, error) {
 		db:                  db,
 		requestLogRetention: retention,
 		enablePprof:         a.config.EnablePprof,
+		tableNameToID:       make(map[string]int),
+		tableSpecs:          make(map[string]*tableSpec),
+	}
+	for name, spec := range a.tables {
+		d.tableSpecs[name] = spec
+	}
+
+	names := make([]string, 0, len(db.Tables))
+	for name := range db.Tables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	d.tableNames = names
+	for i, name := range names {
+		d.tableNameToID[name] = i
 	}
 
 	// Set up auth service if there's an auth table
@@ -208,7 +232,17 @@ func (d *Database) Table(name string) *TableInstance {
 	if ti == nil {
 		return nil
 	}
-	return &TableInstance{ti: ti}
+	return &TableInstance{
+		ti:            ti,
+		name:          name,
+		tableID:       d.tableNameToID[name],
+		spec:          d.tableSpecs[name],
+		enforcePolicy: false,
+	}
+}
+
+func (d *Database) trackedAccessor(tracker *tableAccessTracker, auth *AuthContext) *DBAccessor {
+	return &DBAccessor{db: d, tracker: tracker, auth: auth, enforcePolicy: true}
 }
 
 // Checkpoint flushes all pending writes to disk.
@@ -267,63 +301,236 @@ func (d *Database) RequestAnalytics() *server.RequestAnalytics {
 // Insert inserts a row into the table. Returns the inserted row
 // (with auto-generated fields filled).
 func (ti *TableInstance) Insert(data map[string]any) (map[string]any, error) {
+	ti.markWrite()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
-	return ti.ti.Insert(data, nil)
+	if ti.enforcePolicy {
+		if !ti.allowInsert(data) {
+			return nil, ErrAccessDenied
+		}
+		if err := ti.checkWritableFields(nil, data, data); err != nil {
+			return nil, err
+		}
+	}
+	row, err := ti.ti.Insert(data, nil)
+	if err != nil {
+		return nil, err
+	}
+	if ti.enforcePolicy {
+		row, ok := ti.filterReadableRow(row)
+		if !ok {
+			return nil, nil
+		}
+		return row, nil
+	}
+	return row, nil
 }
 
 // InsertMany inserts rows in buffered batches for higher import throughput.
 // Returns the number of inserted rows.
 func (ti *TableInstance) InsertMany(rows []map[string]any, flushEvery int) (int, error) {
+	ti.markWrite()
 	if ti.isNil() {
 		return 0, fmt.Errorf("table is nil")
+	}
+	if ti.enforcePolicy {
+		for _, row := range rows {
+			if !ti.allowInsert(row) {
+				return 0, ErrAccessDenied
+			}
+			if err := ti.checkWritableFields(nil, row, row); err != nil {
+				return 0, err
+			}
+		}
 	}
 	return ti.ti.BulkInsert(rows, flushEvery)
 }
 
 // Get retrieves a row by primary key.
 func (ti *TableInstance) Get(pk string) (map[string]any, error) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
-	return ti.ti.Get(pk)
+	row, err := ti.ti.Get(pk)
+	if err != nil || row == nil {
+		return row, err
+	}
+	if !ti.enforcePolicy {
+		return row, nil
+	}
+	filtered, ok := ti.filterReadableRow(row)
+	if !ok {
+		return nil, nil
+	}
+	return filtered, nil
 }
 
 // Update updates a row by primary key. Returns the updated row.
 func (ti *TableInstance) Update(pk string, fields map[string]any) (map[string]any, error) {
+	ti.markWrite()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
-	return ti.ti.Update(pk, fields, nil)
+	if ti.enforcePolicy {
+		oldRow, err := ti.ti.Get(pk)
+		if err != nil {
+			return nil, err
+		}
+		if oldRow == nil {
+			return nil, fmt.Errorf("row not found")
+		}
+		nextRow := cloneRow(oldRow)
+		for k, v := range fields {
+			nextRow[k] = v
+		}
+		if !ti.allowUpdate(oldRow, nextRow) {
+			return nil, ErrAccessDenied
+		}
+		if err := ti.checkWritableFields(oldRow, nextRow, fields); err != nil {
+			return nil, err
+		}
+	}
+	row, err := ti.ti.Update(pk, fields, nil)
+	if err != nil {
+		return nil, err
+	}
+	if ti.enforcePolicy {
+		row, ok := ti.filterReadableRow(row)
+		if !ok {
+			return nil, nil
+		}
+		return row, nil
+	}
+	return row, nil
 }
 
 // Delete deletes a row by primary key. Returns true if the row existed.
 func (ti *TableInstance) Delete(pk string) (bool, error) {
+	ti.markWrite()
 	if ti.isNil() {
 		return false, fmt.Errorf("table is nil")
+	}
+	if ti.enforcePolicy {
+		row, err := ti.ti.Get(pk)
+		if err != nil {
+			return false, err
+		}
+		if row == nil {
+			return false, nil
+		}
+		if !ti.allowDelete(row) {
+			return false, ErrAccessDenied
+		}
 	}
 	return ti.ti.Delete(pk, nil)
 }
 
 // Scan returns rows with pagination.
 func (ti *TableInstance) Scan(limit, offset int) ([]map[string]any, error) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
-	return ti.ti.Scan(limit, offset)
+	if !ti.requiresReadFiltering() {
+		return ti.ti.Scan(limit, offset)
+	}
+	if !ti.requiresRowReadFiltering() {
+		rows, err := ti.ti.Scan(limit, offset)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			filtered, ok := ti.filterReadableRow(row)
+			if !ok {
+				continue
+			}
+			out = append(out, filtered)
+		}
+		return out, nil
+	}
+	if limit <= 0 {
+		return []map[string]any{}, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	total := ti.ti.Count()
+	if total <= 0 {
+		return []map[string]any{}, nil
+	}
+	chunkSize := limit * 2
+	if chunkSize < 256 {
+		chunkSize = 256
+	}
+	if chunkSize > 4096 {
+		chunkSize = 4096
+	}
+	physicalOffset := 0
+	visibleSkipped := 0
+	out := make([]map[string]any, 0, limit)
+	for physicalOffset < total && len(out) < limit {
+		rows, err := ti.ti.Scan(chunkSize, physicalOffset)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		physicalOffset += len(rows)
+		for _, row := range rows {
+			filtered, ok := ti.filterReadableRow(row)
+			if !ok {
+				continue
+			}
+			if visibleSkipped < offset {
+				visibleSkipped++
+				continue
+			}
+			out = append(out, filtered)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // Count returns the number of rows.
 func (ti *TableInstance) Count() int {
+	ti.markRead()
 	if ti.isNil() {
 		return 0
 	}
-	return ti.ti.Count()
+	if !ti.requiresRowReadFiltering() {
+		return ti.ti.Count()
+	}
+	total := ti.ti.Count()
+	if total <= 0 {
+		return 0
+	}
+	const chunkSize = 512
+	physicalOffset := 0
+	visible := 0
+	for physicalOffset < total {
+		rows, err := ti.ti.Scan(chunkSize, physicalOffset)
+		if err != nil || len(rows) == 0 {
+			break
+		}
+		physicalOffset += len(rows)
+		for _, row := range rows {
+			if ti.allowRead(row) {
+				visible++
+			}
+		}
+	}
+	return visible
 }
 
-// SecondaryIndexesReady reports whether non-primary indexes are fully built.
 func (ti *TableInstance) SecondaryIndexesReady() bool {
+	ti.markRead()
 	if ti.isNil() {
 		return false
 	}
@@ -332,6 +539,7 @@ func (ti *TableInstance) SecondaryIndexesReady() bool {
 
 // FindByEmail finds a row by the "email" unique index.
 func (ti *TableInstance) FindByEmail(email string) (map[string]any, bool) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, false
 	}
@@ -343,11 +551,16 @@ func (ti *TableInstance) FindByEmail(email string) (map[string]any, bool) {
 	if err != nil || row == nil {
 		return nil, false
 	}
-	return row, true
+	filtered, ok := ti.filterReadableRow(row)
+	if !ok {
+		return nil, false
+	}
+	return filtered, true
 }
 
 // FindByUniqueIndex finds a row by a unique index on the given field.
 func (ti *TableInstance) FindByUniqueIndex(field string, value any) (map[string]any, bool) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, false
 	}
@@ -359,12 +572,17 @@ func (ti *TableInstance) FindByUniqueIndex(field string, value any) (map[string]
 	if err != nil || row == nil {
 		return nil, false
 	}
-	return row, true
+	filtered, ok := ti.filterReadableRow(row)
+	if !ok {
+		return nil, false
+	}
+	return filtered, true
 }
 
 // FindByUniqueCompositeIndex finds a row by a unique composite index.
 // Values are matched against fields in order.
 func (ti *TableInstance) FindByUniqueCompositeIndex(fields []string, values ...any) (map[string]any, bool) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, false
 	}
@@ -379,19 +597,39 @@ func (ti *TableInstance) FindByUniqueCompositeIndex(fields []string, values ...a
 	if err != nil || row == nil {
 		return nil, false
 	}
-	return row, true
+	filtered, ok := ti.filterReadableRow(row)
+	if !ok {
+		return nil, false
+	}
+	return filtered, true
 }
 
 // CountByIndex returns the number of rows matching a non-unique index value.
 func (ti *TableInstance) CountByIndex(field string, value any) int {
+	ti.markRead()
 	if ti.isNil() {
 		return 0
 	}
-	return len(ti.ti.FindAllByIndex([]string{field}, value))
+	ptrs := ti.ti.FindAllByIndex([]string{field}, value)
+	if !ti.requiresRowReadFiltering() {
+		return len(ptrs)
+	}
+	count := 0
+	for _, ptr := range ptrs {
+		row, err := ti.ti.GetByPointer(ptr)
+		if err != nil || row == nil {
+			continue
+		}
+		if ti.allowRead(row) {
+			count++
+		}
+	}
+	return count
 }
 
 // FindByIndex returns all rows matching a non-unique index value.
 func (ti *TableInstance) FindByIndex(field string, value any) ([]map[string]any, error) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
@@ -402,7 +640,11 @@ func (ti *TableInstance) FindByIndex(field string, value any) ([]map[string]any,
 		if err != nil || row == nil {
 			continue
 		}
-		rows = append(rows, row)
+		filtered, ok := ti.filterReadableRow(row)
+		if !ok {
+			continue
+		}
+		rows = append(rows, filtered)
 	}
 	return rows, nil
 }
@@ -410,6 +652,7 @@ func (ti *TableInstance) FindByIndex(field string, value any) ([]map[string]any,
 // FindByCompositeIndex returns all rows matching a composite index value.
 // Values are matched against fields in order.
 func (ti *TableInstance) FindByCompositeIndex(fields []string, values ...any) ([]map[string]any, error) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
@@ -423,17 +666,43 @@ func (ti *TableInstance) FindByCompositeIndex(fields []string, values ...any) ([
 		if err != nil || row == nil {
 			continue
 		}
-		rows = append(rows, row)
+		filtered, ok := ti.filterReadableRow(row)
+		if !ok {
+			continue
+		}
+		rows = append(rows, filtered)
 	}
 	return rows, nil
 }
 
 // SearchFullText searches a configured full-text index on the selected fields.
 func (ti *TableInstance) SearchFullText(fields []string, query string, limit int) ([]map[string]any, error) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
-	return ti.ti.SearchFullText(fields, query, limit)
+	rows, err := ti.ti.SearchFullText(fields, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	if !ti.requiresReadFiltering() {
+		return rows, nil
+	}
+	if limit <= 0 {
+		limit = len(rows)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		filtered, ok := ti.filterReadableRow(row)
+		if !ok {
+			continue
+		}
+		out = append(out, filtered)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // NewAutocompleteIndex creates a reusable autocomplete index.
@@ -460,10 +729,153 @@ func (a *AutocompleteIndex) Query(prefix string, limit int) []AutocompleteEntry 
 // BuildAutocompleteEntries scans this table and builds entries for reuse
 // in NewAutocompleteIndex.
 func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, payloadFields ...string) ([]AutocompleteEntry, error) {
+	ti.markRead()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
+	if ti.requiresReadFiltering() {
+		return nil, ErrAccessDenied
+	}
 	return ti.ti.BuildAutocompleteEntries(keyField, textField, payloadFields...)
+}
+
+func (ti *TableInstance) requiresReadFiltering() bool {
+	if ti == nil || !ti.enforcePolicy || ti.spec == nil {
+		return false
+	}
+	if ti.spec.Access.Read != nil {
+		return true
+	}
+	for _, fs := range ti.spec.Fields {
+		if fs.Access.Read != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (ti *TableInstance) requiresRowReadFiltering() bool {
+	return ti != nil && ti.enforcePolicy && ti.spec != nil && ti.spec.Access.Read != nil
+}
+
+func (ti *TableInstance) allowRead(row map[string]any) bool {
+	if ti == nil || !ti.enforcePolicy || ti.spec == nil || ti.spec.Access.Read == nil {
+		return true
+	}
+	return ti.spec.Access.Read(&TableReadCtx{Auth: ti.auth, Row: row})
+}
+
+func (ti *TableInstance) allowInsert(next map[string]any) bool {
+	if ti == nil || !ti.enforcePolicy || ti.spec == nil || ti.spec.Access.Insert == nil {
+		return true
+	}
+	return ti.spec.Access.Insert(&TableInsertCtx{Auth: ti.auth, New: next})
+}
+
+func (ti *TableInstance) allowUpdate(oldRow, next map[string]any) bool {
+	if ti == nil || !ti.enforcePolicy || ti.spec == nil || ti.spec.Access.Update == nil {
+		return true
+	}
+	return ti.spec.Access.Update(&TableUpdateCtx{Auth: ti.auth, Old: oldRow, New: next})
+}
+
+func (ti *TableInstance) allowDelete(row map[string]any) bool {
+	if ti == nil || !ti.enforcePolicy || ti.spec == nil || ti.spec.Access.Delete == nil {
+		return true
+	}
+	return ti.spec.Access.Delete(&TableDeleteCtx{Auth: ti.auth, Row: row})
+}
+
+func (ti *TableInstance) filterReadableRow(row map[string]any) (map[string]any, bool) {
+	if row == nil {
+		return nil, false
+	}
+	if !ti.allowRead(row) {
+		return nil, false
+	}
+	if ti == nil || !ti.enforcePolicy || ti.spec == nil {
+		return row, true
+	}
+	needsFieldFilter := false
+	for _, fs := range ti.spec.Fields {
+		if fs.Access.Read != nil {
+			needsFieldFilter = true
+			break
+		}
+	}
+	if !needsFieldFilter {
+		return row, true
+	}
+	out := cloneRow(row)
+	readCtx := &TableReadCtx{Auth: ti.auth, Row: row}
+	for _, fs := range ti.spec.Fields {
+		if fs.Access.Read == nil {
+			continue
+		}
+		if !fs.Access.Read(readCtx) {
+			delete(out, fs.JSONName)
+		}
+	}
+	return out, true
+}
+
+func (ti *TableInstance) checkWritableFields(oldRow, nextRow, incoming map[string]any) error {
+	if ti == nil || !ti.enforcePolicy || ti.spec == nil || len(incoming) == 0 {
+		return nil
+	}
+	for key, value := range incoming {
+		fs := ti.fieldByJSONName(key)
+		if fs == nil || fs.Access.Write == nil {
+			continue
+		}
+		if !fs.Access.Write(&FieldWriteCtx{
+			Auth:  ti.auth,
+			Field: key,
+			Old:   oldRow,
+			New:   nextRow,
+			Value: value,
+		}) {
+			return ErrAccessDenied
+		}
+	}
+	return nil
+}
+
+func (ti *TableInstance) fieldByJSONName(name string) *fieldSpec {
+	if ti == nil || ti.spec == nil {
+		return nil
+	}
+	for _, fs := range ti.spec.Fields {
+		if fs.JSONName == name {
+			return fs
+		}
+	}
+	return nil
+}
+
+func cloneRow(row map[string]any) map[string]any {
+	if row == nil {
+		return nil
+	}
+	out := make(map[string]any, len(row))
+	for k, v := range row {
+		out[k] = v
+	}
+	return out
+}
+
+func (ti *TableInstance) markRead() {
+	if ti == nil || ti.tracker == nil {
+		return
+	}
+	ti.tracker.markRead(ti.tableID)
+}
+
+func (ti *TableInstance) markWrite() {
+	if ti == nil || ti.tracker == nil {
+		return
+	}
+	ti.tracker.markWrite(ti.tableID)
 }
 
 // BuildEngineTableDefs compiles this App schema to internal engine table defs.

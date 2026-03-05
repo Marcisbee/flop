@@ -20,6 +20,82 @@ type HeadPayload struct {
 	Meta  []HeadMeta `json:"meta,omitempty"`
 }
 
+type tableStore interface {
+	Table(name string) *flop.TableInstance
+}
+
+type GetTimelineIn struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+type GetTweetIn struct {
+	TweetID string `json:"tweetId"`
+}
+
+type GetTweetRepliesIn struct {
+	TweetID string `json:"tweetId"`
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+}
+
+type CreateTweetIn struct {
+	Content   string `json:"content"`
+	ReplyToID string `json:"replyToId"`
+	QuoteOfID string `json:"quoteOfId"`
+}
+
+type ToggleLikeIn struct {
+	TweetID string `json:"tweetId"`
+}
+
+type ToggleRetweetIn struct {
+	TweetID string `json:"tweetId"`
+}
+
+type ToggleFollowIn struct {
+	UserID string `json:"userId"`
+}
+
+type GetUserProfileIn struct {
+	Handle string `json:"handle"`
+}
+
+type GetUserTweetsIn struct {
+	Handle string `json:"handle"`
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+}
+
+type SearchIn struct {
+	Q     string `json:"q"`
+	Type  string `json:"type"`
+	Limit int    `json:"limit"`
+}
+
+type GetNotificationsIn struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+}
+
+type GetStatsIn struct{}
+
+type AuthRegisterIn struct {
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	Handle      string `json:"handle"`
+	DisplayName string `json:"displayName"`
+}
+
+type AuthLoginIn struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type AuthMeIn struct{}
+
+const JWTSecret = "chirp-dev-secret"
+
 // Build creates the flop App with all table definitions.
 func Build() *flop.App {
 	return BuildWithDataDir("./data")
@@ -114,7 +190,414 @@ func BuildWithDataDir(dataDir string) *flop.App {
 		s.Timestamp("createdAt").DefaultNow()
 	})
 
+	flop.View(application, "get_timeline", flop.Public(), GetTimelineView)
+	flop.View(application, "get_tweet", flop.Public(), GetTweetView)
+	flop.View(application, "get_tweet_replies", flop.Public(), GetTweetRepliesView)
+	flop.View(application, "get_user_profile", flop.Public(), GetUserProfileView)
+	flop.View(application, "get_user_tweets", flop.Public(), GetUserTweetsView)
+	flop.View(application, "search", flop.Public(), SearchView)
+	flop.View(application, "get_notifications", flop.Authenticated(), GetNotificationsView)
+	flop.View(application, "get_stats", flop.Public(), GetStatsView)
+	flop.View(application, "auth_me", flop.Authenticated(), AuthMeView)
+
+	flop.Reducer(application, "create_tweet", flop.Authenticated(), CreateTweetReducer)
+	flop.Reducer(application, "toggle_like", flop.Authenticated(), ToggleLikeReducer)
+	flop.Reducer(application, "toggle_retweet", flop.Authenticated(), ToggleRetweetReducer)
+	flop.Reducer(application, "toggle_follow", flop.Authenticated(), ToggleFollowReducer)
+	flop.Reducer(application, "auth_register", flop.Public(), AuthRegisterReducer)
+	flop.Reducer(application, "auth_login", flop.Public(), AuthLoginReducer)
+
 	return application
+}
+
+func GetTimelineView(ctx *flop.ViewCtx, in GetTimelineIn) ([]*TweetWithAuthor, error) {
+	limit := clampInt(in.Limit, 1, 200, 50)
+	offset := in.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	return ListTimeline(ctx.DB, limit, offset, viewerID(ctx.Request.Auth)), nil
+}
+
+func GetTweetView(ctx *flop.ViewCtx, in GetTweetIn) (*TweetWithAuthor, error) {
+	tweetID := strings.TrimSpace(in.TweetID)
+	if tweetID == "" {
+		return nil, fmt.Errorf("tweetId is required")
+	}
+	tweets := ctx.DB.Table("tweets")
+	if tweets == nil {
+		return nil, fmt.Errorf("tweets table not found")
+	}
+	row, err := tweets.Get(tweetID)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, nil
+	}
+	return ToTweetWithAuthor(row, ctx.DB, viewerID(ctx.Request.Auth)), nil
+}
+
+func GetTweetRepliesView(ctx *flop.ViewCtx, in GetTweetRepliesIn) ([]*TweetWithAuthor, error) {
+	tweetID := strings.TrimSpace(in.TweetID)
+	if tweetID == "" {
+		return nil, fmt.Errorf("tweetId is required")
+	}
+	limit := clampInt(in.Limit, 1, 200, 50)
+	offset := in.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	return ListReplies(ctx.DB, tweetID, limit, offset, viewerID(ctx.Request.Auth)), nil
+}
+
+func GetUserProfileView(ctx *flop.ViewCtx, in GetUserProfileIn) (*UserProfile, error) {
+	handle := strings.ToLower(strings.TrimSpace(in.Handle))
+	if handle == "" {
+		return nil, fmt.Errorf("handle is required")
+	}
+	userRow := FindUserByHandle(ctx.DB, handle)
+	if userRow == nil {
+		return nil, nil
+	}
+	userID := Str(userRow["id"])
+	return GetUserProfile(ctx.DB, userID, viewerID(ctx.Request.Auth)), nil
+}
+
+func GetUserTweetsView(ctx *flop.ViewCtx, in GetUserTweetsIn) ([]*TweetWithAuthor, error) {
+	handle := strings.ToLower(strings.TrimSpace(in.Handle))
+	if handle == "" {
+		return nil, fmt.Errorf("handle is required")
+	}
+	limit := clampInt(in.Limit, 1, 200, 50)
+	offset := in.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	userRow := FindUserByHandle(ctx.DB, handle)
+	if userRow == nil {
+		return []*TweetWithAuthor{}, nil
+	}
+	return ListUserTweets(ctx.DB, Str(userRow["id"]), limit, offset, viewerID(ctx.Request.Auth)), nil
+}
+
+func SearchView(ctx *flop.ViewCtx, in SearchIn) (map[string]any, error) {
+	q := strings.TrimSpace(in.Q)
+	if q == "" {
+		return map[string]any{"tweets": []any{}, "users": []any{}}, nil
+	}
+	limit := clampInt(in.Limit, 1, 50, 20)
+	searchType := strings.ToLower(strings.TrimSpace(in.Type))
+	viewer := viewerID(ctx.Request.Auth)
+	result := map[string]any{}
+	if searchType == "" || searchType == "tweets" {
+		result["tweets"] = SearchTweets(ctx.DB, q, limit, viewer)
+	}
+	if searchType == "" || searchType == "users" {
+		result["users"] = SearchUsersScan(ctx.DB, q, limit)
+	}
+	return result, nil
+}
+
+func GetNotificationsView(ctx *flop.ViewCtx, in GetNotificationsIn) ([]map[string]any, error) {
+	auth, err := ctx.RequireAuth()
+	if err != nil {
+		return nil, err
+	}
+	limit := clampInt(in.Limit, 1, 200, 50)
+	offset := in.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	return GetNotifications(ctx.DB, auth.ID, limit, offset), nil
+}
+
+func GetStatsView(ctx *flop.ViewCtx, _ GetStatsIn) (map[string]any, error) {
+	stats := map[string]any{}
+	for _, name := range []string{"users", "tweets", "likes", "retweets", "follows", "notifications"} {
+		t := ctx.DB.Table(name)
+		if t != nil {
+			stats[name] = t.Count()
+		}
+	}
+	return stats, nil
+}
+
+func AuthMeView(ctx *flop.ViewCtx, _ AuthMeIn) (*UserPublic, error) {
+	auth, err := ctx.RequireAuth()
+	if err != nil {
+		return nil, err
+	}
+	users := ctx.DB.Table("users")
+	if users == nil {
+		return nil, fmt.Errorf("users table not found")
+	}
+	row, err := users.Get(auth.ID)
+	if err != nil || row == nil {
+		return nil, fmt.Errorf("user not found")
+	}
+	return ToUserPublic(row), nil
+}
+
+func AuthRegisterReducer(ctx *flop.ReducerCtx, in AuthRegisterIn) (map[string]any, error) {
+	email := strings.TrimSpace(in.Email)
+	password := strings.TrimSpace(in.Password)
+	handle := strings.ToLower(strings.TrimSpace(in.Handle))
+	displayName := strings.TrimSpace(in.DisplayName)
+	if email == "" || password == "" || handle == "" || displayName == "" {
+		return nil, fmt.Errorf("all fields required")
+	}
+	users := ctx.DB.Table("users")
+	if users == nil {
+		return nil, fmt.Errorf("users table not found")
+	}
+	hashedPw, err := flop.HashPassword(password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password")
+	}
+	row, err := users.Insert(map[string]any{
+		"email":       email,
+		"password":    hashedPw,
+		"handle":      handle,
+		"displayName": displayName,
+		"roles":       []any{"user"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	roles := rolesFromRow(row)
+	if len(roles) == 0 {
+		roles = []string{"user"}
+	}
+	token := flop.CreateJWT(&flop.JWTPayload{
+		Sub:   Str(row["id"]),
+		Email: Str(row["email"]),
+		Roles: roles,
+		Exp:   time.Now().Add(24 * time.Hour).Unix(),
+	}, JWTSecret)
+	return map[string]any{"token": token, "user": ToUserPublic(row)}, nil
+}
+
+func AuthLoginReducer(ctx *flop.ReducerCtx, in AuthLoginIn) (map[string]any, error) {
+	email := strings.TrimSpace(in.Email)
+	password := in.Password
+	if email == "" || password == "" {
+		return nil, fmt.Errorf("email and password required")
+	}
+	users := ctx.DB.Table("users")
+	if users == nil {
+		return nil, fmt.Errorf("users table not found")
+	}
+	row, ok := users.FindByUniqueIndex("email", email)
+	if !ok || row == nil {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+	if !flop.VerifyPassword(password, Str(row["password"])) {
+		return nil, fmt.Errorf("invalid credentials")
+	}
+	roles := rolesFromRow(row)
+	if len(roles) == 0 {
+		roles = []string{"user"}
+	}
+	token := flop.CreateJWT(&flop.JWTPayload{
+		Sub:   Str(row["id"]),
+		Email: Str(row["email"]),
+		Roles: roles,
+		Exp:   time.Now().Add(24 * time.Hour).Unix(),
+	}, JWTSecret)
+	return map[string]any{"token": token, "user": ToUserPublic(row)}, nil
+}
+
+func CreateTweetReducer(ctx *flop.ReducerCtx, in CreateTweetIn) (*TweetWithAuthor, error) {
+	auth, err := ctx.RequireAuth()
+	if err != nil {
+		return nil, err
+	}
+	content := strings.TrimSpace(in.Content)
+	if content == "" || len(content) > 280 {
+		return nil, fmt.Errorf("content must be 1-280 characters")
+	}
+	tweets := ctx.DB.Table("tweets")
+	if tweets == nil {
+		return nil, fmt.Errorf("tweets table not found")
+	}
+	data := map[string]any{
+		"authorId": auth.ID,
+		"content":  content,
+	}
+	replyToID := strings.TrimSpace(in.ReplyToID)
+	quoteOfID := strings.TrimSpace(in.QuoteOfID)
+	if replyToID != "" {
+		data["replyToId"] = replyToID
+	}
+	if quoteOfID != "" {
+		data["quoteOfId"] = quoteOfID
+	}
+	row, err := tweets.Insert(data)
+	if err != nil {
+		return nil, err
+	}
+	tweetID := Str(row["id"])
+	if replyToID != "" {
+		parent, err := tweets.Get(replyToID)
+		if err == nil && parent != nil {
+			parentAuthor := Str(parent["authorId"])
+			if parentAuthor != auth.ID {
+				if notifs := ctx.DB.Table("notifications"); notifs != nil {
+					_, _ = notifs.Insert(map[string]any{
+						"userId":  parentAuthor,
+						"actorId": auth.ID,
+						"type":    "reply",
+						"tweetId": tweetID,
+					})
+				}
+			}
+		}
+	}
+	if quoteOfID != "" {
+		quoted, err := tweets.Get(quoteOfID)
+		if err == nil && quoted != nil {
+			quotedAuthor := Str(quoted["authorId"])
+			if quotedAuthor != auth.ID {
+				if notifs := ctx.DB.Table("notifications"); notifs != nil {
+					_, _ = notifs.Insert(map[string]any{
+						"userId":  quotedAuthor,
+						"actorId": auth.ID,
+						"type":    "quote",
+						"tweetId": tweetID,
+					})
+				}
+			}
+		}
+	}
+	return ToTweetWithAuthor(row, ctx.DB, auth.ID), nil
+}
+
+func ToggleLikeReducer(ctx *flop.ReducerCtx, in ToggleLikeIn) (map[string]any, error) {
+	auth, err := ctx.RequireAuth()
+	if err != nil {
+		return nil, err
+	}
+	tweetID := strings.TrimSpace(in.TweetID)
+	if tweetID == "" {
+		return nil, fmt.Errorf("tweetId is required")
+	}
+	likes := ctx.DB.Table("likes")
+	if likes == nil {
+		return nil, fmt.Errorf("likes table not found")
+	}
+	edgeKey := auth.ID + ":" + tweetID
+	existing, ok := likes.FindByUniqueIndex("edgeKey", edgeKey)
+	if ok && existing != nil {
+		_, err := likes.Delete(Str(existing["id"]))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"liked": false}, nil
+	}
+	if _, err := likes.Insert(map[string]any{"edgeKey": edgeKey, "userId": auth.ID, "tweetId": tweetID}); err != nil {
+		return nil, err
+	}
+	if tweets := ctx.DB.Table("tweets"); tweets != nil {
+		tweet, err := tweets.Get(tweetID)
+		if err == nil && tweet != nil {
+			tweetAuthor := Str(tweet["authorId"])
+			if tweetAuthor != auth.ID {
+				if notifs := ctx.DB.Table("notifications"); notifs != nil {
+					_, _ = notifs.Insert(map[string]any{
+						"userId":  tweetAuthor,
+						"actorId": auth.ID,
+						"type":    "like",
+						"tweetId": tweetID,
+					})
+				}
+			}
+		}
+	}
+	return map[string]any{"liked": true}, nil
+}
+
+func ToggleRetweetReducer(ctx *flop.ReducerCtx, in ToggleRetweetIn) (map[string]any, error) {
+	auth, err := ctx.RequireAuth()
+	if err != nil {
+		return nil, err
+	}
+	tweetID := strings.TrimSpace(in.TweetID)
+	if tweetID == "" {
+		return nil, fmt.Errorf("tweetId is required")
+	}
+	retweets := ctx.DB.Table("retweets")
+	if retweets == nil {
+		return nil, fmt.Errorf("retweets table not found")
+	}
+	edgeKey := auth.ID + ":" + tweetID
+	existing, ok := retweets.FindByUniqueIndex("edgeKey", edgeKey)
+	if ok && existing != nil {
+		_, err := retweets.Delete(Str(existing["id"]))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"retweeted": false}, nil
+	}
+	if _, err := retweets.Insert(map[string]any{"edgeKey": edgeKey, "userId": auth.ID, "tweetId": tweetID}); err != nil {
+		return nil, err
+	}
+	if tweets := ctx.DB.Table("tweets"); tweets != nil {
+		tweet, err := tweets.Get(tweetID)
+		if err == nil && tweet != nil {
+			tweetAuthor := Str(tweet["authorId"])
+			if tweetAuthor != auth.ID {
+				if notifs := ctx.DB.Table("notifications"); notifs != nil {
+					_, _ = notifs.Insert(map[string]any{
+						"userId":  tweetAuthor,
+						"actorId": auth.ID,
+						"type":    "retweet",
+						"tweetId": tweetID,
+					})
+				}
+			}
+		}
+	}
+	return map[string]any{"retweeted": true}, nil
+}
+
+func ToggleFollowReducer(ctx *flop.ReducerCtx, in ToggleFollowIn) (map[string]any, error) {
+	auth, err := ctx.RequireAuth()
+	if err != nil {
+		return nil, err
+	}
+	followingID := strings.TrimSpace(in.UserID)
+	if followingID == "" || followingID == auth.ID {
+		return nil, fmt.Errorf("invalid follow target")
+	}
+	follows := ctx.DB.Table("follows")
+	if follows == nil {
+		return nil, fmt.Errorf("follows table not found")
+	}
+	edgeKey := auth.ID + ":" + followingID
+	existing, ok := follows.FindByUniqueIndex("edgeKey", edgeKey)
+	if ok && existing != nil {
+		_, err := follows.Delete(Str(existing["id"]))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"following": false}, nil
+	}
+	if _, err := follows.Insert(map[string]any{
+		"edgeKey":     edgeKey,
+		"followerId":  auth.ID,
+		"followingId": followingID,
+	}); err != nil {
+		return nil, err
+	}
+	if notifs := ctx.DB.Table("notifications"); notifs != nil {
+		_, _ = notifs.Insert(map[string]any{
+			"userId":  followingID,
+			"actorId": auth.ID,
+			"type":    "follow",
+		})
+	}
+	return map[string]any{"following": true}, nil
 }
 
 // ---- Query helpers ----
@@ -174,7 +657,7 @@ func ToUserPublic(row map[string]any) *UserPublic {
 	}
 }
 
-func ToTweetWithAuthor(row map[string]any, db *flop.Database, viewerID string) *TweetWithAuthor {
+func ToTweetWithAuthor(row map[string]any, db tableStore, viewerID string) *TweetWithAuthor {
 	if row == nil {
 		return nil
 	}
@@ -229,7 +712,7 @@ func ToTweetWithAuthor(row map[string]any, db *flop.Database, viewerID string) *
 }
 
 // ListTimeline returns tweets for the home feed (all tweets, newest first).
-func ListTimeline(db *flop.Database, limit, offset int, viewerID string) []*TweetWithAuthor {
+func ListTimeline(db tableStore, limit, offset int, viewerID string) []*TweetWithAuthor {
 	tweets := db.Table("tweets")
 	if tweets == nil {
 		return nil
@@ -298,7 +781,7 @@ func ListTimeline(db *flop.Database, limit, offset int, viewerID string) []*Twee
 }
 
 // ListUserTweets returns tweets by a specific user.
-func ListUserTweets(db *flop.Database, userID string, limit, offset int, viewerID string) []*TweetWithAuthor {
+func ListUserTweets(db tableStore, userID string, limit, offset int, viewerID string) []*TweetWithAuthor {
 	tweets := db.Table("tweets")
 	if tweets == nil {
 		return nil
@@ -330,7 +813,7 @@ func ListUserTweets(db *flop.Database, userID string, limit, offset int, viewerI
 }
 
 // ListReplies returns replies to a specific tweet.
-func ListReplies(db *flop.Database, tweetID string, limit, offset int, viewerID string) []*TweetWithAuthor {
+func ListReplies(db tableStore, tweetID string, limit, offset int, viewerID string) []*TweetWithAuthor {
 	tweets := db.Table("tweets")
 	if tweets == nil {
 		return nil
@@ -362,7 +845,7 @@ func ListReplies(db *flop.Database, tweetID string, limit, offset int, viewerID 
 }
 
 // SearchTweets performs full-text search on tweets.
-func SearchTweets(db *flop.Database, query string, limit int, viewerID string) []*TweetWithAuthor {
+func SearchTweets(db tableStore, query string, limit int, viewerID string) []*TweetWithAuthor {
 	tweets := db.Table("tweets")
 	if tweets == nil {
 		return nil
@@ -381,7 +864,7 @@ func SearchTweets(db *flop.Database, query string, limit int, viewerID string) [
 }
 
 // SearchUsers uses autocomplete to find users by handle/name.
-func SearchUsers(db *flop.Database, autocomplete *flop.AutocompleteIndex, query string, limit int) []*UserPublic {
+func SearchUsers(db tableStore, autocomplete *flop.AutocompleteIndex, query string, limit int) []*UserPublic {
 	entries := autocomplete.Query(query, limit)
 	users := db.Table("users")
 	if users == nil {
@@ -398,8 +881,36 @@ func SearchUsers(db *flop.Database, autocomplete *flop.AutocompleteIndex, query 
 	return result
 }
 
+func SearchUsersScan(db tableStore, query string, limit int) []*UserPublic {
+	users := db.Table("users")
+	if users == nil {
+		return nil
+	}
+	rows, err := users.Scan(10000, 0)
+	if err != nil {
+		return nil
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return []*UserPublic{}
+	}
+	result := make([]*UserPublic, 0, limit)
+	for _, row := range rows {
+		handle := strings.ToLower(Str(row["handle"]))
+		display := strings.ToLower(Str(row["displayName"]))
+		if !strings.Contains(handle, q) && !strings.Contains(display, q) {
+			continue
+		}
+		result = append(result, ToUserPublic(row))
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
+}
+
 // GetUserProfile builds a full profile with counts.
-func GetUserProfile(db *flop.Database, userID string, viewerID string) *UserProfile {
+func GetUserProfile(db tableStore, userID string, viewerID string) *UserProfile {
 	users := db.Table("users")
 	if users == nil {
 		return nil
@@ -435,7 +946,7 @@ func GetUserProfile(db *flop.Database, userID string, viewerID string) *UserProf
 }
 
 // FindUserByHandle looks up a user by their unique handle.
-func FindUserByHandle(db *flop.Database, handle string) map[string]any {
+func FindUserByHandle(db tableStore, handle string) map[string]any {
 	users := db.Table("users")
 	if users == nil {
 		return nil
@@ -448,7 +959,7 @@ func FindUserByHandle(db *flop.Database, handle string) map[string]any {
 }
 
 // GetNotifications returns notifications for a user.
-func GetNotifications(db *flop.Database, userID string, limit, offset int) []map[string]any {
+func GetNotifications(db tableStore, userID string, limit, offset int) []map[string]any {
 	notifs := db.Table("notifications")
 	if notifs == nil {
 		return nil
@@ -488,7 +999,7 @@ func GetNotifications(db *flop.Database, userID string, limit, offset int) []map
 }
 
 // ResolveHead returns head metadata for SSR.
-func ResolveHead(db *flop.Database, path string) HeadPayload {
+func ResolveHead(db tableStore, path string) HeadPayload {
 	switch {
 	case path == "/" || path == "/home":
 		return HeadPayload{
@@ -604,4 +1115,57 @@ func Integer(v any) int {
 	default:
 		return 0
 	}
+}
+
+func rolesFromRow(row map[string]any) []string {
+	raw, ok := row["roles"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, role := range v {
+			role = strings.TrimSpace(role)
+			if role != "" {
+				out = append(out, role)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			role := strings.TrimSpace(fmt.Sprintf("%v", item))
+			if role != "" {
+				out = append(out, role)
+			}
+		}
+		return out
+	default:
+		role := strings.TrimSpace(fmt.Sprintf("%v", raw))
+		if role == "" {
+			return nil
+		}
+		return []string{role}
+	}
+}
+
+func viewerID(auth *flop.AuthContext) string {
+	if auth == nil {
+		return ""
+	}
+	return auth.ID
+}
+
+func clampInt(v, lo, hi, fallback int) int {
+	if v == 0 {
+		v = fallback
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }

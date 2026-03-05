@@ -17,6 +17,9 @@ import (
 // ErrNotImplemented marks API scaffolding that is defined but not wired yet.
 var ErrNotImplemented = errors.New("flop: not implemented")
 
+// ErrAccessDenied is returned when table/field access policy rejects an operation.
+var ErrAccessDenied = errors.New("flop: access denied")
+
 type Config struct {
 	DataDir               string        `json:"dataDir,omitempty"`
 	SyncMode              string        `json:"syncMode,omitempty"`
@@ -56,13 +59,15 @@ type cronSpec struct {
 // App is the top-level runtime registry.
 // In this phase, it stores typed metadata used for generation and future runtime wiring.
 type App struct {
-	config   Config
-	tables   map[string]*tableSpec
-	views    []endpointSpec
-	reducers []endpointSpec
-	layouts  []layoutSpec
-	pages    []pageSpec
-	crons    []cronSpec
+	config     Config
+	tables     map[string]*tableSpec
+	views      []endpointSpec
+	reducers   []endpointSpec
+	viewDefs   map[string]viewRuntime
+	reduceDefs map[string]reducerRuntime
+	layouts    []layoutSpec
+	pages      []pageSpec
+	crons      []cronSpec
 }
 
 // Cron registers a cron job that runs on the given schedule after Open().
@@ -80,8 +85,10 @@ func (a *App) Cron(expr string, fn func(*Database)) {
 
 func New(config Config) *App {
 	return &App{
-		config: config,
-		tables: make(map[string]*tableSpec),
+		config:     config,
+		tables:     make(map[string]*tableSpec),
+		viewDefs:   make(map[string]viewRuntime),
+		reduceDefs: make(map[string]reducerRuntime),
 	}
 }
 
@@ -106,6 +113,47 @@ type TableBuilder[T any] struct {
 type FieldBuilder[T any] struct {
 	table *Table[T]
 	spec  *fieldSpec
+}
+
+type TableReadCtx struct {
+	Auth *AuthContext
+	Row  map[string]any
+}
+
+type TableInsertCtx struct {
+	Auth *AuthContext
+	New  map[string]any
+}
+
+type TableUpdateCtx struct {
+	Auth *AuthContext
+	Old  map[string]any
+	New  map[string]any
+}
+
+type TableDeleteCtx struct {
+	Auth *AuthContext
+	Row  map[string]any
+}
+
+type FieldWriteCtx struct {
+	Auth  *AuthContext
+	Field string
+	Old   map[string]any
+	New   map[string]any
+	Value any
+}
+
+type TableAccess struct {
+	Read   func(*TableReadCtx) bool
+	Insert func(*TableInsertCtx) bool
+	Update func(*TableUpdateCtx) bool
+	Delete func(*TableDeleteCtx) bool
+}
+
+type FieldAccess struct {
+	Read  func(*TableReadCtx) bool
+	Write func(*FieldWriteCtx) bool
 }
 
 func AutoTable[T any](app *App, name string, configure func(*TableBuilder[T])) *Table[T] {
@@ -148,6 +196,14 @@ func (tb *TableBuilder[T]) Field(name string) *FieldBuilder[T] {
 	}
 	fs := tb.table.spec.findOrCreateField(name)
 	return &FieldBuilder[T]{table: tb.table, spec: fs}
+}
+
+func (tb *TableBuilder[T]) Access(access TableAccess) *TableBuilder[T] {
+	if tb == nil || tb.table == nil || tb.table.spec == nil {
+		panic("flop: invalid table builder")
+	}
+	tb.table.spec.Access = access
+	return tb
 }
 
 func (fb *FieldBuilder[T]) Primary(strategy ...string) *FieldBuilder[T] {
@@ -258,6 +314,11 @@ func (fb *FieldBuilder[T]) Index() *FieldBuilder[T] {
 
 func (fb *FieldBuilder[T]) FullText() *FieldBuilder[T] {
 	fb.spec.FullText = true
+	return fb
+}
+
+func (fb *FieldBuilder[T]) Access(access FieldAccess) *FieldBuilder[T] {
+	fb.spec.Access = access
 	return fb
 }
 
@@ -405,6 +466,13 @@ func (sb *SchemaBuilder) Vector(name string, dimensions int) *VectorFieldRules {
 	return &VectorFieldRules{spec: fs}
 }
 
+func (sb *SchemaBuilder) Access(access TableAccess) {
+	if sb == nil || sb.table == nil {
+		panic("flop: invalid schema builder")
+	}
+	sb.table.Access = access
+}
+
 // Cached creates an engine-managed computed field.
 // The value is automatically recomputed when a source table changes.
 func (sb *SchemaBuilder) Cached(name string, hint CachedTypeHint) *CachedFieldRules {
@@ -475,6 +543,10 @@ func (b *StringFieldRules) Pattern(expr string) *StringFieldRules {
 	return b
 }
 func (b *StringFieldRules) Email() *StringFieldRules { b.spec.Format = "email"; return b }
+func (b *StringFieldRules) Access(access FieldAccess) *StringFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *NumberFieldRules) Required() *NumberFieldRules { b.spec.Required = true; return b }
 func (b *NumberFieldRules) Primary(strategy ...string) *NumberFieldRules {
@@ -490,6 +562,10 @@ func (b *NumberFieldRules) Index() *NumberFieldRules        { b.spec.Indexed = t
 func (b *NumberFieldRules) Virtual() *NumberFieldRules      { b.spec.Virtual = true; return b }
 func (b *NumberFieldRules) Min(v float64) *NumberFieldRules { b.spec.Min = &v; return b }
 func (b *NumberFieldRules) Max(v float64) *NumberFieldRules { b.spec.Max = &v; return b }
+func (b *NumberFieldRules) Access(access FieldAccess) *NumberFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *IntegerFieldRules) Required() *IntegerFieldRules { b.spec.Required = true; return b }
 func (b *IntegerFieldRules) Primary(strategy ...string) *IntegerFieldRules {
@@ -505,16 +581,28 @@ func (b *IntegerFieldRules) Index() *IntegerFieldRules        { b.spec.Indexed =
 func (b *IntegerFieldRules) Virtual() *IntegerFieldRules      { b.spec.Virtual = true; return b }
 func (b *IntegerFieldRules) Min(v float64) *IntegerFieldRules { b.spec.Min = &v; return b }
 func (b *IntegerFieldRules) Max(v float64) *IntegerFieldRules { b.spec.Max = &v; return b }
+func (b *IntegerFieldRules) Access(access FieldAccess) *IntegerFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *BooleanFieldRules) Required() *BooleanFieldRules     { b.spec.Required = true; return b }
 func (b *BooleanFieldRules) Default(v any) *BooleanFieldRules { b.spec.Default = v; return b }
 func (b *BooleanFieldRules) Index() *BooleanFieldRules        { b.spec.Indexed = true; return b }
 func (b *BooleanFieldRules) Virtual() *BooleanFieldRules      { b.spec.Virtual = true; return b }
+func (b *BooleanFieldRules) Access(access FieldAccess) *BooleanFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *JSONFieldRules) Required() *JSONFieldRules     { b.spec.Required = true; return b }
 func (b *JSONFieldRules) Default(v any) *JSONFieldRules { b.spec.Default = v; return b }
 func (b *JSONFieldRules) Index() *JSONFieldRules        { b.spec.Indexed = true; return b }
 func (b *JSONFieldRules) Virtual() *JSONFieldRules      { b.spec.Virtual = true; return b }
+func (b *JSONFieldRules) Access(access FieldAccess) *JSONFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *TimestampFieldRules) Required() *TimestampFieldRules     { b.spec.Required = true; return b }
 func (b *TimestampFieldRules) Unique() *TimestampFieldRules       { b.spec.Unique = true; return b }
@@ -524,20 +612,36 @@ func (b *TimestampFieldRules) Index() *TimestampFieldRules        { b.spec.Index
 func (b *TimestampFieldRules) Virtual() *TimestampFieldRules      { b.spec.Virtual = true; return b }
 func (b *TimestampFieldRules) Min(v float64) *TimestampFieldRules { b.spec.Min = &v; return b }
 func (b *TimestampFieldRules) Max(v float64) *TimestampFieldRules { b.spec.Max = &v; return b }
+func (b *TimestampFieldRules) Access(access FieldAccess) *TimestampFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *BcryptFieldRules) Required() *BcryptFieldRules { b.spec.Required = true; return b }
 func (b *BcryptFieldRules) Index() *BcryptFieldRules    { b.spec.Indexed = true; return b }
 func (b *BcryptFieldRules) Virtual() *BcryptFieldRules  { b.spec.Virtual = true; return b }
+func (b *BcryptFieldRules) Access(access FieldAccess) *BcryptFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *RolesFieldRules) Required() *RolesFieldRules { b.spec.Required = true; return b }
 func (b *RolesFieldRules) Index() *RolesFieldRules    { b.spec.Indexed = true; return b }
 func (b *RolesFieldRules) Virtual() *RolesFieldRules  { b.spec.Virtual = true; return b }
+func (b *RolesFieldRules) Access(access FieldAccess) *RolesFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *EnumFieldRules) Required() *EnumFieldRules     { b.spec.Required = true; return b }
 func (b *EnumFieldRules) Unique() *EnumFieldRules       { b.spec.Unique = true; return b }
 func (b *EnumFieldRules) Default(v any) *EnumFieldRules { b.spec.Default = v; return b }
 func (b *EnumFieldRules) Index() *EnumFieldRules        { b.spec.Indexed = true; return b }
 func (b *EnumFieldRules) Virtual() *EnumFieldRules      { b.spec.Virtual = true; return b }
+func (b *EnumFieldRules) Access(access FieldAccess) *EnumFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *RefFieldRules) Primary(strategy ...string) *RefFieldRules {
 	b.spec.Primary = true
@@ -552,14 +656,26 @@ func (b *RefFieldRules) Default(v any) *RefFieldRules    { b.spec.Default = v; r
 func (b *RefFieldRules) Autogen(p string) *RefFieldRules { b.spec.Autogen = p; return b }
 func (b *RefFieldRules) Index() *RefFieldRules           { b.spec.Indexed = true; return b }
 func (b *RefFieldRules) Virtual() *RefFieldRules         { b.spec.Virtual = true; return b }
+func (b *RefFieldRules) Access(access FieldAccess) *RefFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *RefMultiFieldRules) Required() *RefMultiFieldRules     { b.spec.Required = true; return b }
 func (b *RefMultiFieldRules) Default(v any) *RefMultiFieldRules { b.spec.Default = v; return b }
 func (b *RefMultiFieldRules) Index() *RefMultiFieldRules        { b.spec.Indexed = true; return b }
 func (b *RefMultiFieldRules) Virtual() *RefMultiFieldRules      { b.spec.Virtual = true; return b }
+func (b *RefMultiFieldRules) Access(access FieldAccess) *RefMultiFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *FileSingleFieldRules) Required() *FileSingleFieldRules { b.spec.Required = true; return b }
 func (b *FileSingleFieldRules) Virtual() *FileSingleFieldRules  { b.spec.Virtual = true; return b }
+func (b *FileSingleFieldRules) Access(access FieldAccess) *FileSingleFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 // Thumbs defines allowed thumbnail sizes for image file fields.
 // Format: "WxH" where W or H can be 0 for aspect-ratio preservation.
@@ -571,6 +687,10 @@ func (b *FileSingleFieldRules) Thumbs(sizes ...string) *FileSingleFieldRules {
 
 func (b *FileMultiFieldRules) Required() *FileMultiFieldRules { b.spec.Required = true; return b }
 func (b *FileMultiFieldRules) Virtual() *FileMultiFieldRules  { b.spec.Virtual = true; return b }
+func (b *FileMultiFieldRules) Access(access FieldAccess) *FileMultiFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 // Thumbs defines allowed thumbnail sizes for image file fields.
 func (b *FileMultiFieldRules) Thumbs(sizes ...string) *FileMultiFieldRules {
@@ -582,11 +702,19 @@ func (b *SetFieldRules) Required() *SetFieldRules     { b.spec.Required = true; 
 func (b *SetFieldRules) Default(v any) *SetFieldRules { b.spec.Default = v; return b }
 func (b *SetFieldRules) Index() *SetFieldRules        { b.spec.Indexed = true; return b }
 func (b *SetFieldRules) Virtual() *SetFieldRules      { b.spec.Virtual = true; return b }
+func (b *SetFieldRules) Access(access FieldAccess) *SetFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 func (b *VectorFieldRules) Required() *VectorFieldRules     { b.spec.Required = true; return b }
 func (b *VectorFieldRules) Default(v any) *VectorFieldRules { b.spec.Default = v; return b }
 func (b *VectorFieldRules) Index() *VectorFieldRules        { b.spec.Indexed = true; return b }
 func (b *VectorFieldRules) Virtual() *VectorFieldRules      { b.spec.Virtual = true; return b }
+func (b *VectorFieldRules) Access(access FieldAccess) *VectorFieldRules {
+	b.spec.Access = access
+	return b
+}
 
 // OnChange registers a source table trigger for this cached field.
 // When a row in sourceTable is inserted/updated/deleted, the foreignKey
@@ -734,16 +862,34 @@ type AuthContext struct {
 	Roles []string
 }
 
+func (a *AuthContext) HasRole(role string) bool {
+	if a == nil {
+		return false
+	}
+	need := strings.TrimSpace(role)
+	if need == "" {
+		return false
+	}
+	for _, have := range a.Roles {
+		if strings.EqualFold(have, need) {
+			return true
+		}
+	}
+	return false
+}
+
 type RequestContext struct {
 	Auth *AuthContext
 }
 
 type ViewCtx struct {
 	Request RequestContext
+	DB      *DBAccessor
 }
 
 type ReducerCtx struct {
 	Request RequestContext
+	DB      *DBAccessor
 }
 
 type Tx struct{}
@@ -787,6 +933,12 @@ func View[In, Out any](app *App, name string, access AccessPolicy, handler func(
 	if app == nil {
 		panic("flop: app is nil")
 	}
+	if strings.TrimSpace(name) == "" {
+		panic("flop: view name is empty")
+	}
+	if _, exists := app.viewDefs[name]; exists {
+		panic("flop: duplicate view name: " + name)
+	}
 	if access.Type == "" {
 		access = Authenticated()
 	}
@@ -796,12 +948,19 @@ func View[In, Out any](app *App, name string, access AccessPolicy, handler func(
 		InputTS:  tsTypeFromReflect(reflectTypeOf[In]()),
 		OutputTS: tsTypeFromReflect(reflectTypeOf[Out]()),
 	})
+	app.viewDefs[name] = buildViewRuntime(name, access, handler)
 	return &ViewDef[In, Out]{Name: name, Access: access, Handler: handler}
 }
 
 func Reducer[In, Out any](app *App, name string, access AccessPolicy, handler func(*ReducerCtx, In) (Out, error)) *ReducerDef[In, Out] {
 	if app == nil {
 		panic("flop: app is nil")
+	}
+	if strings.TrimSpace(name) == "" {
+		panic("flop: reducer name is empty")
+	}
+	if _, exists := app.reduceDefs[name]; exists {
+		panic("flop: duplicate reducer name: " + name)
 	}
 	if access.Type == "" {
 		access = Authenticated()
@@ -812,6 +971,7 @@ func Reducer[In, Out any](app *App, name string, access AccessPolicy, handler fu
 		InputTS:  tsTypeFromReflect(reflectTypeOf[In]()),
 		OutputTS: tsTypeFromReflect(reflectTypeOf[Out]()),
 	})
+	app.reduceDefs[name] = buildReducerRuntime(name, access, handler)
 	return &ReducerDef[In, Out]{Name: name, Access: access, Handler: handler}
 }
 
@@ -1064,6 +1224,7 @@ type tableSpec struct {
 	RowType    string
 	RowTS      string
 	Fields     map[string]*fieldSpec
+	Access     TableAccess
 	CachedDefs []cachedFieldRuntime
 	Migrations []migrationStep
 }
@@ -1155,6 +1316,7 @@ type fieldSpec struct {
 	Max              *float64
 	Pattern          string
 	Format           string
+	Access           FieldAccess
 }
 
 func (fs *fieldSpec) toPublic() FieldSpec {

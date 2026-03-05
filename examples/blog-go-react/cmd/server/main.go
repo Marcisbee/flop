@@ -39,24 +39,6 @@ func main() {
 		_ = json.NewEncoder(w).Encode(spec)
 	})
 
-	mux.HandleFunc("/api/posts", func(w http.ResponseWriter, r *http.Request) {
-		posts := db.Table("posts")
-		if posts == nil {
-			adminJSONError(w, "posts table not found", http.StatusInternalServerError)
-			return
-		}
-		rows, err := posts.Scan(100, 0)
-		if err != nil {
-			adminJSONError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":   true,
-			"data": rows,
-		})
-	})
-
 	mux.HandleFunc("/api/head", func(w http.ResponseWriter, r *http.Request) {
 		path := normalizePath(r.URL.Query().Get("path"))
 		w.Header().Set("Content-Type", "application/json")
@@ -65,44 +47,19 @@ func main() {
 			"data": blog.ResolveHead(db, path),
 		})
 	})
+	mounts := flop.MountDefaultHandlers(mux, application, db)
 
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(filepath.Join(webDir, "assets")))))
 
-	adminProvider := &flop.EngineAdminProvider{DB: db}
-	adminCfg := flop.MountDefaultAdmin(mux, adminProvider)
-
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := normalizePath(r.URL.Path)
-
-		// Keep source and generated files private.
-		if isPrivatePath(path) {
-			http.NotFound(w, r)
-			return
-		}
-
-		if isAppPath(path) {
-			html, err := renderAppHTML(db, path)
-			if err != nil {
-				http.Error(w, "failed to render app shell", http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			if path == "/404" {
-				w.WriteHeader(http.StatusNotFound)
-			}
-			_, _ = w.Write(html)
-			return
-		}
-
-		notFoundPath := filepath.Join(webDir, "404.html")
-		content, err := os.ReadFile(notFoundPath)
+		html, err := renderAppHTML(db, path)
 		if err != nil {
-			http.NotFound(w, r)
+			http.Error(w, "failed to render app shell", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write(content)
+		_, _ = w.Write(html)
 	})
 
 	addr := ":1985"
@@ -120,7 +77,7 @@ func main() {
 		DataDir:    filepath.Join(projectRoot, "data"),
 		Engine:     "flop go package",
 		AdminPath:  "/_",
-		SetupToken: adminCfg.SetupToken,
+		SetupToken: mounts.Admin.SetupToken,
 		Use: []string{
 			"make dev",
 		},
@@ -190,39 +147,6 @@ func renderAppHTML(db *flop.Database, path string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func isPrivatePath(path string) bool {
-	if strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".tsx") {
-		return true
-	}
-	privatePrefixes := []string{
-		"/src/",
-		"/web/",
-		"/.flop/",
-		"/app/",
-		"/cmd/",
-	}
-	for _, prefix := range privatePrefixes {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func isAppPath(path string) bool {
-	if path == "/" || path == "/about" {
-		return true
-	}
-	if path == "/404" {
-		return true
-	}
-	if strings.HasPrefix(path, "/post/") {
-		slug := strings.TrimPrefix(path, "/post/")
-		return slug != "" && !strings.Contains(slug, "/")
-	}
-	return false
-}
-
 func normalizePath(path string) string {
 	if path == "" {
 		return "/"
@@ -251,10 +175,4 @@ func findModuleRoot() (string, error) {
 		}
 		dir = next
 	}
-}
-
-func adminJSONError(w http.ResponseWriter, message string, status int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": message})
 }

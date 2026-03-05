@@ -1,3 +1,5 @@
+import { Flop } from "./flop-client.js";
+
 function $(id) {
   return document.getElementById(id);
 }
@@ -41,6 +43,7 @@ const headCache = new Map();
 let statsCache = null;
 let moviesCache = null;
 let searchTimer = null;
+const client = new Flop({ host: "" });
 
 async function getHead(pathname) {
   if (headCache.has(pathname)) return headCache.get(pathname);
@@ -119,16 +122,16 @@ function movieCard(movie) {
 }
 
 async function fetchStats() {
-  const json = await getJSON("/api/stats");
-  statsCache = json.data || { movies: 0 };
+  const data = await client.view("get_stats", {});
+  statsCache = data || { movies: 0 };
   return statsCache;
 }
 
 async function fetchMovies(limit = 36, offset = 0) {
   const key = `${limit}:${offset}`;
   if (moviesCache?.key === key) return moviesCache.rows;
-  const json = await getJSON(`/api/movies?limit=${limit}&offset=${offset}`);
-  const rows = json.data || [];
+  const data = await client.view("list_movies", { limit, offset });
+  const rows = Array.isArray(data) ? data : [];
   moviesCache = { key, rows };
   return rows;
 }
@@ -168,8 +171,7 @@ async function renderMoviePage(slug) {
   content.innerHTML = `<p class="muted">Loading movie...</p>`;
 
   try {
-    const json = await getJSON(`/api/movies/slug/${encodeURIComponent(slug)}`);
-    const movie = json.data || null;
+    const movie = await client.view("get_movie_by_slug", { slug });
     if (!movie) {
       renderNotFound();
       return;
@@ -218,8 +220,8 @@ async function updateSuggestions(query) {
         // Ignore stats errors for search path.
       }
     }
-    const json = await getJSON(`/api/movies/autocomplete?q=${encodeURIComponent(value)}&limit=10`);
-    const items = json.data || [];
+    const data = await client.view("autocomplete_movies", { q: value, limit: 10 });
+    const items = Array.isArray(data) ? data : [];
     if (items.length === 0) {
       if (statsCache && statsCache.autocompleteReady === false) {
         box.innerHTML = `<p class="muted">Search index is still warming up...</p>`;

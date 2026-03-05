@@ -2,14 +2,22 @@
 
 export type FlopTables = {
   comments: { authorId: string; body: string; createdAt?: number; id?: string; postId: string };
-  posts: { authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number }; createdAt?: number; excerpt?: string; id?: string; published?: boolean; publishedAt?: number; slug: string; title: string };
+  posts: { authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number }; createdAt?: number; excerpt?: string; id?: string; internalNotes?: string; published?: boolean; publishedAt?: number; slug: string; title: string };
+  secrets: { id?: string; key: string; value: string };
   users: { email: string; id?: string; name: string; password: string; roles?: (string)[] };
 };
 
 export interface FlopViews {
+  get_comments: { input: { postId: string }; output: (Record<string, any>)[] };
+  get_post: { input: { slug: string }; output: Record<string, any> };
+  list_posts: { input: {  }; output: (Record<string, any>)[] };
 }
 
 export interface FlopReducers {
+  add_comment: { input: { body: string; postId: string }; output: Record<string, any> };
+  create_post: { input: { body: string; coverImage: string; excerpt: string; slug: string; title: string }; output: Record<string, any> };
+  delete_post: { input: { id: string }; output: Record<string, any> };
+  update_post: { input: { body: string; excerpt: string; id: string; title: string }; output: Record<string, any> };
 }
 
 export type ViewName = keyof FlopViews;
@@ -73,7 +81,7 @@ export const FLOP_SPEC = {
     {
       "name": "posts",
       "rowType": "Post",
-      "rowTs": "{ authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number }; createdAt?: number; excerpt?: string; id?: string; published?: boolean; publishedAt?: number; slug: string; title: string }",
+      "rowTs": "{ authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number }; createdAt?: number; excerpt?: string; id?: string; internalNotes?: string; published?: boolean; publishedAt?: number; slug: string; title: string }",
       "fields": [
         {
           "goName": "AuthorID",
@@ -123,6 +131,12 @@ export const FLOP_SPEC = {
           "primaryStrategy": "uuidv7"
         },
         {
+          "goName": "InternalNotes",
+          "jsonName": "internalNotes",
+          "kind": "string",
+          "tsType": "string"
+        },
+        {
           "goName": "Published",
           "jsonName": "published",
           "kind": "boolean",
@@ -146,6 +160,36 @@ export const FLOP_SPEC = {
         {
           "goName": "Title",
           "jsonName": "title",
+          "kind": "string",
+          "tsType": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "secrets",
+      "rowType": "Secret",
+      "rowTs": "{ id?: string; key: string; value: string }",
+      "fields": [
+        {
+          "goName": "ID",
+          "jsonName": "id",
+          "kind": "string",
+          "tsType": "string",
+          "primary": true,
+          "primaryStrategy": "uuidv7"
+        },
+        {
+          "goName": "Key",
+          "jsonName": "key",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "unique": true
+        },
+        {
+          "goName": "Value",
+          "jsonName": "value",
           "kind": "string",
           "tsType": "string",
           "required": true
@@ -202,8 +246,66 @@ export const FLOP_SPEC = {
       ]
     }
   ],
-  "views": [],
-  "reducers": [],
+  "views": [
+    {
+      "name": "get_comments",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{ postId: string }",
+      "outputTs": "(Record\u003cstring, any\u003e)[]"
+    },
+    {
+      "name": "get_post",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{ slug: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "list_posts",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{  }",
+      "outputTs": "(Record\u003cstring, any\u003e)[]"
+    }
+  ],
+  "reducers": [
+    {
+      "name": "add_comment",
+      "access": {
+        "type": "authenticated"
+      },
+      "inputTs": "{ body: string; postId: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "create_post",
+      "access": {
+        "type": "authenticated"
+      },
+      "inputTs": "{ body: string; coverImage: string; excerpt: string; slug: string; title: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "delete_post",
+      "access": {
+        "type": "authenticated"
+      },
+      "inputTs": "{ id: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "update_post",
+      "access": {
+        "type": "authenticated"
+      },
+      "inputTs": "{ body: string; excerpt: string; id: string; title: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    }
+  ],
   "layouts": [],
   "pages": []
 } as const;

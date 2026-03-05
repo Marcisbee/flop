@@ -13,16 +13,23 @@ type Comment struct {
 }
 
 type Post struct {
-	AuthorID    string        `json:"authorId"`
-	Body        string        `json:"body"`
-	CoverImage  *flop.FileRef `json:"coverImage,omitempty"`
-	CreatedAt   *int64        `json:"createdAt,omitempty"`
-	Excerpt     *string       `json:"excerpt,omitempty"`
-	ID          *string       `json:"id,omitempty"`
-	Published   *bool         `json:"published,omitempty"`
-	PublishedAt *int64        `json:"publishedAt,omitempty"`
-	Slug        string        `json:"slug"`
-	Title       string        `json:"title"`
+	AuthorID      string        `json:"authorId"`
+	Body          string        `json:"body"`
+	CoverImage    *flop.FileRef `json:"coverImage,omitempty"`
+	CreatedAt     *int64        `json:"createdAt,omitempty"`
+	Excerpt       *string       `json:"excerpt,omitempty"`
+	ID            *string       `json:"id,omitempty"`
+	InternalNotes *string       `json:"internalNotes,omitempty"`
+	Published     *bool         `json:"published,omitempty"`
+	PublishedAt   *int64        `json:"publishedAt,omitempty"`
+	Slug          string        `json:"slug"`
+	Title         string        `json:"title"`
+}
+
+type Secret struct {
+	ID    *string `json:"id,omitempty"`
+	Key   string  `json:"key"`
+	Value string  `json:"value"`
 }
 
 type User struct {

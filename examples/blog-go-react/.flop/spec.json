@@ -56,7 +56,7 @@
     {
       "name": "posts",
       "rowType": "Post",
-      "rowTs": "{ authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number }; createdAt?: number; excerpt?: string; id?: string; published?: boolean; publishedAt?: number; slug: string; title: string }",
+      "rowTs": "{ authorId: string; body: string; coverImage?: { path: string; url: string; mime: string; size: number }; createdAt?: number; excerpt?: string; id?: string; internalNotes?: string; published?: boolean; publishedAt?: number; slug: string; title: string }",
       "fields": [
         {
           "goName": "AuthorID",
@@ -106,6 +106,12 @@
           "primaryStrategy": "uuidv7"
         },
         {
+          "goName": "InternalNotes",
+          "jsonName": "internalNotes",
+          "kind": "string",
+          "tsType": "string"
+        },
+        {
           "goName": "Published",
           "jsonName": "published",
           "kind": "boolean",
@@ -129,6 +135,36 @@
         {
           "goName": "Title",
           "jsonName": "title",
+          "kind": "string",
+          "tsType": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "secrets",
+      "rowType": "Secret",
+      "rowTs": "{ id?: string; key: string; value: string }",
+      "fields": [
+        {
+          "goName": "ID",
+          "jsonName": "id",
+          "kind": "string",
+          "tsType": "string",
+          "primary": true,
+          "primaryStrategy": "uuidv7"
+        },
+        {
+          "goName": "Key",
+          "jsonName": "key",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "unique": true
+        },
+        {
+          "goName": "Value",
+          "jsonName": "value",
           "kind": "string",
           "tsType": "string",
           "required": true
@@ -185,8 +221,66 @@
       ]
     }
   ],
-  "views": [],
-  "reducers": [],
+  "views": [
+    {
+      "name": "get_comments",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{ postId: string }",
+      "outputTs": "(Record\u003cstring, any\u003e)[]"
+    },
+    {
+      "name": "get_post",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{ slug: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "list_posts",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{  }",
+      "outputTs": "(Record\u003cstring, any\u003e)[]"
+    }
+  ],
+  "reducers": [
+    {
+      "name": "add_comment",
+      "access": {
+        "type": "authenticated"
+      },
+      "inputTs": "{ body: string; postId: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "create_post",
+      "access": {
+        "type": "authenticated"
+      },
+      "inputTs": "{ body: string; coverImage: string; excerpt: string; slug: string; title: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "delete_post",
+      "access": {
+        "type": "authenticated"
+      },
+      "inputTs": "{ id: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "update_post",
+      "access": {
+        "type": "authenticated"
+      },
+      "inputTs": "{ body: string; excerpt: string; id: string; title: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    }
+  ],
   "layouts": [],
   "pages": []
 }

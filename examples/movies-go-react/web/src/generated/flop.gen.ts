@@ -5,6 +5,10 @@ export type FlopTables = {
 };
 
 export interface FlopViews {
+  autocomplete_movies: { input: { limit: number; q: string }; output: (Record<string, any>)[] };
+  get_movie_by_slug: { input: { slug: string }; output: Record<string, any> };
+  get_stats: { input: {  }; output: Record<string, any> };
+  list_movies: { input: { limit: number; offset: number }; output: (Record<string, any>)[] };
 }
 
 export interface FlopReducers {
@@ -78,7 +82,8 @@ export const FLOP_SPEC = {
           "jsonName": "title",
           "kind": "string",
           "tsType": "string",
-          "required": true
+          "required": true,
+          "fullText": true
         },
         {
           "goName": "Votes",
@@ -96,7 +101,40 @@ export const FLOP_SPEC = {
       ]
     }
   ],
-  "views": [],
+  "views": [
+    {
+      "name": "autocomplete_movies",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{ limit: number; q: string }",
+      "outputTs": "(Record\u003cstring, any\u003e)[]"
+    },
+    {
+      "name": "get_movie_by_slug",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{ slug: string }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "get_stats",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{  }",
+      "outputTs": "Record\u003cstring, any\u003e"
+    },
+    {
+      "name": "list_movies",
+      "access": {
+        "type": "public"
+      },
+      "inputTs": "{ limit: number; offset: number }",
+      "outputTs": "(Record\u003cstring, any\u003e)[]"
+    }
+  ],
   "reducers": [],
   "layouts": [],
   "pages": []

@@ -5,17 +5,20 @@ package app
 const (
 	TableComments = "comments"
 	TablePosts    = "posts"
+	TableSecrets  = "secrets"
 	TableUsers    = "users"
 )
 
 type TableNames struct {
 	Comments string
 	Posts    string
+	Secrets  string
 	Users    string
 }
 
 var Tables = TableNames{
 	Comments: TableComments,
 	Posts:    TablePosts,
+	Secrets:  TableSecrets,
 	Users:    TableUsers,
 }

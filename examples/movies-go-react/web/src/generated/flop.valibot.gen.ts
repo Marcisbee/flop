@@ -2,6 +2,10 @@
 import * as v from "valibot";
 
 export const viewValidators = {
+  autocomplete_movies: v.any(),
+  get_movie_by_slug: v.any(),
+  get_stats: v.any(),
+  list_movies: v.any(),
 } as const;
 
 export const reducerValidators = {

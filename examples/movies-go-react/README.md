@@ -58,8 +58,8 @@ Dataset terms and source:
 
 ## API
 
-- `GET /api/stats`
-- `GET /api/movies?limit=36&offset=0`
-- `GET /api/movies/autocomplete?q=blade&limit=10`
-- `GET /api/movies/slug/{slug}`
+- `GET /api/view/get_stats`
+- `GET /api/view/list_movies?limit=36&offset=0`
+- `GET /api/view/autocomplete_movies?q=blade&limit=10`
+- `GET /api/view/get_movie_by_slug?slug=blade-runner-1982`
 - `POST /api/import/movies?count=50000`

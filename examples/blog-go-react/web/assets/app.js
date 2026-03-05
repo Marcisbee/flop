@@ -1,3 +1,5 @@
+import { Flop } from "./flop-client.js";
+
 function $(id) {
   return document.getElementById(id);
 }
@@ -29,12 +31,12 @@ function escapeHtml(value) {
 
 let postsCache = null;
 const headCache = new Map();
+const client = new Flop({ host: "" });
 
 async function getPosts() {
   if (postsCache) return postsCache;
-  const res = await fetch("/api/posts");
-  const json = await res.json();
-  postsCache = json.data || [];
+  const data = await client.view("list_posts", {});
+  postsCache = Array.isArray(data) ? data : [];
   return postsCache;
 }
 
