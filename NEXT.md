@@ -7,7 +7,7 @@ This document describes the proposed **NEXT** app API:
 - table/row/cell access is enforced in the engine (optional policies)
 - table dependencies are tracked at **runtime** (reads/writes)
 - JS SDK uses `client.view(name, params)` and `client.reducer(name, params)`
-- multiple `view()` calls in one frame are auto-batched
+- multiple `view()` calls in one frame are auto-batched (single call stays direct)
 - reducer writes auto-trigger refetch of affected watched views
 
 ## Goals
@@ -228,7 +228,7 @@ This is used by the SDK for automatic invalidation/refetch.
 Use explicit endpoint names:
 
 ```ts
-const client = new FlopClient<AppSchema>({
+const client = new Flop<AppSchema>({
   host: "http://localhost:1985",
   batchViews: "frame",
   autoRefetch: true,
@@ -240,10 +240,12 @@ await client.reducer("add_task_comment", { taskId: "t1", body: "Looks good" });
 
 ### Auto-batched `view()`
 
-`client.view(...)` calls in the same frame are automatically merged into one request:
+`client.view(...)` calls are frame-coalesced:
 
-- request: `POST /api/view/_batch`
-- body:
+1. if a flush has exactly 1 view call, SDK sends direct `GET /api/view/{name}`
+2. if a flush has 2+ calls, SDK sends one `POST /api/view/_batch`
+
+Batch request example:
 
 ```json
 {
@@ -332,8 +334,20 @@ type AdaptReducers<R> = {
 
 1. Separate endpoint functions avoid giant branching handlers.
 2. Runtime tracking overhead should stay low with table-id bitsets.
-3. Auto-batching reduces network/request overhead in UI-heavy screens.
+3. Auto-batching reduces network/request overhead in UI-heavy screens with multiple concurrent view reads.
 4. Auto-refetch avoids stale UI without manual invalidation glue.
+
+## 8.5 Server wiring
+
+Use default engine mounts so `/api` and `/_` are available without custom routing glue:
+
+```go
+mux := http.NewServeMux()
+mounts := flop.MountDefaultHandlers(mux, app, db) // mounts API + admin
+_ = mounts
+```
+
+Then only add app-specific routes you actually need (for example `/api/head` or static assets).
 
 ## 9. Recommended app structure
 
