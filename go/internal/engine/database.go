@@ -57,6 +57,7 @@ type WalBufEntry = walBufEntry
 type walBufEntry struct {
 	records [][]byte
 	txIDs   []uint32
+	pending []string
 }
 
 func NewDatabase(config DatabaseConfig) *Database {
@@ -184,6 +185,7 @@ func (db *Database) directFlush(walBuffers map[string]*walBufEntry, locksHeld bo
 		if err != nil {
 			return err
 		}
+		table.clearPendingKeys(entry.pending)
 		if needCheckpoint {
 			go table.Checkpoint()
 		}
@@ -235,6 +237,7 @@ func (db *Database) drainCommitQueue() {
 				}
 				m.records = append(m.records, entry.records...)
 				m.txIDs = append(m.txIDs, entry.txIDs...)
+				m.pending = append(m.pending, entry.pending...)
 			}
 		}
 
@@ -257,6 +260,9 @@ func (db *Database) drainCommitQueue() {
 						flushErr = err
 					}
 				}
+				if flushErr == nil {
+					table.clearPendingKeys(entry.pending)
+				}
 				if table.bumpWALEntryCount(len(entry.records) + len(entry.txIDs)) {
 					checkpointTables = append(checkpointTables, table)
 				}
@@ -267,6 +273,7 @@ func (db *Database) drainCommitQueue() {
 				table          *TableInstance
 				entryCount     int
 				needCheckpoint bool
+				pending        []string
 				err            error
 			}
 			results := make(chan tableResult, len(merged))
@@ -286,6 +293,7 @@ func (db *Database) drainCommitQueue() {
 						table:          t,
 						entryCount:     count,
 						needCheckpoint: needCheckpoint,
+						pending:        e.pending,
 						err:            err,
 					}
 				}(table, entry)
@@ -294,6 +302,9 @@ func (db *Database) drainCommitQueue() {
 				r := <-results
 				if r.err != nil && flushErr == nil {
 					flushErr = r.err
+				}
+				if r.err == nil {
+					r.table.clearPendingKeys(r.pending)
 				}
 				if r.needCheckpoint {
 					checkpointTables = append(checkpointTables, r.table)
@@ -386,6 +397,8 @@ type TableInstance struct {
 	pageLocks     [updateLockShards]sync.Mutex
 	uniqueLocks   [updateLockShards]sync.Mutex
 	walCountMu    sync.Mutex
+	pendingMu     sync.RWMutex
+	pendingRows   map[string]uint32
 	walEntryCount int
 	autoIDNext    map[string]int64
 }
@@ -400,6 +413,7 @@ func newTableInstance(name string, def *schema.TableDef, db *Database) (*TableIn
 		indexesToRebuild: make(map[string]bool),
 		migChains:        make(map[int]*schema.MigrationChain),
 		autoIDNext:       make(map[string]int64),
+		pendingRows:      make(map[string]uint32),
 		db:               db,
 	}, nil
 }
@@ -1046,6 +1060,20 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpInsert, serialized)
 	failpoint.Hit("insert_after_wal_record")
+	pendingKey := pk
+	if pendingKey == "" {
+		pendingKey = toString(row[ti.primaryKeyField()])
+	}
+	pendingAdded := false
+	if pendingKey != "" {
+		ti.addPendingKey(pendingKey)
+		pendingAdded = true
+	}
+	defer func() {
+		if pendingAdded {
+			ti.clearPendingKeys([]string{pendingKey})
+		}
+	}()
 
 	// Write to page
 	var (
@@ -1110,14 +1138,23 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		entry.records = append(entry.records, beginRecord)
 		entry.records = append(entry.records, walRecord)
 		entry.txIDs = append(entry.txIDs, txID)
+		if pendingKey != "" {
+			entry.pending = append(entry.pending, pendingKey)
+			pendingAdded = false
+		}
 	} else {
+		pendingKeys := []string{}
+		if pendingKey != "" {
+			pendingKeys = []string{pendingKey}
+		}
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}},
+			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}, pending: pendingKeys},
 		}
 		failpoint.Hit("insert_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
 			return nil, err
 		}
+		pendingAdded = false
 		failpoint.Hit("insert_after_commit")
 	}
 
@@ -1292,6 +1329,12 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpUpdate, serialized)
 	failpoint.Hit("update_after_wal_record")
+	pendingAdded := false
+	defer func() {
+		if pendingAdded {
+			ti.clearPendingKeys([]string{key})
+		}
+	}()
 
 	pageLock := ti.pageLockFor(pointer.PageNumber)
 	pageLock.Lock()
@@ -1311,6 +1354,8 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		locked = false
 		return ti.updateSlowLocked(key, updates, txBuf, silent)
 	}
+	ti.addPendingKey(key)
+	pendingAdded = true
 
 	if !page.UpdateRow(int(pointer.SlotIndex), serialized) {
 		pageLock.Unlock()
@@ -1340,14 +1385,17 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		entry.records = append(entry.records, beginRecord)
 		entry.records = append(entry.records, walRecord)
 		entry.txIDs = append(entry.txIDs, txID)
+		entry.pending = append(entry.pending, key)
+		pendingAdded = false
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}},
+			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
 		}
 		failpoint.Hit("update_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
 			return nil, err
 		}
+		pendingAdded = false
 		failpoint.Hit("update_after_commit")
 	}
 
@@ -1417,6 +1465,14 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	beginRecord := ti.wal.BuildBeginRecord(txID)
 	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpUpdate, serialized)
 	failpoint.Hit("update_slow_after_wal_record")
+	pendingAdded := false
+	ti.addPendingKey(key)
+	pendingAdded = true
+	defer func() {
+		if pendingAdded {
+			ti.clearPendingKeys([]string{key})
+		}
+	}()
 
 	// Apply index changes (remove old keys, add new keys with current pointer)
 	ti.applyIndexChanges(existing, newRow, pointer)
@@ -1477,14 +1533,17 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		entry.records = append(entry.records, beginRecord)
 		entry.records = append(entry.records, walRecord)
 		entry.txIDs = append(entry.txIDs, txID)
+		entry.pending = append(entry.pending, key)
+		pendingAdded = false
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}},
+			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
 		}
 		failpoint.Hit("update_slow_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
 			return nil, err
 		}
+		pendingAdded = false
 		failpoint.Hit("update_slow_after_commit")
 	}
 
@@ -1615,6 +1674,14 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	deleteData := []byte(key)
 	walRecord, recordLSN := ti.wal.BuildRecordWithLSN(txID, storage.WALOpDelete, deleteData)
 	failpoint.Hit("delete_after_wal_record")
+	pendingAdded := false
+	ti.addPendingKey(key)
+	pendingAdded = true
+	defer func() {
+		if pendingAdded {
+			ti.clearPendingKeys([]string{key})
+		}
+	}()
 
 	page, err := ti.tableFile.GetPage(pointer.PageNumber)
 	if err != nil {
@@ -1660,14 +1727,17 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 		entry.records = append(entry.records, beginRecord)
 		entry.records = append(entry.records, walRecord)
 		entry.txIDs = append(entry.txIDs, txID)
+		entry.pending = append(entry.pending, key)
+		pendingAdded = false
 	} else {
 		walBuf := map[string]*walBufEntry{
-			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}},
+			ti.Name: {records: [][]byte{beginRecord, walRecord}, txIDs: []uint32{txID}, pending: []string{key}},
 		}
 		failpoint.Hit("delete_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
 			return false, err
 		}
+		pendingAdded = false
 		failpoint.Hit("delete_after_commit")
 	}
 
@@ -1700,6 +1770,48 @@ func (ti *TableInstance) bumpWALEntryCount(delta int) bool {
 	return false
 }
 
+func (ti *TableInstance) addPendingKey(key string) {
+	if key == "" {
+		return
+	}
+	ti.pendingMu.Lock()
+	ti.pendingRows[key]++
+	ti.pendingMu.Unlock()
+}
+
+func (ti *TableInstance) clearPendingKeys(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	ti.pendingMu.Lock()
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		count := ti.pendingRows[key]
+		if count <= 1 {
+			delete(ti.pendingRows, key)
+			continue
+		}
+		ti.pendingRows[key] = count - 1
+	}
+	ti.pendingMu.Unlock()
+}
+
+func (ti *TableInstance) rowVisibleToScans(row map[string]interface{}) bool {
+	if row == nil {
+		return false
+	}
+	pk := toString(row[ti.primaryKeyField()])
+	if pk == "" {
+		return true
+	}
+	ti.pendingMu.RLock()
+	_, pending := ti.pendingRows[pk]
+	ti.pendingMu.RUnlock()
+	return !pending
+}
+
 // Scan returns rows with limit/offset.
 func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, error) {
 	start := time.Now()
@@ -1724,6 +1836,9 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
+			return true
+		}
+		if !ti.rowVisibleToScans(row) {
 			return true
 		}
 
@@ -1753,6 +1868,9 @@ func (ti *TableInstance) ScanFilter(match func(map[string]interface{}) bool, lim
 		scannedCount++
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
+			return true
+		}
+		if !ti.rowVisibleToScans(row) {
 			return true
 		}
 		if !match(row) {
@@ -1858,6 +1976,9 @@ func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, pa
 	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
+			return true
+		}
+		if !ti.rowVisibleToScans(row) {
 			return true
 		}
 
@@ -2091,6 +2212,9 @@ func (ti *TableInstance) scanPointersByIndexKey(fields []string, matchKey string
 		if err != nil {
 			return true
 		}
+		if !ti.rowVisibleToScans(row) {
+			return true
+		}
 		if secondaryIndexRowKey(fields, row) != matchKey {
 			return true
 		}
@@ -2123,6 +2247,9 @@ func (ti *TableInstance) searchFullTextByScan(fields []string, query string, lim
 		scannedCount++
 		row, err := ti.deserializeCurrentRow(scanned.Data)
 		if err != nil {
+			return true
+		}
+		if !ti.rowVisibleToScans(row) {
 			return true
 		}
 		docTokens := tokenizeFullTextLikeSet(textValuesForFields(row, fields)...)

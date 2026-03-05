@@ -249,6 +249,45 @@ func TestConcurrentInsertHonorsUniqueConstraint(t *testing.T) {
 	}
 }
 
+func TestScanHidesPendingBufferedInsertUntilCommit(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+
+	txBuf := make(map[string]*walBufEntry)
+	if _, err := ti.Insert(map[string]interface{}{
+		"id":    "id-pending-1",
+		"slug":  "slug-pending-1",
+		"title": "Pending Insert",
+		"genre": "drama",
+	}, txBuf); err != nil {
+		t.Fatalf("buffered insert: %v", err)
+	}
+
+	rows, err := ti.Scan(10, 0)
+	if err != nil {
+		t.Fatalf("scan while pending: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected pending row hidden from scan, got %d rows", len(rows))
+	}
+
+	if err := db.EnqueueCommit(txBuf); err != nil {
+		t.Fatalf("commit tx buffer: %v", err)
+	}
+
+	rows, err = ti.Scan(10, 0)
+	if err != nil {
+		t.Fatalf("scan after commit: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected committed row visible, got %d rows", len(rows))
+	}
+	if got := toString(rows[0]["id"]); got != "id-pending-1" {
+		t.Fatalf("unexpected row id after commit: %q", got)
+	}
+}
+
 func TestOpenAsyncSecondaryIndexesEventuallyReady(t *testing.T) {
 	dataDir := t.TempDir()
 
