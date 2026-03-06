@@ -2358,7 +2358,16 @@ func btoi(v bool) int {
 
 // Checkpoint flushes all dirty pages, indexes, and WAL.
 func (ti *TableInstance) Checkpoint() error {
+	// Fast path: if WAL has no new entries since last checkpoint, skip heavy index rewrite.
+	if ti.wal != nil && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
+		return nil
+	}
+
 	ti.mu.Lock()
+	if ti.wal != nil && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
+		ti.mu.Unlock()
+		return nil
+	}
 
 	failpoint.Hit("checkpoint_start")
 	if err := ti.tableFile.Flush(); err != nil {

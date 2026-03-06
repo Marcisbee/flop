@@ -124,8 +124,8 @@ func ServeWithDefaults(opts DefaultServeOptions) error {
 	go func() {
 		<-sigCh
 		fmt.Println("shutting down...")
-		cleanup()
 		_ = opts.Server.Close()
+		cleanup()
 	}()
 
 	err := opts.Server.ListenAndServe()
