@@ -38,6 +38,14 @@ type Database struct {
 	tableNameToID       map[string]int
 	tableSpecs          map[string]*tableSpec
 	tablePolicy         map[string]tablePolicyMeta
+	materialized        map[string]*materializedRuntime
+}
+
+type materializedRuntime struct {
+	spec        *materializedSpec
+	mu          sync.Mutex
+	lastRefresh time.Time
+	lastError   string
 }
 
 // TableInstance wraps internal engine table and provides CRUD operations.
@@ -103,10 +111,14 @@ func (a *App) Open() (*Database, error) {
 		tableNameToID:       make(map[string]int),
 		tableSpecs:          make(map[string]*tableSpec),
 		tablePolicy:         make(map[string]tablePolicyMeta),
+		materialized:        make(map[string]*materializedRuntime),
 	}
 	for name, spec := range a.tables {
 		d.tableSpecs[name] = spec
 		d.tablePolicy[name] = buildTablePolicyMeta(spec)
+		if spec.Materialized != nil {
+			d.materialized[name] = &materializedRuntime{spec: spec.Materialized}
+		}
 	}
 
 	names := make([]string, 0, len(db.Tables))
@@ -141,21 +153,45 @@ func (a *App) Open() (*Database, error) {
 	// Wire up cached field triggers
 	a.wireCachedFields(d)
 
-	// Start cron jobs
-	if len(a.crons) > 0 {
-		jobs := make([]cron.Job, 0, len(a.crons))
-		for _, cs := range a.crons {
-			sched, err := cron.Parse(cs.Expr)
-			if err != nil {
-				return nil, fmt.Errorf("flop: invalid cron expression %q: %w", cs.Expr, err)
-			}
-			fn := cs.Fn
-			db := d
-			jobs = append(jobs, cron.Job{
-				Schedule: sched,
-				Fn:       func() { fn(db) },
-			})
+	for name, rt := range d.materialized {
+		if rt == nil || rt.spec == nil || !rt.spec.RefreshOnStartup || rt.spec.Refresh == nil {
+			continue
 		}
+		if err := d.RefreshMaterialized(name); err != nil {
+			return nil, err
+		}
+	}
+
+	jobs := make([]cron.Job, 0, len(a.crons)+len(d.materialized))
+	for _, cs := range a.crons {
+		sched, err := cron.Parse(cs.Expr)
+		if err != nil {
+			return nil, fmt.Errorf("flop: invalid cron expression %q: %w", cs.Expr, err)
+		}
+		fn := cs.Fn
+		db := d
+		jobs = append(jobs, cron.Job{
+			Schedule: sched,
+			Fn:       func() { fn(db) },
+		})
+	}
+	for name, rt := range d.materialized {
+		if rt == nil || rt.spec == nil || rt.spec.Refresh == nil || strings.TrimSpace(rt.spec.Cron) == "" {
+			continue
+		}
+		sched, err := cron.Parse(rt.spec.Cron)
+		if err != nil {
+			return nil, fmt.Errorf("flop: invalid cron expression %q for materialized table %s: %w", rt.spec.Cron, name, err)
+		}
+		tableName := name
+		jobs = append(jobs, cron.Job{
+			Schedule: sched,
+			Fn: func() {
+				_ = d.RefreshMaterialized(tableName)
+			},
+		})
+	}
+	if len(jobs) > 0 {
 		d.cronRunner = cron.Start(context.Background(), jobs)
 	}
 
@@ -313,6 +349,53 @@ func (d *Database) RequestAnalytics() *server.RequestAnalytics {
 	return d.analytics
 }
 
+func (d *Database) RefreshMaterialized(name string) error {
+	if d == nil {
+		return fmt.Errorf("flop: database is nil")
+	}
+	rt, ok := d.materialized[name]
+	if !ok || rt == nil || rt.spec == nil || rt.spec.Refresh == nil {
+		return fmt.Errorf("flop: materialized table not configured: %s", name)
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if err := d.repairTableIndexes(name); err != nil {
+		rt.lastError = err.Error()
+		return err
+	}
+	if err := rt.spec.Refresh(d); err != nil {
+		rt.lastError = err.Error()
+		return err
+	}
+	rt.lastRefresh = time.Now()
+	rt.lastError = ""
+	return nil
+}
+
+func (d *Database) repairTableIndexes(name string) error {
+	if d == nil || d.db == nil {
+		return fmt.Errorf("flop: database is nil")
+	}
+	ti, ok := d.db.Tables[name]
+	if !ok || ti == nil {
+		return fmt.Errorf("flop: unknown table: %s", name)
+	}
+	return ti.RepairIndexesIfNeeded()
+}
+
+func (d *Database) materializedStatus(name string) (bool, time.Time, string) {
+	if d == nil {
+		return false, time.Time{}, ""
+	}
+	rt, ok := d.materialized[name]
+	if !ok || rt == nil {
+		return false, time.Time{}, ""
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return true, rt.lastRefresh, rt.lastError
+}
+
 // Insert inserts a row into the table. Returns the inserted row
 // (with auto-generated fields filled).
 func (ti *TableInstance) Insert(data map[string]any) (map[string]any, error) {
@@ -449,6 +532,66 @@ func (ti *TableInstance) Delete(pk string) (bool, error) {
 		}
 	}
 	return ti.ti.Delete(pk, nil)
+}
+
+// ReplaceAll replaces all rows in the table with the provided dataset.
+func (ti *TableInstance) ReplaceAll(rows []map[string]any) error {
+	ti.markWrite()
+	if ti.isNil() {
+		return fmt.Errorf("table is nil")
+	}
+	def := ti.ti.GetDef()
+	if len(def.CompiledSchema.Fields) == 0 {
+		return fmt.Errorf("table has no primary key")
+	}
+	pkField := def.CompiledSchema.Fields[0].Name
+	desired := make(map[string]map[string]any, len(rows))
+	for _, row := range rows {
+		pk := toString(row[pkField])
+		if pk == "" {
+			return fmt.Errorf("row missing primary key field %s", pkField)
+		}
+		if _, exists := desired[pk]; exists {
+			return fmt.Errorf("duplicate primary key in replace set: %s", pk)
+		}
+		desired[pk] = row
+	}
+
+	total := ti.ti.Count()
+	if total > 0 {
+		existing, err := ti.ti.Scan(total, 0)
+		if err != nil {
+			return err
+		}
+		for _, row := range existing {
+			pk := toString(row[pkField])
+			if pk == "" {
+				continue
+			}
+			next, keep := desired[pk]
+			if !keep {
+				if _, err := ti.ti.Delete(pk, nil); err != nil {
+					return err
+				}
+				continue
+			}
+			updates := cloneRow(next)
+			delete(updates, pkField)
+			if _, err := ti.ti.Update(pk, updates, nil); err != nil {
+				return err
+			}
+			delete(desired, pk)
+		}
+	}
+	if len(desired) == 0 {
+		return nil
+	}
+	toInsert := make([]map[string]any, 0, len(desired))
+	for _, row := range desired {
+		toInsert = append(toInsert, row)
+	}
+	_, err := ti.ti.BulkInsert(toInsert, 1000)
+	return err
 }
 
 // Scan returns rows with pagination.
@@ -1096,10 +1239,15 @@ func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 	for name, t := range p.DB.db.Tables {
 		def := t.GetDef()
 		s, _ := marshalOrderedSchema(def.CompiledSchema)
+		materialized, lastRefresh, refreshError := p.DB.materializedStatus(name)
 		tables = append(tables, AdminTable{
-			Name:     name,
-			Schema:   s,
-			RowCount: t.Count(),
+			Name:                 name,
+			Schema:               s,
+			RowCount:             t.Count(),
+			ReadOnly:             materialized,
+			Materialized:         materialized,
+			LastRefreshUnixMilli: lastRefresh.UnixMilli(),
+			RefreshError:         refreshError,
 		})
 	}
 	sort.Slice(tables, func(i, j int) bool { return tables[i].Name < tables[j].Name })
@@ -1237,6 +1385,9 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 }
 
 func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) (map[string]any, error) {
+	if ok, _, _ := p.DB.materializedStatus(table); ok {
+		return nil, fmt.Errorf("materialized table is read-only: %s", table)
+	}
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return nil, fmt.Errorf("table not found: %s", table)
@@ -1245,6 +1396,9 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 }
 
 func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string]any) error {
+	if ok, _, _ := p.DB.materializedStatus(table); ok {
+		return fmt.Errorf("materialized table is read-only: %s", table)
+	}
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return fmt.Errorf("table not found: %s", table)
@@ -1254,6 +1408,9 @@ func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string
 }
 
 func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
+	if ok, _, _ := p.DB.materializedStatus(table); ok {
+		return fmt.Errorf("materialized table is read-only: %s", table)
+	}
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return fmt.Errorf("table not found: %s", table)
@@ -1299,6 +1456,13 @@ func (p *EngineAdminProvider) AdminIndexStats() any {
 }
 
 // AdminEnablePprof reports whether profiling endpoints are enabled.
+func (p *EngineAdminProvider) AdminRefreshMaterialized(table string) error {
+	if p == nil || p.DB == nil {
+		return fmt.Errorf("database not available")
+	}
+	return p.DB.RefreshMaterialized(table)
+}
+
 func (p *EngineAdminProvider) AdminEnablePprof() bool {
 	return p != nil && p.DB != nil && p.DB.enablePprof
 }

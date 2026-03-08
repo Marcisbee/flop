@@ -16,9 +16,13 @@ import (
 )
 
 type AdminTable struct {
-	Name     string           `json:"name"`
-	Schema   jsonx.RawMessage `json:"schema,omitempty"`
-	RowCount int              `json:"rowCount"`
+	Name                 string           `json:"name"`
+	Schema               jsonx.RawMessage `json:"schema,omitempty"`
+	RowCount             int              `json:"rowCount"`
+	ReadOnly             bool             `json:"readOnly,omitempty"`
+	Materialized         bool             `json:"materialized,omitempty"`
+	LastRefreshUnixMilli int64            `json:"lastRefreshUnixMilli,omitempty"`
+	RefreshError         string           `json:"refreshError,omitempty"`
 }
 
 type AdminRowsPage struct {
@@ -92,6 +96,10 @@ type AdminAnalyticsProvider interface {
 // AdminIndexStatsProvider exposes per-table index statistics for observability.
 type AdminIndexStatsProvider interface {
 	AdminIndexStats() any
+}
+
+type AdminMaterializedProvider interface {
+	AdminRefreshMaterialized(table string) error
 }
 
 // AdminPprofProvider exposes whether profiling routes should be enabled.
@@ -501,6 +509,35 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			adminJSONResp(w, http.StatusOK, map[string]any{
 				"tables": tables,
 			})
+			return
+		}
+
+		if strings.HasPrefix(path, "/_/api/materialized/") && strings.HasSuffix(path, "/refresh") {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			materializedProvider, ok := provider.(AdminMaterializedProvider)
+			if !ok {
+				adminJSONError(w, "materialized refresh unsupported", http.StatusNotFound)
+				return
+			}
+			if r.Method != http.MethodPost {
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			tableName := strings.TrimPrefix(path, "/_/api/materialized/")
+			tableName = strings.TrimSuffix(tableName, "/refresh")
+			tableName = strings.TrimSuffix(tableName, "/")
+			if tableName == "" {
+				adminJSONError(w, "table required", http.StatusBadRequest)
+				return
+			}
+			if err := materializedProvider.AdminRefreshMaterialized(tableName); err != nil {
+				adminJSONError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
 			return
 		}
 

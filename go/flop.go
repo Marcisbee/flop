@@ -56,6 +56,12 @@ type cronSpec struct {
 	Fn   func(*Database)
 }
 
+type materializedSpec struct {
+	Refresh          func(*Database) error
+	Cron             string
+	RefreshOnStartup bool
+}
+
 // App is the top-level runtime registry.
 // In this phase, it stores typed metadata used for generation and future runtime wiring.
 type App struct {
@@ -108,6 +114,11 @@ type Table[T any] struct {
 
 type TableBuilder[T any] struct {
 	table *Table[T]
+}
+
+type MaterializedBuilder struct {
+	table *Table[map[string]any]
+	spec  *materializedSpec
 }
 
 type FieldBuilder[T any] struct {
@@ -375,6 +386,35 @@ func Define(app *App, name string, configure func(*SchemaBuilder)) *Table[map[st
 	return t
 }
 
+// Materialized creates a normal table whose contents are engine-managed by a refresh callback.
+func Materialized(app *App, name string, configure func(*MaterializedBuilder)) *Table[map[string]any] {
+	t := Define(app, name, nil)
+	if t == nil {
+		return nil
+	}
+	ms := &materializedSpec{RefreshOnStartup: true}
+	t.spec.Materialized = ms
+	if configure != nil {
+		configure(&MaterializedBuilder{table: t, spec: ms})
+	}
+	t.spec.RowTS = rowTSTypeFromFields(t.spec.Fields)
+	return t
+}
+
+func (a *App) Materialized(name string) *MaterializedBuilder {
+	if a == nil {
+		panic("flop: app is nil")
+	}
+	ts, ok := a.tables[name]
+	if !ok {
+		panic("flop: unknown table: " + name)
+	}
+	if ts.Materialized == nil {
+		ts.Materialized = &materializedSpec{RefreshOnStartup: true}
+	}
+	return &MaterializedBuilder{table: &Table[map[string]any]{app: a, name: name, spec: ts}, spec: ts.Materialized}
+}
+
 func (sb *SchemaBuilder) String(name string) *StringFieldRules {
 	return &StringFieldRules{spec: sb.field(name, "string", "string")}
 }
@@ -520,6 +560,105 @@ func (sb *SchemaBuilder) Migration(version int, rename ...map[string]string) {
 		step.Rename = rename[0]
 	}
 	sb.table.Migrations = append(sb.table.Migrations, step)
+}
+
+func (mb *MaterializedBuilder) ensureSchema() *SchemaBuilder {
+	if mb == nil || mb.table == nil || mb.table.spec == nil {
+		panic("flop: invalid materialized builder")
+	}
+	return &SchemaBuilder{table: mb.table.spec}
+}
+
+func (mb *MaterializedBuilder) String(name string) *StringFieldRules {
+	return mb.ensureSchema().String(name)
+}
+
+func (mb *MaterializedBuilder) Number(name string) *NumberFieldRules {
+	return mb.ensureSchema().Number(name)
+}
+
+func (mb *MaterializedBuilder) Integer(name string) *IntegerFieldRules {
+	return mb.ensureSchema().Integer(name)
+}
+
+func (mb *MaterializedBuilder) Boolean(name string) *BooleanFieldRules {
+	return mb.ensureSchema().Boolean(name)
+}
+
+func (mb *MaterializedBuilder) JSON(name string) *JSONFieldRules {
+	return mb.ensureSchema().JSON(name)
+}
+
+func (mb *MaterializedBuilder) Timestamp(name string) *TimestampFieldRules {
+	return mb.ensureSchema().Timestamp(name)
+}
+
+func (mb *MaterializedBuilder) Bcrypt(name string, rounds int) *BcryptFieldRules {
+	return mb.ensureSchema().Bcrypt(name, rounds)
+}
+
+func (mb *MaterializedBuilder) Roles(name string) *RolesFieldRules {
+	return mb.ensureSchema().Roles(name)
+}
+
+func (mb *MaterializedBuilder) Enum(name string, values ...string) *EnumFieldRules {
+	return mb.ensureSchema().Enum(name, values...)
+}
+
+func (mb *MaterializedBuilder) Ref(name string, other any, field string) *RefFieldRules {
+	return mb.ensureSchema().Ref(name, other, field)
+}
+
+func (mb *MaterializedBuilder) RefMulti(name string, other any, field string) *RefMultiFieldRules {
+	return mb.ensureSchema().RefMulti(name, other, field)
+}
+
+func (mb *MaterializedBuilder) FileSingle(name string, mime ...string) *FileSingleFieldRules {
+	return mb.ensureSchema().FileSingle(name, mime...)
+}
+
+func (mb *MaterializedBuilder) FileMulti(name string, mime ...string) *FileMultiFieldRules {
+	return mb.ensureSchema().FileMulti(name, mime...)
+}
+
+func (mb *MaterializedBuilder) Set(name string) *SetFieldRules {
+	return mb.ensureSchema().Set(name)
+}
+
+func (mb *MaterializedBuilder) Vector(name string, dimensions int) *VectorFieldRules {
+	return mb.ensureSchema().Vector(name, dimensions)
+}
+
+func (mb *MaterializedBuilder) Access(access TableAccess) {
+	mb.ensureSchema().Access(access)
+}
+
+func (mb *MaterializedBuilder) Migration(version int, rename ...map[string]string) {
+	mb.ensureSchema().Migration(version, rename...)
+}
+
+func (mb *MaterializedBuilder) Refresh(fn func(*Database) error) {
+	if mb == nil || mb.spec == nil {
+		panic("flop: invalid materialized builder")
+	}
+	if fn == nil {
+		panic("flop: materialized refresh handler is nil")
+	}
+	mb.spec.Refresh = fn
+}
+
+func (mb *MaterializedBuilder) Cron(expr string) {
+	if mb == nil || mb.spec == nil {
+		panic("flop: invalid materialized builder")
+	}
+	mb.spec.Cron = strings.TrimSpace(expr)
+}
+
+func (mb *MaterializedBuilder) RefreshOnStartup(enabled bool) {
+	if mb == nil || mb.spec == nil {
+		panic("flop: invalid materialized builder")
+	}
+	mb.spec.RefreshOnStartup = enabled
 }
 
 func (b *StringFieldRules) Primary(strategy ...string) *StringFieldRules {
@@ -1220,13 +1359,14 @@ type migrationStep struct {
 }
 
 type tableSpec struct {
-	Name       string
-	RowType    string
-	RowTS      string
-	Fields     map[string]*fieldSpec
-	Access     TableAccess
-	CachedDefs []cachedFieldRuntime
-	Migrations []migrationStep
+	Name         string
+	RowType      string
+	RowTS        string
+	Fields       map[string]*fieldSpec
+	Access       TableAccess
+	CachedDefs   []cachedFieldRuntime
+	Migrations   []migrationStep
+	Materialized *materializedSpec
 }
 
 // cachedFieldRuntime stores the compute function + triggers for a cached field.

@@ -813,6 +813,31 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 	return ti.rebuildSecondaryIndexesByKeys(nil)
 }
 
+func (ti *TableInstance) repairIndexesIfNeeded() error {
+	expected := int(atomic.LoadUint32(&ti.tableFile.TotalRows))
+	if ti.primaryIndex.Size() == expected {
+		return nil
+	}
+	ti.mu.Lock()
+	defer ti.mu.Unlock()
+	if ti.primaryIndex.Size() == expected {
+		return nil
+	}
+	if err := ti.rebuildIndex(); err != nil {
+		return err
+	}
+	if err := ti.rebuildSecondaryIndexes(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RepairIndexesIfNeeded rebuilds in-memory primary and secondary indexes when
+// the persisted primary index count diverges from the table file row count.
+func (ti *TableInstance) RepairIndexesIfNeeded() error {
+	return ti.repairIndexesIfNeeded()
+}
+
 func (ti *TableInstance) rebuildSecondaryIndexesByKeys(keys map[string]bool) error {
 	for indexKey, idx := range ti.secondaryIdxs {
 		if keys != nil && !keys[indexKey] {
