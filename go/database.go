@@ -74,6 +74,13 @@ func (ti *TableInstance) isNil() bool {
 	return ti == nil || ti.ti == nil
 }
 
+func (ti *TableInstance) ensureMaterializedReadable() {
+	if ti == nil || ti.ti == nil || ti.spec == nil || ti.spec.Materialized == nil {
+		return
+	}
+	_ = ti.ti.RepairIndexesIfNeeded()
+}
+
 // AutocompleteEntry represents one row in an autocomplete index.
 type AutocompleteEntry = engine.AutocompleteEntry
 
@@ -456,6 +463,7 @@ func (ti *TableInstance) Get(pk string) (map[string]any, error) {
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
+	ti.ensureMaterializedReadable()
 	row, err := ti.ti.Get(pk)
 	if err != nil || row == nil {
 		return row, err
@@ -600,6 +608,7 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]any, error) {
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
 	}
+	ti.ensureMaterializedReadable()
 	if !ti.requiresReadFiltering() {
 		return ti.ti.Scan(limit, offset)
 	}
@@ -671,6 +680,7 @@ func (ti *TableInstance) Count() int {
 	if ti.isNil() {
 		return 0
 	}
+	ti.ensureMaterializedReadable()
 	if !ti.requiresRowReadFiltering() {
 		return ti.ti.Count()
 	}
@@ -1240,6 +1250,9 @@ func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 		def := t.GetDef()
 		s, _ := marshalOrderedSchema(def.CompiledSchema)
 		materialized, lastRefresh, refreshError := p.DB.materializedStatus(name)
+		if materialized {
+			_ = p.DB.repairTableIndexes(name)
+		}
 		tables = append(tables, AdminTable{
 			Name:                 name,
 			Schema:               s,
@@ -1299,6 +1312,11 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 	if ti == nil {
 		return AdminRowsPage{}, false, nil
 	}
+	if ok, _, _ := p.DB.materializedStatus(table); ok {
+		if err := p.DB.repairTableIndexes(table); err != nil {
+			return AdminRowsPage{}, true, err
+		}
+	}
 	rows, err := ti.Scan(limit, offset)
 	if err != nil {
 		return AdminRowsPage{}, false, err
@@ -1337,6 +1355,11 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return nil, 0, false, nil
+	}
+	if ok, _, _ := p.DB.materializedStatus(table); ok {
+		if err := p.DB.repairTableIndexes(table); err != nil {
+			return nil, 0, true, err
+		}
 	}
 
 	def := ti.GetDef()

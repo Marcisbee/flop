@@ -44,8 +44,8 @@ func TestRefreshMaterializedRepairsGhostPrimaryIndex(t *testing.T) {
 	}
 	idx.Set("weekly_leaderboard:meta", ptr)
 
-	if got := db.Table("leaderboard").Count(); got != 2 {
-		t.Fatalf("count with ghost index = %d, want 2", got)
+	if got := db.Table("leaderboard").Count(); got != 1 {
+		t.Fatalf("count with repaired read path = %d, want 1", got)
 	}
 	rows, err := db.Table("leaderboard").Scan(10, 0)
 	if err != nil {
@@ -55,7 +55,7 @@ func TestRefreshMaterializedRepairsGhostPrimaryIndex(t *testing.T) {
 		t.Fatalf("scan before repair len = %d, want 1", len(rows))
 	}
 	if row, _ := db.Table("leaderboard").Get("weekly_leaderboard:meta"); row != nil {
-		t.Fatalf("expected ghost meta row to be unreadable, got %#v", row)
+		t.Fatalf("ghost meta row should remain unreadable until refresh, got %#v", row)
 	}
 
 	if err := db.RefreshMaterialized("leaderboard"); err != nil {
