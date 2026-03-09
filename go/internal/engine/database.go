@@ -1085,7 +1085,11 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 			indexKey := secondaryIndexKey(indexDef)
 			idx := ti.secondaryIdxs[indexKey]
 			if hi, ok := idx.(*storage.HashIndex); ok {
-				if hi.Has(key) {
+				conflict, err := ti.uniqueConflictByHashIndex(hi, indexDef.Fields, key, "")
+				if err != nil {
+					return nil, err
+				}
+				if conflict {
 					return nil, fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
 				}
 			}
@@ -1654,7 +1658,11 @@ func (ti *TableInstance) validateIndexChanges(existing, newRow map[string]interf
 
 		if ti.secondaryIndexesReady() {
 			if hi, ok := idx.(*storage.HashIndex); ok {
-				if hi.Has(newKey) {
+				conflict, err := ti.uniqueConflictByHashIndex(hi, indexDef.Fields, newKey, toString(existing[ti.primaryKeyField()]))
+				if err != nil {
+					return err
+				}
+				if conflict {
 					return fmt.Errorf("duplicate unique constraint on (%s)", strings.Join(indexDef.Fields, ", "))
 				}
 			}
@@ -1671,6 +1679,28 @@ func (ti *TableInstance) validateIndexChanges(existing, newRow map[string]interf
 		}
 	}
 	return nil
+}
+
+func (ti *TableInstance) uniqueConflictByHashIndex(idx *storage.HashIndex, fields []string, matchKey, excludePK string) (bool, error) {
+	if idx == nil || matchKey == "" {
+		return false, nil
+	}
+	pointer, ok := idx.Get(matchKey)
+	if !ok {
+		return false, nil
+	}
+	row, err := ti.GetByPointer(pointer)
+	if err != nil {
+		return false, err
+	}
+	if row == nil || secondaryIndexRowKey(fields, row) != matchKey {
+		idx.Delete(matchKey)
+		return false, nil
+	}
+	if excludePK != "" && toString(row[ti.primaryKeyField()]) == excludePK {
+		return false, nil
+	}
+	return true, nil
 }
 
 // applyIndexChanges removes old index entries and adds new ones for changed fields.

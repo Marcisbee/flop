@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marcisbee/flop/internal/schema"
+	"github.com/marcisbee/flop/internal/storage"
 )
 
 func testMovieTableDef(withIndexes bool) *schema.TableDef {
@@ -146,6 +147,57 @@ func TestSecondaryIndexFallbackUniqueConstraints(t *testing.T) {
 	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "duplicate unique constraint") {
 		t.Fatalf("expected duplicate unique constraint on update, got: %v", err)
+	}
+}
+
+func TestUniqueInsertRepairsStaleHashIndexEntry(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+
+	row, err := ti.Insert(map[string]interface{}{
+		"id":    "id-1",
+		"slug":  "real-slug",
+		"title": "Movie One",
+		"genre": "action",
+	}, nil)
+	if err != nil {
+		t.Fatalf("insert first row: %v", err)
+	}
+
+	pointer, ok := ti.primaryIndex.Get(fmt.Sprintf("%v", row["id"]))
+	if !ok {
+		t.Fatal("expected primary pointer for seeded row")
+	}
+
+	indexDef := ti.def.Indexes[0]
+	indexKey := secondaryIndexKey(indexDef)
+	hi, ok := ti.secondaryIdxs[indexKey].(*storage.HashIndex)
+	if !ok {
+		t.Fatal("expected unique slug index to be a hash index")
+	}
+
+	hi.Set("ghost-slug", pointer)
+
+	if _, err := ti.Insert(map[string]interface{}{
+		"id":    "id-2",
+		"slug":  "ghost-slug",
+		"title": "Movie Two",
+		"genre": "drama",
+	}, nil); err != nil {
+		t.Fatalf("expected stale unique key to self-heal on insert, got: %v", err)
+	}
+
+	ptr, ok := ti.FindByIndex([]string{"slug"}, "ghost-slug")
+	if !ok {
+		t.Fatal("expected inserted row to be indexed by repaired unique key")
+	}
+	got, err := ti.GetByPointer(ptr)
+	if err != nil {
+		t.Fatalf("get by pointer: %v", err)
+	}
+	if fmt.Sprintf("%v", got["id"]) != "id-2" {
+		t.Fatalf("expected repaired row id-2, got %v", got["id"])
 	}
 }
 
