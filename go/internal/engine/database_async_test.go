@@ -201,6 +201,59 @@ func TestUniqueInsertRepairsStaleHashIndexEntry(t *testing.T) {
 	}
 }
 
+func TestRepairIndexesRebuildsCorruptSecondaryIndexes(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+	seedMovies(t, ti, 4)
+
+	row, err := ti.Get("id-000000")
+	if err != nil || row == nil {
+		t.Fatalf("get seeded row: %v row=%v", err, row)
+	}
+	ptr, ok := ti.primaryIndex.Get("id-000000")
+	if !ok {
+		t.Fatal("expected pointer for seeded row")
+	}
+
+	slugIndexKey := secondaryIndexKey(ti.def.Indexes[0])
+	slugIdx := ti.secondaryIdxs[slugIndexKey].(*storage.HashIndex)
+	slugIdx.Delete("slug-000000")
+	slugIdx.Set("ghost-slug", ptr)
+
+	genreIndexKey := secondaryIndexKey(ti.def.Indexes[1])
+	genreIdx := ti.secondaryIdxs[genreIndexKey].(*storage.MultiIndex)
+	genreIdx.Delete("action", ptr)
+	genreIdx.Add("ghost-genre", ptr)
+
+	if err := ti.RepairIndexesIfNeeded(); err != nil {
+		t.Fatalf("repair indexes: %v", err)
+	}
+
+	ptr, ok = ti.FindByIndex([]string{"slug"}, "slug-000000")
+	if !ok {
+		t.Fatal("expected slug index to be repaired")
+	}
+	got, err := ti.GetByPointer(ptr)
+	if err != nil {
+		t.Fatalf("get repaired slug row: %v", err)
+	}
+	if fmt.Sprintf("%v", got["id"]) != "id-000000" {
+		t.Fatalf("expected repaired slug row id-000000, got %v", got["id"])
+	}
+	if _, ok := ti.FindByIndex([]string{"slug"}, "ghost-slug"); ok {
+		t.Fatal("expected ghost slug entry to be removed")
+	}
+
+	actionPtrs := ti.FindAllByIndex([]string{"genre"}, "action")
+	if len(actionPtrs) != 2 {
+		t.Fatalf("expected repaired action postings, got %d", len(actionPtrs))
+	}
+	if ghostPtrs := ti.FindAllByIndex([]string{"genre"}, "ghost-genre"); len(ghostPtrs) != 0 {
+		t.Fatalf("expected ghost genre postings to be removed, got %d", len(ghostPtrs))
+	}
+}
+
 func TestConcurrentInsertsPreserveAllRows(t *testing.T) {
 	db := openTestDB(t, t.TempDir(), false, true)
 	t.Cleanup(func() { _ = db.Close() })

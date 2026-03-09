@@ -816,12 +816,24 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 func (ti *TableInstance) repairIndexesIfNeeded() error {
 	expected := int(atomic.LoadUint32(&ti.tableFile.TotalRows))
 	if ti.primaryIndex.Size() == expected {
-		return nil
+		ok, err := ti.secondaryIndexesHealthy()
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
 	}
 	ti.mu.Lock()
 	defer ti.mu.Unlock()
 	if ti.primaryIndex.Size() == expected {
-		return nil
+		ok, err := ti.secondaryIndexesHealthy()
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
 	}
 	if err := ti.rebuildIndex(); err != nil {
 		return err
@@ -1703,6 +1715,103 @@ func (ti *TableInstance) uniqueConflictByHashIndex(idx *storage.HashIndex, field
 	return true, nil
 }
 
+func rowPointerEqual(a, b schema.RowPointer) bool {
+	return a.PageNumber == b.PageNumber && a.SlotIndex == b.SlotIndex
+}
+
+func (ti *TableInstance) rowPointerMatchesIndexKey(pointer schema.RowPointer, fields []string, matchKey string) (bool, error) {
+	row, err := ti.GetByPointer(pointer)
+	if err != nil {
+		return false, err
+	}
+	if row == nil || !ti.rowVisibleToScans(row) {
+		return false, nil
+	}
+	return secondaryIndexRowKey(fields, row) == matchKey, nil
+}
+
+func (ti *TableInstance) secondaryIndexesHealthy() (bool, error) {
+	for _, indexDef := range ti.def.Indexes {
+		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+			continue
+		}
+		indexKey := secondaryIndexKey(indexDef)
+		idx := ti.secondaryIdxs[indexKey]
+		switch idx := idx.(type) {
+		case *storage.HashIndex:
+			healthy := true
+			idx.Range(func(key string, pointer schema.RowPointer) bool {
+				ok, err := ti.rowPointerMatchesIndexKey(pointer, indexDef.Fields, key)
+				if err != nil || !ok {
+					healthy = false
+					return false
+				}
+				return true
+			})
+			if !healthy {
+				return false, nil
+			}
+		case *storage.MultiIndex:
+			healthy := true
+			idx.Range(func(key string, pointers []schema.RowPointer) bool {
+				for _, pointer := range pointers {
+					ok, err := ti.rowPointerMatchesIndexKey(pointer, indexDef.Fields, key)
+					if err != nil || !ok {
+						healthy = false
+						return false
+					}
+				}
+				return true
+			})
+			if !healthy {
+				return false, nil
+			}
+		}
+	}
+
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
+		if err != nil || !ti.rowVisibleToScans(row) {
+			return true
+		}
+		pointer := schema.RowPointer{
+			PageNumber: scanned.PageNumber,
+			SlotIndex:  uint16(scanned.SlotIndex),
+		}
+		for _, indexDef := range ti.def.Indexes {
+			if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+				continue
+			}
+			indexKey := secondaryIndexKey(indexDef)
+			matchKey := secondaryIndexRowKey(indexDef.Fields, row)
+			switch idx := ti.secondaryIdxs[indexKey].(type) {
+			case *storage.HashIndex:
+				existing, ok := idx.Get(matchKey)
+				if !ok || !rowPointerEqual(existing, pointer) {
+					return false
+				}
+			case *storage.MultiIndex:
+				found := false
+				for _, existing := range idx.GetAll(matchKey) {
+					if rowPointerEqual(existing, pointer) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 // applyIndexChanges removes old index entries and adds new ones for changed fields.
 func (ti *TableInstance) applyIndexChanges(existing, newRow map[string]interface{}, pointer schema.RowPointer) {
 	for _, indexDef := range ti.def.Indexes {
@@ -2175,8 +2284,22 @@ func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema
 			matchKey = storage.CompositeKey(anySlice(value))
 		}
 		ptr, ok := hi.Get(matchKey)
-		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, btoi(ok), 1, "", start)
-		return ptr, ok
+		if ok {
+			matches, err := ti.rowPointerMatchesIndexKey(ptr, fields, matchKey)
+			if err == nil && matches {
+				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "", start)
+				return ptr, true
+			}
+			hi.Delete(matchKey)
+		}
+		ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 1)
+		if err != nil || len(ptrs) == 0 {
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "rehydrate scan", start)
+			return schema.RowPointer{}, false
+		}
+		hi.Set(matchKey, ptrs[0])
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "rehydrate scan", start)
+		return ptrs[0], true
 	}
 	return schema.RowPointer{}, false
 }
@@ -2212,8 +2335,53 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 			matchKey = storage.CompositeKey(anySlice(value))
 		}
 		ptrs := idx.GetAll(matchKey)
-		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(ptrs), len(ptrs), "multi-index", start)
-		return ptrs
+		staleFound := false
+		out := make([]schema.RowPointer, 0, len(ptrs))
+		for _, ptr := range ptrs {
+			matches, err := ti.rowPointerMatchesIndexKey(ptr, fields, matchKey)
+			if err != nil || !matches {
+				staleFound = true
+				idx.Delete(matchKey, ptr)
+				continue
+			}
+			out = append(out, ptr)
+		}
+		if staleFound {
+			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
+			if err != nil {
+				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index repair scan error", start)
+				return out
+			}
+			for _, ptr := range ptrs {
+				found := false
+				for _, existing := range out {
+					if rowPointerEqual(existing, ptr) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					idx.Add(matchKey, ptr)
+					out = append(out, ptr)
+				}
+			}
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(out), len(ptrs), "multi-index repair scan", start)
+			return out
+		}
+		if len(out) == 0 {
+			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
+			if err != nil {
+				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index fallback scan error", start)
+				return nil
+			}
+			for _, ptr := range ptrs {
+				idx.Add(matchKey, ptr)
+			}
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(ptrs), len(ptrs), "multi-index fallback scan", start)
+			return ptrs
+		}
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(out), len(out), "multi-index", start)
+		return out
 	case *storage.HashIndex:
 		matchKey := toString(value)
 		if len(fields) > 1 {
@@ -2221,8 +2389,18 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 		}
 		p, ok := idx.Get(matchKey)
 		if ok {
-			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index", start)
-			return []schema.RowPointer{p}
+			matches, err := ti.rowPointerMatchesIndexKey(p, fields, matchKey)
+			if err == nil && matches {
+				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index", start)
+				return []schema.RowPointer{p}
+			}
+			idx.Delete(matchKey)
+			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 1)
+			if err == nil && len(ptrs) > 0 {
+				idx.Set(matchKey, ptrs[0])
+				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index repair scan", start)
+				return []schema.RowPointer{ptrs[0]}
+			}
 		}
 		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "unique-index", start)
 	}
