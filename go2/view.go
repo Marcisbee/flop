@@ -60,11 +60,41 @@ func (db *DB) ExecuteView(v *ViewDef) (*ViewResult, error) {
 		return nil, nil
 	}
 
-	// Index lookup path: all filters are OpEq and match a unique index → direct lookup.
-	if v.SearchQ == "" && len(v.Filters) > 0 && v.PermFilter == nil {
+	// Index lookup path: filters match a secondary index → skip full scan.
+	if v.SearchQ == "" && len(v.Filters) > 0 {
 		if rows, ok := db.executeViewIndexed(v, table); ok {
+			total := len(rows)
+
+			// Sort if needed
+			if v.OrderBy != "" {
+				sort.Slice(rows, func(i, j int) bool {
+					var a, b any
+					if v.OrderBy == "id" {
+						a, b = rows[i].ID, rows[j].ID
+					} else {
+						a = rows[i].Data[v.OrderBy]
+						b = rows[j].Data[v.OrderBy]
+					}
+					cmp := compareValues(a, b)
+					if v.Order == Desc {
+						return cmp > 0
+					}
+					return cmp < 0
+				})
+			}
+
+			// Pagination
+			if v.Offset > 0 && v.Offset < len(rows) {
+				rows = rows[v.Offset:]
+			} else if v.Offset >= len(rows) {
+				rows = nil
+			}
+			if v.Limit > 0 && len(rows) > v.Limit {
+				rows = rows[:v.Limit]
+			}
+
 			db.resolveIncludes(v, rows)
-			return &ViewResult{Rows: rows, Total: len(rows)}, nil
+			return &ViewResult{Rows: rows, Total: total}, nil
 		}
 	}
 
@@ -179,9 +209,11 @@ func (db *DB) executeViewIndexed(v *ViewDef, table *Table) ([]*Row, bool) {
 			if err != nil || row == nil {
 				return []*Row{}, true
 			}
-			// Verify all remaining filters match
+			// Verify all remaining filters and permission match
 			if matchesFilters(row, v.Filters) {
-				return []*Row{row}, true
+				if v.PermFilter == nil || v.PermFilter(nil, row) {
+					return []*Row{row}, true
+				}
 			}
 			return []*Row{}, true
 		}
@@ -200,10 +232,93 @@ func (db *DB) executeViewIndexed(v *ViewDef, table *Table) ([]*Row, bool) {
 			var rows []*Row
 			table.ScanByField(f.Field, f.Value, func(row *Row) bool {
 				if matchesFilters(row, v.Filters) {
-					rows = append(rows, row)
+					if v.PermFilter == nil || v.PermFilter(nil, row) {
+						rows = append(rows, row)
+					}
 				}
 				return v.Limit == 0 || len(rows) < v.Limit
 			})
+			return rows, true
+		}
+	}
+
+	// Check for range filters (OpGt, OpGte, OpLt, OpLte) on indexed fields
+	if rows, ok := db.executeViewRangeIndexed(v, table); ok {
+		return rows, true
+	}
+
+	return nil, false
+}
+
+// executeViewRangeIndexed uses a secondary index for range filter lookups.
+// Handles single-field range filters like field > X, field >= X, field < Y, field <= Y,
+// and combined ranges like field >= X AND field < Y.
+func (db *DB) executeViewRangeIndexed(v *ViewDef, table *Table) ([]*Row, bool) {
+	// Group range filters by field
+	type rangeBound struct {
+		field                            string
+		low, high                        any
+		includeLow, includeHigh          bool
+		hasLow, hasHigh                  bool
+		otherFilters                     []Filter
+	}
+
+	bounds := make(map[string]*rangeBound)
+	var otherFilters []Filter
+
+	for _, f := range v.Filters {
+		switch f.Op {
+		case OpGt, OpGte, OpLt, OpLte:
+			b, ok := bounds[f.Field]
+			if !ok {
+				b = &rangeBound{field: f.Field}
+				bounds[f.Field] = b
+			}
+			switch f.Op {
+			case OpGt:
+				b.low = f.Value
+				b.includeLow = false
+				b.hasLow = true
+			case OpGte:
+				b.low = f.Value
+				b.includeLow = true
+				b.hasLow = true
+			case OpLt:
+				b.high = f.Value
+				b.includeHigh = false
+				b.hasHigh = true
+			case OpLte:
+				b.high = f.Value
+				b.includeHigh = true
+				b.hasHigh = true
+			}
+		default:
+			otherFilters = append(otherFilters, f)
+		}
+	}
+
+	if len(bounds) == 0 {
+		return nil, false
+	}
+
+	// Try the first range-filterable field that has an index
+	for _, b := range bounds {
+		var rows []*Row
+		used := table.ScanByFieldRange(b.field, b.low, b.high, b.includeLow, b.includeHigh, func(row *Row) bool {
+			if len(otherFilters) > 0 && !matchesFilters(row, otherFilters) {
+				return true
+			}
+			if v.PermFilter != nil && !v.PermFilter(nil, row) {
+				return true
+			}
+			rows = append(rows, row)
+			// If no sort needed, can stop at limit
+			if v.OrderBy == "" && v.Limit > 0 && len(rows) >= v.Limit+v.Offset {
+				return false
+			}
+			return true
+		})
+		if used {
 			return rows, true
 		}
 	}

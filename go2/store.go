@@ -205,6 +205,52 @@ func (s *Store) ScanPrefix(prefix []byte, fn func(key, val []byte) bool) {
 	}
 }
 
+// ScanRange iterates key-value pairs where key >= start and key < end (sorted order).
+// If start is nil, scan from the beginning. If end is nil, scan to the end.
+func (s *Store) ScanRange(start, end []byte, fn func(key, val []byte) bool) {
+	s.mu.RLock()
+	if !s.sorted {
+		s.mu.RUnlock()
+		s.mu.Lock()
+		sort.Strings(s.keys)
+		s.sorted = true
+		s.mu.Unlock()
+		s.mu.RLock()
+	}
+
+	var startIdx int
+	if start != nil {
+		startIdx = sort.SearchStrings(s.keys, string(start))
+	}
+
+	endStr := ""
+	hasEnd := end != nil
+	if hasEnd {
+		endStr = string(end)
+	}
+
+	keys := make([]string, 0)
+	for i := startIdx; i < len(s.keys); i++ {
+		k := s.keys[i]
+		if hasEnd && k >= endStr {
+			break
+		}
+		keys = append(keys, k)
+	}
+	s.mu.RUnlock()
+
+	for _, k := range keys {
+		s.mu.RLock()
+		v := s.entries[k]
+		s.mu.RUnlock()
+		if v != nil {
+			if !fn([]byte(k), v) {
+				return
+			}
+		}
+	}
+}
+
 // Count returns total entries.
 func (s *Store) Count() int {
 	s.mu.RLock()

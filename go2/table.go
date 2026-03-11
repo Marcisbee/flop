@@ -370,6 +370,88 @@ func (t *Table) ScanByField(field string, value any, fn func(*Row) bool) error {
 	return nil
 }
 
+// ScanByFieldRange iterates rows where the indexed field value is in [start, end).
+// start or end may be nil to indicate unbounded. Uses the non-unique index if available.
+// Returns true if an index was used, false if not (caller should fall back to full scan).
+func (t *Table) ScanByFieldRange(field string, start, end any, includeStart, includeEnd bool, fn func(*Row) bool) bool {
+	t.ensureIndexes()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	for _, idx := range t.indexes {
+		if len(idx.Fields) != 1 || idx.Fields[0] != field {
+			continue
+		}
+		if idx.Unique {
+			continue // range scan on unique indexes needs different key layout
+		}
+
+		var startKey, endKey []byte
+		if start != nil {
+			startKey = buildIdxKey(idx.Fields, map[string]any{field: normalizeForIndex(start)})
+		}
+		if end != nil {
+			endKey = buildIdxKey(idx.Fields, map[string]any{field: normalizeForIndex(end)})
+		}
+
+		idx.store.ScanRange(startKey, nil, func(key, val []byte) bool {
+			// Key format: [lenPrefix][encodedValue][8-byte rowID]
+			// Extract the value portion (everything before the last 8 bytes)
+			if len(key) < 8 {
+				return true
+			}
+			valPart := key[:len(key)-8]
+
+			// Check bounds
+			if startKey != nil {
+				cmp := compareBytes(valPart, startKey)
+				if cmp < 0 || (!includeStart && cmp == 0) {
+					return true
+				}
+			}
+			if endKey != nil {
+				cmp := compareBytes(valPart, endKey)
+				if cmp > 0 || (!includeEnd && cmp == 0) {
+					return false // past end, stop
+				}
+			}
+
+			rowID := DecodeUint64(key[len(key)-8:])
+			row, err := t.get(rowID)
+			if err != nil || row == nil {
+				return true
+			}
+			return fn(row)
+		})
+		return true
+	}
+
+	return false
+}
+
+func compareBytes(a, b []byte) int {
+	la, lb := len(a), len(b)
+	n := la
+	if lb < n {
+		n = lb
+	}
+	for i := 0; i < n; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	if la < lb {
+		return -1
+	}
+	if la > lb {
+		return 1
+	}
+	return 0
+}
+
 // ScanSortField scans all rows extracting only the ID and a numeric field value.
 // Much faster than full Scan when only one field is needed (no map allocations).
 func (t *Table) ScanSortField(field string, fn func(id uint64, val float64) bool) error {
