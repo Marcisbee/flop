@@ -22,6 +22,8 @@ type DB struct {
 type ftsEntry struct {
 	index  *FTSIndex
 	fields []string // field names marked Searchable
+	once   sync.Once
+	ready  bool
 }
 
 // OpenDB opens or creates a database at the given directory.
@@ -79,26 +81,10 @@ func (db *DB) CreateTable(schema *Schema) (*Table, error) {
 		}
 	}
 	if len(searchFields) > 0 {
-		entry := &ftsEntry{
+		db.fts[schema.Name] = &ftsEntry{
 			index:  NewFTSIndex(),
 			fields: searchFields,
 		}
-		db.fts[schema.Name] = entry
-
-		// Populate FTS from existing rows
-		table.Scan(func(row *Row) bool {
-			var texts []string
-			for _, fname := range searchFields {
-				if s, ok := row.Data[fname].(string); ok {
-					texts = append(texts, s)
-				}
-			}
-			if len(texts) > 0 {
-				entry.index.Index(row.ID, texts...)
-			}
-			return true
-		})
-		entry.index.Finalize()
 	}
 
 	return table, nil
@@ -123,7 +109,7 @@ func (db *DB) Insert(tableName string, data map[string]any) (*Row, error) {
 		return nil, err
 	}
 
-	if entry, ok := db.fts[tableName]; ok {
+	if entry, ok := db.fts[tableName]; ok && entry.ready {
 		var texts []string
 		for _, fname := range entry.fields {
 			if s, ok := data[fname].(string); ok {
@@ -150,7 +136,7 @@ func (db *DB) Update(tableName string, id uint64, updates map[string]any) (*Row,
 		return nil, err
 	}
 
-	if entry, ok := db.fts[tableName]; ok {
+	if entry, ok := db.fts[tableName]; ok && entry.ready {
 		// Re-index with current data (Index handles replace)
 		var texts []string
 		for _, fname := range entry.fields {
@@ -199,7 +185,7 @@ func (db *DB) Delete(tableName string, id uint64) error {
 		}
 	}
 
-	if entry, ok := db.fts[tableName]; ok {
+	if entry, ok := db.fts[tableName]; ok && entry.ready {
 		entry.index.Delete(id)
 	}
 
@@ -217,6 +203,7 @@ func (db *DB) Search(tableName, query string, limit int) ([]*Row, error) {
 	if table == nil {
 		return nil, fmt.Errorf("table %q not found", tableName)
 	}
+	db.ensureFTS(tableName, table)
 
 	ids := entry.index.Search(query, limit)
 	rows := make([]*Row, 0, len(ids))
@@ -244,6 +231,7 @@ func (db *DB) SearchFullText(tableName string, fields []string, query string, li
 	if table == nil {
 		return nil, fmt.Errorf("table %q not found", tableName)
 	}
+	db.ensureFTS(tableName, table)
 
 	ids := entry.index.Search(query, limit)
 	results := make([]map[string]any, 0, len(ids))
@@ -262,6 +250,29 @@ func (db *DB) SearchFullText(tableName string, fields []string, query string, li
 		}
 	}
 	return results, nil
+}
+
+func (db *DB) ensureFTS(tableName string, table *Table) {
+	entry, ok := db.fts[tableName]
+	if !ok || entry == nil {
+		return
+	}
+	entry.once.Do(func() {
+		table.Scan(func(row *Row) bool {
+			var texts []string
+			for _, fname := range entry.fields {
+				if s, ok := row.Data[fname].(string); ok {
+					texts = append(texts, s)
+				}
+			}
+			if len(texts) > 0 {
+				entry.index.Index(row.ID, texts...)
+			}
+			return true
+		})
+		entry.index.Finalize()
+		entry.ready = true
+	})
 }
 
 // Flush persists all tables to disk.
@@ -319,4 +330,3 @@ func (db *DB) Backup(destDir string) error {
 	}
 	return nil
 }
-

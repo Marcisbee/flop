@@ -261,10 +261,16 @@ func (h *adminSSEHub) broadcast(tableName, op string) {
 	h.mu.RUnlock()
 }
 
-// MountAdmin mounts the admin panel at /_/ on the server.
+// MountAdmin mounts the admin panel at /_/ on the server's internal mux.
 // It creates a dedicated _superadmins table, independent of the app's user schema.
 // If no superadmin exists, a one-time setup token is generated.
 func (s *Server) MountAdmin(_ *AuthManager, cfg *AdminConfig) *AdminConfig {
+	return s.MountAdminOn(s.mux, cfg)
+}
+
+// MountAdminOn mounts the admin panel at /_/ on the given mux.
+// Use this when the app manages its own http.ServeMux.
+func (s *Server) MountAdminOn(mux *http.ServeMux, cfg *AdminConfig) *AdminConfig {
 	if cfg == nil {
 		cfg = &AdminConfig{}
 	}
@@ -283,8 +289,9 @@ func (s *Server) MountAdmin(_ *AuthManager, cfg *AdminConfig) *AdminConfig {
 
 	sseHub := newAdminSSEHub()
 	handler := s.adminHandler(auth, cfg, &setupMu, sseHub)
-	s.mux.Handle("/_/", handler)
-	s.mux.Handle("/_", handler)
+	mux.Handle("/_/", handler)
+	mux.Handle("/_", handler)
+	s.adminCfg = cfg
 	return cfg
 }
 

@@ -2,9 +2,11 @@ package flop
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -103,11 +105,12 @@ func EncodeValue(v any, ft FieldType) ([]byte, error) {
 	}
 	switch ft {
 	case FieldString:
-		s, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("expected string, got %T", v)
+		switch s := v.(type) {
+		case string:
+			return EncodeString(s), nil
+		default:
+			return EncodeString(fmt.Sprintf("%v", v)), nil
 		}
-		return EncodeString(s), nil
 	case FieldInt:
 		switch n := v.(type) {
 		case int:
@@ -118,6 +121,12 @@ func EncodeValue(v any, ft FieldType) ([]byte, error) {
 			return EncodeUint64(n), nil
 		case float64:
 			return EncodeInt64(int64(n)), nil
+		case string:
+			parsed, err := strconv.ParseInt(n, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("expected int, got string %q: %w", n, err)
+			}
+			return EncodeInt64(parsed), nil
 		default:
 			return nil, fmt.Errorf("expected int, got %T", v)
 		}
@@ -129,6 +138,14 @@ func EncodeValue(v any, ft FieldType) ([]byte, error) {
 			return EncodeFloat64(float64(n)), nil
 		case int:
 			return EncodeFloat64(float64(n)), nil
+		case int64:
+			return EncodeFloat64(float64(n)), nil
+		case string:
+			parsed, err := strconv.ParseFloat(n, 64)
+			if err != nil {
+				return nil, fmt.Errorf("expected float, got string %q: %w", n, err)
+			}
+			return EncodeFloat64(parsed), nil
 		default:
 			return nil, fmt.Errorf("expected float, got %T", v)
 		}
@@ -150,11 +167,28 @@ func EncodeValue(v any, ft FieldType) ([]byte, error) {
 			return EncodeUint64(n), nil
 		case int:
 			return EncodeUint64(uint64(n)), nil
+		case int64:
+			return EncodeUint64(uint64(n)), nil
 		case float64:
 			return EncodeUint64(uint64(n)), nil
+		case string:
+			if n == "" {
+				return []byte{}, nil
+			}
+			parsed, err := strconv.ParseUint(n, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("expected uint64 ref, got string %q: %w", n, err)
+			}
+			return EncodeUint64(parsed), nil
 		default:
 			return nil, fmt.Errorf("expected uint64 ref, got %T", v)
 		}
+	case FieldJSON:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("json marshal: %w", err)
+		}
+		return b, nil
 	default:
 		return fmt.Appendf(nil, "%v", v), nil
 	}
@@ -190,6 +224,12 @@ func DecodeValue(b []byte, ft FieldType) any {
 			return DecodeUint64(b)
 		}
 		return nil
+	case FieldJSON:
+		var v any
+		if err := json.Unmarshal(b, &v); err != nil {
+			return string(b) // fallback
+		}
+		return v
 	default:
 		return string(b)
 	}

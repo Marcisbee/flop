@@ -2,6 +2,7 @@ package flop
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -78,6 +79,9 @@ func (t *Table) Insert(data map[string]any) (*Row, error) {
 	t.ensureIndexes()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Normalize data types to match schema (e.g., string "1" → uint64 for FieldRef)
+	t.normalizeData(data)
 
 	// Validate required fields
 	for _, f := range t.schema.Fields {
@@ -185,7 +189,8 @@ func (t *Table) Update(id uint64, updates map[string]any) (*Row, error) {
 		t.indexDelete(idx, row.Data, row.ID)
 	}
 
-	// Apply updates
+	// Normalize and apply updates
+	t.normalizeData(updates)
 	for k, v := range updates {
 		row.Data[k] = v
 	}
@@ -466,6 +471,77 @@ func (t *Table) ScanSortField(field string, fn func(id uint64, val float64) bool
 		return fn(id, sv)
 	})
 	return nil
+}
+
+// normalizeData coerces data values to match schema field types.
+// This ensures consistent index keys and encoding regardless of input types.
+func (t *Table) normalizeData(data map[string]any) {
+	for _, f := range t.schema.Fields {
+		v, ok := data[f.Name]
+		if !ok || v == nil {
+			continue
+		}
+		switch f.Type {
+		case FieldRef:
+			switch n := v.(type) {
+			case uint64:
+				// already correct
+			case float64:
+				data[f.Name] = uint64(n)
+			case int:
+				data[f.Name] = uint64(n)
+			case int64:
+				data[f.Name] = uint64(n)
+			case string:
+				if n != "" {
+					if parsed, err := strconv.ParseUint(n, 10, 64); err == nil {
+						data[f.Name] = parsed
+					}
+				}
+			}
+		case FieldInt:
+			switch n := v.(type) {
+			case int64:
+				// already correct
+			case int:
+				data[f.Name] = int64(n)
+			case uint64:
+				data[f.Name] = int64(n)
+			case float64:
+				data[f.Name] = int64(n)
+			case string:
+				if parsed, err := strconv.ParseInt(n, 10, 64); err == nil {
+					data[f.Name] = parsed
+				}
+			}
+		case FieldFloat:
+			switch n := v.(type) {
+			case float64:
+				// already correct
+			case float32:
+				data[f.Name] = float64(n)
+			case int:
+				data[f.Name] = float64(n)
+			case int64:
+				data[f.Name] = float64(n)
+			case string:
+				if parsed, err := strconv.ParseFloat(n, 64); err == nil {
+					data[f.Name] = parsed
+				}
+			}
+		case FieldBool:
+			switch b := v.(type) {
+			case bool:
+				// already correct
+			case string:
+				data[f.Name] = b == "true" || b == "1"
+			case int:
+				data[f.Name] = b != 0
+			case float64:
+				data[f.Name] = b != 0
+			}
+		}
+	}
 }
 
 // ensureIndexes lazily builds all secondary indexes on first use.
