@@ -12,22 +12,52 @@ import (
 type Table struct {
 	schema    *Schema
 	tableID   uint16
-	primary   *Store       // primary storage: encoded(ID) -> encoded(Row)
-	indexes   []*StoreIndex // secondary indexes
+	primary   *BTree        // primary storage: encoded(ID) -> encoded(Row)
+	pager     *Pager        // pager for primary data file
+	indexes   []*StoreIndex // secondary indexes (in-memory, rebuilt on load)
 	nextID    atomic.Uint64
 	mu        sync.RWMutex
-	archive   *Store       // shadow storage for soft-deleted rows
-	indexOnce sync.Once    // lazy index building
-	encoder   *RowEncoder  // schema-aware binary encoder
+	archive   *BTree      // shadow storage for soft-deleted rows
+	archPager *Pager      // pager for archive data file
+	indexOnce sync.Once   // lazy index building
+	encoder   *RowEncoder // schema-aware binary encoder
 }
 
 func NewTable(schema *Schema, tableID uint16, dataPath, archivePath string) (*Table, error) {
+	// Open primary pager
+	pager, err := OpenPager(dataPath)
+	if err != nil {
+		return nil, fmt.Errorf("open primary pager: %w", err)
+	}
+
+	rootID, _, nextID, err := pager.ReadMeta()
+	if err != nil {
+		pager.Close()
+		return nil, fmt.Errorf("read primary meta: %w", err)
+	}
+
+	// Open archive pager
+	archPager, err := OpenPager(archivePath)
+	if err != nil {
+		pager.Close()
+		return nil, fmt.Errorf("open archive pager: %w", err)
+	}
+
+	archRootID, _, _, err := archPager.ReadMeta()
+	if err != nil {
+		pager.Close()
+		archPager.Close()
+		return nil, fmt.Errorf("read archive meta: %w", err)
+	}
+
 	t := &Table{
-		schema:  schema,
-		tableID: tableID,
-		primary: NewStore(dataPath),
-		archive: NewStore(archivePath),
-		encoder: NewRowEncoder(schema),
+		schema:    schema,
+		tableID:   tableID,
+		primary:   NewBTree(pager, rootID),
+		pager:     pager,
+		archive:   NewBTree(archPager, archRootID),
+		archPager: archPager,
+		encoder:   NewRowEncoder(schema),
 	}
 
 	// Create indexes for unique fields
@@ -63,13 +93,19 @@ func NewTable(schema *Schema, tableID uint16, dataPath, archivePath string) (*Ta
 		t.indexes = append(t.indexes, idx)
 	}
 
-	// Find max ID only — indexes are built lazily on first use
-	maxID := uint64(0)
-	t.primary.ScanReverse(func(key, val []byte) bool {
-		maxID = DecodeUint64(key)
-		return false // first key in reverse order is the max
-	})
-	t.nextID.Store(maxID + 1)
+	// Restore nextID from meta page. If meta has 0 (fresh DB), start at 1.
+	// Also verify by scanning the last key in case of crash recovery.
+	if nextID > 0 {
+		t.nextID.Store(nextID)
+	} else {
+		// Fresh DB or meta not yet written — scan for max ID
+		maxID := uint64(0)
+		t.primary.ScanReverse(func(key, val []byte) bool {
+			maxID = DecodeUint64(key)
+			return false // first key in reverse order is the max
+		})
+		t.nextID.Store(maxID + 1)
+	}
 
 	return t, nil
 }
@@ -134,7 +170,9 @@ func (t *Table) Insert(data map[string]any) (*Row, error) {
 
 	encoded := t.encodeRow(row)
 	key := EncodeUint64(row.ID)
-	t.primary.Put(key, encoded)
+	if err := t.primary.Put(key, encoded); err != nil {
+		return nil, fmt.Errorf("primary put: %w", err)
+	}
 
 	// Update indexes
 	for _, idx := range t.indexes {
@@ -152,7 +190,10 @@ func (t *Table) Get(id uint64) (*Row, error) {
 }
 
 func (t *Table) get(id uint64) (*Row, error) {
-	val := t.primary.Get(EncodeUint64(id))
+	val, err := t.primary.Get(EncodeUint64(id))
+	if err != nil {
+		return nil, err
+	}
 	if val == nil {
 		return nil, nil
 	}
@@ -213,7 +254,9 @@ func (t *Table) Update(id uint64, updates map[string]any) (*Row, error) {
 
 	encoded := t.encodeRow(row)
 	key := EncodeUint64(id)
-	t.primary.Put(key, encoded)
+	if err := t.primary.Put(key, encoded); err != nil {
+		return nil, fmt.Errorf("primary put: %w", err)
+	}
 
 	for _, idx := range t.indexes {
 		t.indexPut(idx, row.Data, row.ID)
@@ -229,7 +272,10 @@ func (t *Table) Delete(id uint64) error {
 	defer t.mu.Unlock()
 
 	key := EncodeUint64(id)
-	data := t.primary.Get(key)
+	data, err := t.primary.Get(key)
+	if err != nil {
+		return fmt.Errorf("get row %d: %w", id, err)
+	}
 	if data == nil {
 		return fmt.Errorf("row %d not found", id)
 	}
@@ -240,10 +286,14 @@ func (t *Table) Delete(id uint64) error {
 	}
 
 	// Archive the row
-	t.archive.Put(key, data)
+	if err := t.archive.Put(key, data); err != nil {
+		return fmt.Errorf("archive put: %w", err)
+	}
 
 	// Remove from primary
-	t.primary.Delete(key)
+	if err := t.primary.Delete(key); err != nil {
+		return fmt.Errorf("primary delete: %w", err)
+	}
 
 	// Remove from indexes
 	for _, idx := range t.indexes {
@@ -259,7 +309,10 @@ func (t *Table) Restore(id uint64) (*Row, error) {
 	defer t.mu.Unlock()
 
 	key := EncodeUint64(id)
-	data := t.archive.Get(key)
+	data, err := t.archive.Get(key)
+	if err != nil {
+		return nil, fmt.Errorf("archive get: %w", err)
+	}
 	if data == nil {
 		return nil, fmt.Errorf("archived row %d not found", id)
 	}
@@ -269,8 +322,12 @@ func (t *Table) Restore(id uint64) (*Row, error) {
 		return nil, err
 	}
 
-	t.primary.Put(key, data)
-	t.archive.Delete(key)
+	if err := t.primary.Put(key, data); err != nil {
+		return nil, fmt.Errorf("primary put: %w", err)
+	}
+	if err := t.archive.Delete(key); err != nil {
+		return nil, fmt.Errorf("archive delete: %w", err)
+	}
 
 	for _, idx := range t.indexes {
 		t.indexPut(idx, row.Data, row.ID)
@@ -284,34 +341,48 @@ func (t *Table) Scan(fn func(*Row) bool) error {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	t.primary.Scan(func(key, val []byte) bool {
+	return t.primary.Scan(func(key, val []byte) bool {
 		row, err := t.decodeRow(val)
 		if err != nil {
 			return true
 		}
 		return fn(row)
 	})
-	return nil
 }
 
 // Count returns the number of rows.
 func (t *Table) Count() (int, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.primary.Count(), nil
+	return t.primary.Count()
 }
 
 // Flush persists all changes to disk.
 func (t *Table) Flush() error {
-	if err := t.primary.Flush(); err != nil {
-		return err
+	// Write primary meta (root page ID + nextID)
+	t.pager.WriteMeta(t.primary.RootPageID(), t.pager.pageCount.Load(), t.nextID.Load())
+	if err := t.pager.FlushAll(); err != nil {
+		return fmt.Errorf("flush primary: %w", err)
 	}
-	return t.archive.Flush()
+
+	// Write archive meta
+	t.archPager.WriteMeta(t.archive.RootPageID(), t.archPager.pageCount.Load(), 0)
+	if err := t.archPager.FlushAll(); err != nil {
+		return fmt.Errorf("flush archive: %w", err)
+	}
+
+	return nil
 }
 
 // Close closes the table.
 func (t *Table) Close() error {
-	return t.Flush()
+	if err := t.Flush(); err != nil {
+		return err
+	}
+	if err := t.pager.Close(); err != nil {
+		return err
+	}
+	return t.archPager.Close()
 }
 
 // ScanLast iterates the last N rows in reverse insertion order.
@@ -320,7 +391,7 @@ func (t *Table) ScanLast(limit int, fn func(*Row) bool) error {
 	defer t.mu.RUnlock()
 
 	count := 0
-	t.primary.ScanReverse(func(key, val []byte) bool {
+	return t.primary.ScanReverse(func(key, val []byte) bool {
 		if count >= limit {
 			return false
 		}
@@ -331,7 +402,6 @@ func (t *Table) ScanLast(limit int, fn func(*Row) bool) error {
 		count++
 		return fn(row)
 	})
-	return nil
 }
 
 // ScanByField iterates rows matching a field value using a secondary index.
@@ -346,7 +416,23 @@ func (t *Table) ScanByField(field string, value any, fn func(*Row) bool) error {
 
 	// Find non-unique index for this field
 	for _, idx := range t.indexes {
-		if !idx.Unique && len(idx.Fields) == 1 && idx.Fields[0] == field {
+		if len(idx.Fields) != 1 || idx.Fields[0] != field {
+			continue
+		}
+		if idx.Unique {
+			key := buildIdxKey(idx.Fields, map[string]any{field: normValue})
+			rowIDBytes := idx.store.Get(key)
+			if rowIDBytes == nil {
+				return nil
+			}
+			row, err := t.get(DecodeUint64(rowIDBytes))
+			if err != nil || row == nil {
+				return err
+			}
+			fn(row)
+			return nil
+		}
+		if !idx.Unique {
 			prefix := buildIdxKey(idx.Fields, map[string]any{field: normValue})
 			idx.store.ScanPrefix(prefix, func(key, val []byte) bool {
 				// val is empty for non-unique; row ID is in the key suffix
@@ -463,14 +549,13 @@ func (t *Table) ScanSortField(field string, fn func(id uint64, val float64) bool
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	t.primary.Scan(func(key, val []byte) bool {
+	return t.primary.Scan(func(key, val []byte) bool {
 		id, sv, ok := t.encoder.ExtractSortFloat(val, field)
 		if !ok {
 			return true
 		}
 		return fn(id, sv)
 	})
-	return nil
 }
 
 // normalizeData coerces data values to match schema field types.

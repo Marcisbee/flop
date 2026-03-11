@@ -67,8 +67,9 @@ func (db *DB) CreateTable(schema *Schema) (*Table, error) {
 	db.tableIDs[schema.Name] = tableID
 
 	// Eagerly build secondary indexes if the table already has data.
-	// This avoids a slow first-request penalty from lazy index building.
-	if len(table.indexes) > 0 && table.primary.Count() > 0 {
+	// RootPageID check is O(1) — avoids scanning the entire BTree just to check emptiness.
+	hasData := table.primary.RootPageID() != 0
+	if len(table.indexes) > 0 && hasData {
 		table.indexOnce.Do(func() {
 			table.buildIndexes()
 		})
@@ -81,9 +82,15 @@ func (db *DB) CreateTable(schema *Schema) (*Table, error) {
 		}
 	}
 	if len(searchFields) > 0 {
-		db.fts[schema.Name] = &ftsEntry{
+		entry := &ftsEntry{
 			index:  NewFTSIndex(),
 			fields: searchFields,
+		}
+		db.fts[schema.Name] = entry
+
+		// Eagerly build FTS index if table has data
+		if hasData {
+			db.ensureFTS(schema.Name, table)
 		}
 	}
 

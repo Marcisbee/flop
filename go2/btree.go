@@ -3,7 +3,11 @@ package flop
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 )
+
+// errScanStop is a sentinel used to propagate early termination from scan callbacks.
+var errScanStop = errors.New("scan stopped")
 
 // BTree is a B+ tree backed by a Pager.
 // Keys and values are arbitrary byte slices.
@@ -23,6 +27,11 @@ func NewBTree(pager *Pager, rootPageID uint64) *BTree {
 		rootPageID: rootPageID,
 		order:      btreeOrder,
 	}
+}
+
+// RootPageID returns the current root page ID (for persisting in meta).
+func (bt *BTree) RootPageID() uint64 {
+	return bt.rootPageID
 }
 
 // Get retrieves a value by key. Returns nil if not found.
@@ -83,20 +92,20 @@ func (bt *BTree) search(pageID uint64, key []byte) ([]byte, error) {
 	return bt.search(childPageID, key)
 }
 
-// Put inserts or updates a key-value pair. Returns the new root page ID.
-func (bt *BTree) Put(key, val []byte) (uint64, error) {
+// Put inserts or updates a key-value pair.
+func (bt *BTree) Put(key, val []byte) error {
 	if bt.rootPageID == 0 {
 		// Create first leaf
 		leaf := bt.pager.AllocPage(PageLeaf)
 		leaf.AppendEntry(key, val)
 		bt.pager.WritePage(leaf)
 		bt.rootPageID = leaf.PageID()
-		return bt.rootPageID, nil
+		return nil
 	}
 
 	newKey, newChildID, err := bt.insert(bt.rootPageID, key, val)
 	if err != nil {
-		return bt.rootPageID, err
+		return err
 	}
 
 	if newKey != nil {
@@ -110,7 +119,7 @@ func (bt *BTree) Put(key, val []byte) (uint64, error) {
 		bt.rootPageID = newRoot.PageID()
 	}
 
-	return bt.rootPageID, nil
+	return nil
 }
 
 // insert returns (splitKey, splitChildPageID) if the node was split, or (nil, 0) if not.
@@ -310,29 +319,29 @@ func (bt *BTree) splitInternal(pg *Page, newKey, newChildPtr []byte, insertAfter
 	return promoteKey, right.PageID(), nil
 }
 
-// Delete removes a key. Returns the new root page ID.
-func (bt *BTree) Delete(key []byte) (uint64, error) {
+// Delete removes a key.
+func (bt *BTree) Delete(key []byte) error {
 	if bt.rootPageID == 0 {
-		return 0, nil
+		return nil
 	}
 
 	_, err := bt.delete(bt.rootPageID, key)
 	if err != nil {
-		return bt.rootPageID, err
+		return err
 	}
 
 	// Check if root is empty internal node
 	if bt.rootPageID != 0 {
 		pg, err := bt.pager.ReadPage(bt.rootPageID)
 		if err != nil {
-			return bt.rootPageID, err
+			return err
 		}
 		if pg.Type() == PageInternal && pg.NumEntries() == 0 {
 			bt.rootPageID = pg.OverflowID()
 		}
 	}
 
-	return bt.rootPageID, nil
+	return nil
 }
 
 func (bt *BTree) delete(pageID uint64, key []byte) (bool, error) {
@@ -399,7 +408,11 @@ func (bt *BTree) Scan(fn func(key, val []byte) bool) error {
 	if bt.rootPageID == 0 {
 		return nil
 	}
-	return bt.scan(bt.rootPageID, fn)
+	err := bt.scan(bt.rootPageID, fn)
+	if errors.Is(err, errScanStop) {
+		return nil
+	}
+	return err
 }
 
 func (bt *BTree) scan(pageID uint64, fn func(key, val []byte) bool) error {
@@ -413,7 +426,7 @@ func (bt *BTree) scan(pageID uint64, fn func(key, val []byte) bool) error {
 		for i := 0; i < n; i++ {
 			k, v := pg.EntryAt(i)
 			if !fn(k, v) {
-				return nil
+				return errScanStop
 			}
 		}
 		return nil
@@ -438,12 +451,65 @@ func (bt *BTree) scan(pageID uint64, fn func(key, val []byte) bool) error {
 	return nil
 }
 
+// ScanReverse iterates over all key-value pairs in reverse sorted order.
+func (bt *BTree) ScanReverse(fn func(key, val []byte) bool) error {
+	if bt.rootPageID == 0 {
+		return nil
+	}
+	err := bt.scanReverse(bt.rootPageID, fn)
+	if errors.Is(err, errScanStop) {
+		return nil
+	}
+	return err
+}
+
+func (bt *BTree) scanReverse(pageID uint64, fn func(key, val []byte) bool) error {
+	pg, err := bt.pager.ReadPage(pageID)
+	if err != nil {
+		return err
+	}
+
+	if pg.Type() == PageLeaf {
+		n := int(pg.NumEntries())
+		for i := n - 1; i >= 0; i-- {
+			k, v := pg.EntryAt(i)
+			if !fn(k, v) {
+				return errScanStop
+			}
+		}
+		return nil
+	}
+
+	// Internal node: traverse children in reverse order
+	n := int(pg.NumEntries())
+
+	// Start from rightmost child
+	for i := n - 1; i >= 0; i-- {
+		_, v := pg.EntryAt(i)
+		childID := binary.BigEndian.Uint64(v)
+		if err := bt.scanReverse(childID, fn); err != nil {
+			return err
+		}
+	}
+
+	// Last: leftmost child (overflow)
+	if err := bt.scanReverse(pg.OverflowID(), fn); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // ScanRange iterates over key-value pairs in [start, end) range.
 func (bt *BTree) ScanRange(start, end []byte, fn func(key, val []byte) bool) error {
 	if bt.rootPageID == 0 {
 		return nil
 	}
-	return bt.scanRange(bt.rootPageID, start, end, fn)
+	err := bt.scanRange(bt.rootPageID, start, end, fn)
+	if errors.Is(err, errScanStop) {
+		return nil
+	}
+	return err
 }
 
 func (bt *BTree) scanRange(pageID uint64, start, end []byte, fn func(key, val []byte) bool) error {
@@ -463,7 +529,7 @@ func (bt *BTree) scanRange(pageID uint64, start, end []byte, fn func(key, val []
 				return nil
 			}
 			if !fn(k, v) {
-				return nil
+				return errScanStop
 			}
 		}
 		return nil
