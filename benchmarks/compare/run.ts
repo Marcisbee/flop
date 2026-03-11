@@ -22,6 +22,7 @@ import { fromFileUrl, resolve } from "@std/path";
 type EngineID =
   | "flop-ts"
   | "flop-go"
+  | "flop-go2"
   | "sqlite-ts"
   | "sqlite-go"
   | "turso-ts"
@@ -235,6 +236,15 @@ const QUICK_SCENARIOS: Scenario[] = [
     accountsPerUser: 3,
   },
   {
+    name: "reads",
+    kind: "reads",
+    users: 80,
+    setupConcurrency: 40,
+    concurrency: 80,
+    durationSec: 4,
+    accountsPerUser: 3,
+  },
+  {
     name: "writes",
     kind: "writes",
     users: 80,
@@ -305,6 +315,7 @@ const SCENARIO_CATALOG: Scenario[] = [...FULL_SCENARIOS];
 const ENGINE_ORDER: EngineID[] = [
   "flop-ts",
   "flop-go",
+  "flop-go2",
   "sqlite-ts",
   "sqlite-go",
   "turso-ts",
@@ -316,6 +327,7 @@ const ENGINE_ORDER: EngineID[] = [
 const ENGINE_BASE_PORT: Record<EngineID, number> = {
   "flop-ts": 41085,
   "flop-go": 41086,
+  "flop-go2": 41094,
   "sqlite-ts": 41087,
   "sqlite-go": 41088,
   "turso-ts": 41089,
@@ -325,7 +337,7 @@ const ENGINE_BASE_PORT: Record<EngineID, number> = {
   "mongodb-go": 41093,
 };
 const ENGINES_BY_SET: Record<EngineSet, EngineID[]> = {
-  core: ["flop-ts", "flop-go", "sqlite-ts", "sqlite-go"],
+  core: ["flop-ts", "flop-go", "flop-go2", "sqlite-ts", "sqlite-go"],
   all: [...ENGINE_ORDER],
 };
 const MEMORY_SAMPLE_INTERVAL_MS = 250;
@@ -566,6 +578,13 @@ async function prepareData(
     await Deno.mkdir(dir, { recursive: true });
     return `${dir}/data`;
   }
+  if (engine === "flop-go2") {
+    const dir =
+      `${ROOT}/benchmarks/compare/results/tmp/${runId}/${scenario}/flop-go2`;
+    await safeRemove(dir);
+    await Deno.mkdir(dir, { recursive: true });
+    return `${dir}/data`;
+  }
   if (engine === "sqlite-go") {
     const dir =
       `${ROOT}/benchmarks/compare/results/tmp/${runId}/${scenario}/sqlite-go`;
@@ -668,6 +687,16 @@ function commandFor(
       cmd: bin,
       args: [`--port=${port}`, ...(dataPath ? [`--data=${dataPath}`] : [])],
       cwd: `${ROOT}/go`,
+    };
+  }
+
+  if (engine === "flop-go2") {
+    const bin = goBins["flop-go2"];
+    if (!bin) throw new Error("missing built binary for flop-go2");
+    return {
+      cmd: bin,
+      args: [`--port=${port}`, ...(dataPath ? [`--data=${dataPath}`] : [])],
+      cwd: `${ROOT}/go2`,
     };
   }
 
@@ -1149,23 +1178,26 @@ async function buildGoBinaries(
 ): Promise<Partial<Record<EngineID, string>>> {
   const out: Partial<Record<EngineID, string>> = {};
   const needFlopGo = engines.includes("flop-go");
+  const needFlopGo2 = engines.includes("flop-go2");
   const needSQLiteGo = engines.includes("sqlite-go");
   const needTursoGo = engines.includes("turso-go");
   const needMongoGo = engines.includes("mongodb-go");
-  if (!needFlopGo && !needSQLiteGo && !needTursoGo && !needMongoGo) return out;
+  if (!needFlopGo && !needFlopGo2 && !needSQLiteGo && !needTursoGo && !needMongoGo) return out;
 
   const binDir = `${RESULTS_DIR}/tmp/${runId}/bin`;
   await Deno.mkdir(binDir, { recursive: true });
 
-  // Ensure shared admin HTML is copied into Go source tree for go:embed.
-  const gen = await new Deno.Command("go", {
-    cwd: `${ROOT}/go`,
-    args: ["generate", "./..."],
-    env: { GOCACHE: "/tmp/go-build-cache" },
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  if (!gen.success) throw new Error("go generate failed");
+  // Ensure shared admin HTML is copied into Go source tree for go:embed (only needed for flop-go/sqlite-go/turso-go).
+  if (needFlopGo || needSQLiteGo || needTursoGo) {
+    const gen = await new Deno.Command("go", {
+      cwd: `${ROOT}/go`,
+      args: ["generate", "./..."],
+      env: { GOCACHE: "/tmp/go-build-cache" },
+      stdout: "inherit",
+      stderr: "inherit",
+    }).output();
+    if (!gen.success) throw new Error("go generate failed");
+  }
 
   if (needFlopGo) {
     const binPath = `${binDir}/go-finance`;
@@ -1178,6 +1210,19 @@ async function buildGoBinaries(
     }).output();
     if (!build.success) throw new Error("failed to build flop-go binary");
     out["flop-go"] = binPath;
+  }
+
+  if (needFlopGo2) {
+    const binPath = `${binDir}/go2-finance`;
+    const build = await new Deno.Command("go", {
+      cwd: `${ROOT}/benchmarks/finance-go2`,
+      args: ["build", "-o", binPath, "."],
+      env: { GOCACHE: "/tmp/go-build-cache" },
+      stdout: "inherit",
+      stderr: "inherit",
+    }).output();
+    if (!build.success) throw new Error("failed to build flop-go2 binary");
+    out["flop-go2"] = binPath;
   }
 
   if (needSQLiteGo) {

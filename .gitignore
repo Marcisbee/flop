@@ -34,3 +34,4 @@ benchmarks/finance-turso-go/finance-turso-go
 examples/twitter-go-react/bin/twitter-server
 examples/twitter-go-react/twitter-server
 examples/movies-go-react/movies-server
+/examples/movies-go2-react/data

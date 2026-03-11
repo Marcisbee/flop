@@ -1,0 +1,7 @@
+node_modules/
+data/
+reddit-server
+web/assets/app.js
+web/assets/app.js.map
+web/assets/app.css
+web/assets/app.css.map
