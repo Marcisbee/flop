@@ -296,6 +296,25 @@ Views and reducers can be:
 
 `superadmin` bypasses route role checks.
 
+### Admin Auth
+
+The admin panel authenticates against a built-in system table:
+
+- `_superadmin`
+
+This table exists by default even if the application defines no auth/user table.
+
+Required fields:
+
+- `id` string primary key with auto-generated value
+- `email` unique string
+- `password` bcrypt hash
+- `name` optional string
+- `createdAt` timestamp
+
+Admin login/setup/refresh must use `_superadmin`, not any application auth table.
+Admin tokens carry the `superadmin` role.
+
 ### Table / Field Access
 
 Table access policies can control:
@@ -363,6 +382,7 @@ Views and reducers are typed functions registered in code and exposed automatica
 Admin panel supports:
 
 - listing live tables
+- showing the built-in `_superadmin` system table
 - listing archive tables
 - browsing live rows
 - browsing archived rows

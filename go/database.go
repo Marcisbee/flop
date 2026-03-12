@@ -30,6 +30,7 @@ import (
 type Database struct {
 	db                  *engine.Database
 	authService         *server.AuthService
+	superadminService   *server.SuperadminService
 	mailer              *server.Mailer
 	jwtSecret           string
 	requestLogRetention time.Duration
@@ -44,6 +45,8 @@ type Database struct {
 	materialized        map[string]*materializedRuntime
 	cascadeRefs         map[string][]cascadeArchiveRef
 }
+
+const systemSuperadminTableName = "_superadmin"
 
 type materializedRuntime struct {
 	spec        *materializedSpec
@@ -157,8 +160,8 @@ func (a *App) Open() (*Database, error) {
 		}
 	}
 
-	names := make([]string, 0, len(db.Tables))
-	for name := range db.Tables {
+	names := make([]string, 0, len(a.tables))
+	for name := range a.tables {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -167,12 +170,13 @@ func (a *App) Open() (*Database, error) {
 		d.tableNameToID[name] = i
 	}
 
-	// Set up auth service if there's an auth table
-	authTable := db.GetAuthTable()
-	if authTable != nil {
-		secret := "flop-dev-secret"
-		d.jwtSecret = secret
+	secret := "flop-dev-secret"
+	d.jwtSecret = secret
+	if authTable := db.GetAuthTable(); authTable != nil {
 		d.authService = server.NewAuthService(authTable, secret)
+	}
+	if superadminTable := db.GetTable(systemSuperadminTableName); superadminTable != nil {
+		d.superadminService = server.NewSuperadminService(superadminTable, secret)
 	}
 
 	// Set up mailer if SMTP configured
@@ -310,6 +314,9 @@ func (d *Database) SetJWTSecret(secret string) {
 	if d.authService != nil {
 		d.authService = server.NewAuthService(d.db.GetAuthTable(), secret)
 	}
+	if d.superadminService != nil {
+		d.superadminService = server.NewSuperadminService(d.db.GetTable(systemSuperadminTableName), secret)
+	}
 }
 
 // Table returns a table instance by name.
@@ -318,11 +325,15 @@ func (d *Database) Table(name string) *TableInstance {
 	if ti == nil {
 		return nil
 	}
+	tableID := -1
+	if id, ok := d.tableNameToID[name]; ok {
+		tableID = id
+	}
 	return &TableInstance{
 		ti:            ti,
 		db:            d,
 		name:          name,
-		tableID:       d.tableNameToID[name],
+		tableID:       tableID,
 		spec:          d.tableSpecs[name],
 		policy:        d.tablePolicy[name],
 		enforcePolicy: false,
@@ -1429,7 +1440,10 @@ func (a *App) BuildEngineTableDefs() map[string]*schema.TableDef {
 
 // buildTableDefs converts App table specs to engine TableDefs.
 func (a *App) buildTableDefs() map[string]*schema.TableDef {
-	defs := make(map[string]*schema.TableDef, len(a.tables))
+	if _, exists := a.tables[systemSuperadminTableName]; exists {
+		panic("flop: table name reserved for system use: " + systemSuperadminTableName)
+	}
+	defs := make(map[string]*schema.TableDef, len(a.tables)+1)
 
 	for name, ts := range a.tables {
 		fields := make([]schema.CompiledField, 0, len(ts.Fields))
@@ -1530,7 +1544,56 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 		}
 	}
 
+	defs[systemSuperadminTableName] = systemSuperadminTableDef()
+
 	return defs
+}
+
+func systemSuperadminTableDef() *schema.TableDef {
+	fields := []schema.CompiledField{
+		{
+			Name:           "id",
+			Kind:           schema.KindString,
+			Required:       true,
+			Unique:         true,
+			AutoGenPattern: "[a-z0-9]{12}",
+			AutoIDStrategy: "random",
+		},
+		{
+			Name:     "email",
+			Kind:     schema.KindString,
+			Required: true,
+			Unique:   true,
+		},
+		{
+			Name:         "password",
+			Kind:         schema.KindBcrypt,
+			Required:     true,
+			BcryptRounds: 10,
+		},
+		{
+			Name:     "name",
+			Kind:     schema.KindString,
+			Required: false,
+		},
+		{
+			Name:         "createdAt",
+			Kind:         schema.KindTimestamp,
+			Required:     true,
+			DefaultValue: "now",
+		},
+	}
+	return &schema.TableDef{
+		Name:           systemSuperadminTableName,
+		CompiledSchema: schema.NewCompiledSchema(fields),
+		Indexes: []schema.IndexDef{
+			{
+				Fields: []string{"email"},
+				Unique: true,
+				Type:   schema.IndexTypeHash,
+			},
+		},
+	}
 }
 
 func mapKind(kind string) schema.FieldKind {
@@ -1829,6 +1892,11 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 	if ti == nil {
 		return nil, fmt.Errorf("table not found: %s", table)
 	}
+	if table == systemSuperadminTableName {
+		if err := prepareSuperadminWrite(data, true); err != nil {
+			return nil, err
+		}
+	}
 	return ti.Insert(data, nil)
 }
 
@@ -1839,6 +1907,11 @@ func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return fmt.Errorf("table not found: %s", table)
+	}
+	if table == systemSuperadminTableName {
+		if err := prepareSuperadminWrite(fields, false); err != nil {
+			return err
+		}
 	}
 	_, err := ti.Update(pk, fields, nil)
 	return err
@@ -2043,10 +2116,10 @@ func classifyAnalyticsRoute(path string) (routeType string, routeName string) {
 }
 
 func (p *EngineAdminProvider) AdminLogin(email, password string) (string, string, error) {
-	if p.DB.authService == nil {
-		return "", "", fmt.Errorf("auth not configured")
+	if p.DB.superadminService == nil {
+		return "", "", fmt.Errorf("superadmin auth not configured")
 	}
-	tok, refresh, auth, err := p.DB.authService.Login(email, password)
+	tok, refresh, auth, err := p.DB.superadminService.Login(email, password)
 	if err != nil {
 		return "", "", err
 	}
@@ -2065,10 +2138,10 @@ func (p *EngineAdminProvider) AdminLogin(email, password string) (string, string
 }
 
 func (p *EngineAdminProvider) AdminRefresh(refreshToken string) (string, error) {
-	if p.DB.authService == nil {
-		return "", fmt.Errorf("auth not configured")
+	if p.DB.superadminService == nil {
+		return "", fmt.Errorf("superadmin auth not configured")
 	}
-	return p.DB.authService.Refresh(refreshToken)
+	return p.DB.superadminService.Refresh(refreshToken)
 }
 
 func (p *EngineAdminProvider) AdminIsAuthorized(token string) bool {
@@ -2085,60 +2158,71 @@ func (p *EngineAdminProvider) AdminIsAuthorized(token string) bool {
 }
 
 func (p *EngineAdminProvider) AdminHasSuperadmin() bool {
-	if p.DB.authService == nil {
+	if p.DB.superadminService == nil {
 		return false
 	}
-	return p.DB.authService.HasSuperadmin()
+	return p.DB.superadminService.HasSuperadmin()
 }
 
 func (p *EngineAdminProvider) AdminRegisterSuperadmin(email, password string, extraFields map[string]any) error {
-	if p.DB.authService == nil {
-		return fmt.Errorf("auth not configured")
+	if p.DB.superadminService == nil {
+		return fmt.Errorf("superadmin auth not configured")
 	}
-	extra := make(map[string]interface{}, len(extraFields))
-	for k, v := range extraFields {
-		extra[k] = v
+	name := ""
+	if extraFields != nil {
+		if rawName, ok := extraFields["name"]; ok {
+			name = strings.TrimSpace(fmt.Sprintf("%v", rawName))
+		}
 	}
-	_, _, err := p.DB.authService.RegisterSuperadmin(email, password, extra)
+	_, _, err := p.DB.superadminService.Register(email, password, name)
 	return err
 }
 
 func (p *EngineAdminProvider) AdminSetupExtraFields() []SetupField {
-	authTable := p.DB.db.GetAuthTable()
-	if authTable == nil {
+	return nil
+}
+
+func prepareSuperadminWrite(data map[string]any, create bool) error {
+	if data == nil {
 		return nil
 	}
-	def := authTable.GetDef()
-	// Fields already handled by the standard setup form
-	skip := map[string]bool{
-		"email": true, "password": true,
-		"roles": true, "verified": true,
+	rawPassword, hasPassword := data["password"]
+	if create && !hasPassword {
+		return fmt.Errorf("password is required")
 	}
-	var fields []SetupField
-	for _, f := range def.CompiledSchema.Fields {
-		if skip[f.Name] {
-			continue
+	if hasPassword {
+		password := strings.TrimSpace(fmt.Sprintf("%v", rawPassword))
+		if password == "" {
+			if create {
+				return fmt.Errorf("password is required")
+			}
+			delete(data, "password")
+		} else if password == "[REDACTED]" {
+			delete(data, "password")
+		} else {
+			hashed, err := server.HashPassword(password)
+			if err != nil {
+				return err
+			}
+			data["password"] = hashed
 		}
-		// Skip auto-generated fields (primary key, timestamps with defaults)
-		if f.AutoGenPattern != "" {
-			continue
-		}
-		// Skip bcrypt fields (password is already handled)
-		if f.Kind == schema.KindBcrypt {
-			continue
-		}
-		// Skip non-required fields — the form only needs to show required ones
-		if !f.Required {
-			continue
-		}
-		fields = append(fields, SetupField{
-			Name:       f.Name,
-			Type:       string(f.Kind),
-			Required:   f.Required,
-			EnumValues: f.EnumValues,
-		})
 	}
-	return fields
+	if rawName, ok := data["name"]; ok {
+		name := strings.TrimSpace(fmt.Sprintf("%v", rawName))
+		if name == "" {
+			delete(data, "name")
+		} else {
+			data["name"] = name
+		}
+	}
+	if rawEmail, ok := data["email"]; ok {
+		email := strings.TrimSpace(strings.ToLower(fmt.Sprintf("%v", rawEmail)))
+		if email == "" {
+			return fmt.Errorf("email is required")
+		}
+		data["email"] = email
+	}
+	return nil
 }
 
 func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {
