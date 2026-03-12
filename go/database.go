@@ -595,7 +595,18 @@ func (ti *TableInstance) deleteWithTx(pk string, txBuf map[string]*engine.WalBuf
 	return ti.ti.Delete(pk, txBuf)
 }
 
+type ArchiveOptions struct {
+	CascadeGroupID   string
+	CascadeRootTable string
+	CascadeRootPK    string
+	CascadeDepth     int
+}
+
 func (ti *TableInstance) Archive(pk string) (*storage.ArchivedRow, error) {
+	return ti.ArchiveWithOptions(pk, ArchiveOptions{})
+}
+
+func (ti *TableInstance) ArchiveWithOptions(pk string, opts ArchiveOptions) (*storage.ArchivedRow, error) {
 	ti.markWrite()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
@@ -613,7 +624,15 @@ func (ti *TableInstance) Archive(pk string) (*storage.ArchivedRow, error) {
 		}
 	}
 	tx := newArchiveTxn(ti.db)
-	record, err := ti.archiveCascade(tx, pk, "", ti.name, pk, 0)
+	rootTable := strings.TrimSpace(opts.CascadeRootTable)
+	if rootTable == "" {
+		rootTable = ti.name
+	}
+	rootPK := strings.TrimSpace(opts.CascadeRootPK)
+	if rootPK == "" {
+		rootPK = pk
+	}
+	record, err := ti.archiveCascade(tx, pk, strings.TrimSpace(opts.CascadeGroupID), rootTable, rootPK, opts.CascadeDepth)
 	if err != nil {
 		tx.rollback()
 		return nil, err
@@ -623,6 +642,21 @@ func (ti *TableInstance) Archive(pk string) (*storage.ArchivedRow, error) {
 		return nil, err
 	}
 	return record, nil
+}
+
+func (ti *TableInstance) DeleteArchive(archiveID string) error {
+	ti.markWrite()
+	if ti.isNil() {
+		return fmt.Errorf("table is nil")
+	}
+	record, err := ti.ti.DeleteArchived(archiveID, nil)
+	if err != nil {
+		return err
+	}
+	if record == nil {
+		return fmt.Errorf("archived row not found: %s", archiveID)
+	}
+	return nil
 }
 
 func (ti *TableInstance) RestoreArchive(archiveID string) error {
@@ -1781,6 +1815,7 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 				row[f.Name] = "[REDACTED]"
 			}
 		}
+		normalizeAdminFileFields(row, def.CompiledSchema.Fields)
 	}
 
 	return AdminRowsPage{
@@ -1816,6 +1851,7 @@ func (p *EngineAdminProvider) AdminArchiveRows(table string, limit, offset int) 
 		row["_deletedBy"] = record.DeletedBy
 		row["_cascadeGroupId"] = record.CascadeGroupID
 		row["_cascadeDepth"] = record.CascadeDepth
+		normalizeAdminFileFields(row, ti.GetDef().CompiledSchema.Fields)
 		rows = append(rows, row)
 	}
 	return AdminRowsPage{
@@ -1826,6 +1862,95 @@ func (p *EngineAdminProvider) AdminArchiveRows(table string, limit, offset int) 
 		Offset:  offset,
 		Limit:   limit,
 	}, true, nil
+}
+
+func normalizeAdminFileFields(row map[string]any, fields []schema.CompiledField) {
+	if row == nil {
+		return
+	}
+	for _, field := range fields {
+		switch field.Kind {
+		case schema.KindFileSingle:
+			row[field.Name] = normalizeAdminFileValue(row[field.Name])
+		case schema.KindFileMulti:
+			row[field.Name] = normalizeAdminFileList(row[field.Name])
+		}
+	}
+}
+
+func normalizeAdminFileValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	if m, ok := value.(map[string]any); ok {
+		if _, hasURL := m["url"].(string); hasURL {
+			if name, _ := m["name"].(string); name == "" {
+				if derived := deriveAdminFileName(m); derived != "" {
+					m["name"] = derived
+				}
+			}
+			return m
+		}
+	}
+	if s, ok := value.(string); ok {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil
+		}
+		return map[string]any{
+			"url":  s,
+			"path": s,
+			"name": adminFileLabelFromString(s),
+		}
+	}
+	return value
+}
+
+func normalizeAdminFileList(value any) any {
+	if value == nil {
+		return nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return value
+	}
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		normalized := normalizeAdminFileValue(item)
+		if normalized != nil {
+			out = append(out, normalized)
+		}
+	}
+	return out
+}
+
+func deriveAdminFileName(m map[string]any) string {
+	if path, _ := m["path"].(string); path != "" {
+		return adminFileLabelFromString(path)
+	}
+	if url, _ := m["url"].(string); url != "" {
+		return adminFileLabelFromString(url)
+	}
+	return ""
+}
+
+func adminFileLabelFromString(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(s, '?'); idx >= 0 {
+		s = s[:idx]
+	}
+	s = strings.TrimRight(s, "/")
+	if s == "" {
+		return ""
+	}
+	base := filepath.Base(s)
+	if base == "." || base == "/" {
+		return s
+	}
+	return base
 }
 
 func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int, indexField, indexValue string) ([]map[string]any, int, bool, error) {
@@ -1935,12 +2060,38 @@ func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
 	return nil
 }
 
+func (p *EngineAdminProvider) AdminArchiveRow(table, pk string) error {
+	if ok, _, _ := p.DB.materializedStatus(table); ok {
+		return fmt.Errorf("materialized table is read-only: %s", table)
+	}
+	ti := p.DB.Table(table)
+	if ti == nil {
+		return fmt.Errorf("table not found: %s", table)
+	}
+	record, err := ti.Archive(pk)
+	if err != nil {
+		return err
+	}
+	if record == nil {
+		return fmt.Errorf("row not found: %s", pk)
+	}
+	return nil
+}
+
 func (p *EngineAdminProvider) AdminRestoreRow(table, archiveID string) error {
 	ti := p.DB.Table(table)
 	if ti == nil {
 		return fmt.Errorf("table not found: %s", table)
 	}
 	return ti.RestoreArchive(archiveID)
+}
+
+func (p *EngineAdminProvider) AdminDeleteArchivedRow(table, archiveID string) error {
+	ti := p.DB.Table(table)
+	if ti == nil {
+		return fmt.Errorf("table not found: %s", table)
+	}
+	return ti.DeleteArchive(archiveID)
 }
 
 func (p *EngineAdminProvider) secret() string {

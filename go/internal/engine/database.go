@@ -2282,6 +2282,52 @@ func (ti *TableInstance) RestoreArchived(archiveID string, txBuf map[string]*wal
 	return archived, row, nil
 }
 
+func (ti *TableInstance) DeleteArchived(archiveID string, txBuf map[string]*walBufEntry) (*storage.ArchivedRow, error) {
+	ti.mu.RLock()
+	rowLock := ti.rowLockForKey(archiveID)
+	rowLock.Lock()
+	defer func() {
+		rowLock.Unlock()
+		ti.mu.RUnlock()
+	}()
+
+	archived, _, err := ti.GetArchived(archiveID)
+	if err != nil || archived == nil {
+		return archived, err
+	}
+
+	if err := ti.applyWALArchiveDelete(archiveID); err != nil {
+		return nil, err
+	}
+	if err := storage.DeleteArchivedRowFiles(ti.dataDir, ti.Name, archiveID); err != nil {
+		_ = ti.applyWALArchiveInsert(mustArchiveBytes(archived))
+		return nil, err
+	}
+
+	txID := ti.wal.BeginTransaction()
+	beginRecord := ti.wal.BuildBeginRecord(txID)
+	archiveDeleteRecord, _ := ti.wal.BuildRecordWithLSN(txID, storage.WALOpArchiveDelete, []byte(archiveID))
+	if txBuf != nil {
+		entry := txBuf[ti.Name]
+		if entry == nil {
+			entry = &walBufEntry{}
+			txBuf[ti.Name] = entry
+		}
+		entry.records = append(entry.records, beginRecord, archiveDeleteRecord)
+		entry.txIDs = append(entry.txIDs, txID)
+	} else {
+		walBuf := map[string]*walBufEntry{
+			ti.Name: {records: [][]byte{archiveDeleteRecord}},
+		}
+		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			_ = ti.applyWALArchiveInsert(mustArchiveBytes(archived))
+			return nil, err
+		}
+	}
+
+	return archived, nil
+}
+
 func mustArchiveBytes(row *storage.ArchivedRow) []byte {
 	data, _ := storage.SerializeArchivedRow(row)
 	return data

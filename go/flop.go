@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/marcisbee/flop/internal/storage"
 )
 
 // ErrNotImplemented marks API scaffolding that is defined but not wired yet.
@@ -795,8 +797,12 @@ func (b *RefFieldRules) Unique() *RefFieldRules          { b.spec.Unique = true;
 func (b *RefFieldRules) Default(v any) *RefFieldRules    { b.spec.Default = v; return b }
 func (b *RefFieldRules) Autogen(p string) *RefFieldRules { b.spec.Autogen = p; return b }
 func (b *RefFieldRules) Index() *RefFieldRules           { b.spec.Indexed = true; return b }
-func (b *RefFieldRules) CascadeArchive() *RefFieldRules  { b.spec.CascadeDelete = "archive"; b.spec.Indexed = true; return b }
-func (b *RefFieldRules) Virtual() *RefFieldRules         { b.spec.Virtual = true; return b }
+func (b *RefFieldRules) CascadeArchive() *RefFieldRules {
+	b.spec.CascadeDelete = "archive"
+	b.spec.Indexed = true
+	return b
+}
+func (b *RefFieldRules) Virtual() *RefFieldRules { b.spec.Virtual = true; return b }
 func (b *RefFieldRules) Access(access FieldAccess) *RefFieldRules {
 	b.spec.Access = access
 	return b
@@ -810,7 +816,7 @@ func (b *RefMultiFieldRules) CascadeArchive() *RefMultiFieldRules {
 	b.spec.Indexed = true
 	return b
 }
-func (b *RefMultiFieldRules) Virtual() *RefMultiFieldRules      { b.spec.Virtual = true; return b }
+func (b *RefMultiFieldRules) Virtual() *RefMultiFieldRules { b.spec.Virtual = true; return b }
 func (b *RefMultiFieldRules) Access(access FieldAccess) *RefMultiFieldRules {
 	b.spec.Access = access
 	return b
@@ -1049,6 +1055,29 @@ func (t *Table[T]) Delete(scope any, id string) (bool, error) {
 		return ok, err
 	}
 	return ti.Delete(id)
+}
+
+func (t *Table[T]) Archive(scope any, id string) (*storage.ArchivedRow, error) {
+	return t.ArchiveWithOptions(scope, id, ArchiveOptions{})
+}
+
+func (t *Table[T]) ArchiveWithOptions(scope any, id string, opts ArchiveOptions) (*storage.ArchivedRow, error) {
+	ti, tx, err := resolveTypedTableScope(scope, t.name)
+	if err != nil {
+		return nil, err
+	}
+	if tx != nil {
+		rootTable := strings.TrimSpace(opts.CascadeRootTable)
+		if rootTable == "" {
+			rootTable = t.name
+		}
+		rootPK := strings.TrimSpace(opts.CascadeRootPK)
+		if rootPK == "" {
+			rootPK = id
+		}
+		return ti.archiveCascade(tx.inner, id, strings.TrimSpace(opts.CascadeGroupID), rootTable, rootPK, opts.CascadeDepth)
+	}
+	return ti.ArchiveWithOptions(id, opts)
 }
 
 func (t *Table[T]) Scan(scope any, limit, offset int) ([]T, error) {

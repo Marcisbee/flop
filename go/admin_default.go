@@ -28,12 +28,12 @@ type AdminTable struct {
 }
 
 type AdminRowsPage struct {
-	Table  string           `json:"table"`
-	Archive bool            `json:"archive,omitempty"`
-	Rows   []map[string]any `json:"rows"`
-	Total  int              `json:"total"`
-	Offset int              `json:"offset"`
-	Limit  int              `json:"limit"`
+	Table   string           `json:"table"`
+	Archive bool             `json:"archive,omitempty"`
+	Rows    []map[string]any `json:"rows"`
+	Total   int              `json:"total"`
+	Offset  int              `json:"offset"`
+	Limit   int              `json:"limit"`
 }
 
 type AdminProvider interface {
@@ -53,12 +53,14 @@ type AdminWriteProvider interface {
 	AdminCreateRow(table string, data map[string]any) (map[string]any, error)
 	AdminUpdateRow(table, pk string, fields map[string]any) error
 	AdminDeleteRow(table, pk string) error
+	AdminArchiveRow(table, pk string) error
 }
 
 type AdminArchiveProvider interface {
 	AdminArchiveTables() ([]AdminTable, error)
 	AdminArchiveRows(table string, limit, offset int) (AdminRowsPage, bool, error)
 	AdminRestoreRow(table, archiveID string) error
+	AdminDeleteArchivedRow(table, archiveID string) error
 }
 
 type AdminAuthProvider interface {
@@ -179,6 +181,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+		w.Header().Set("Cache-Control", "no-store")
 
 		// Login page
 		if path == "/_/login" || path == "/_/login/" {
@@ -609,6 +612,23 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				return
 			}
 
+			if tableName, pk, ok := parseRowArchivePath(path); ok {
+				if !writeEnabled {
+					adminJSONError(w, "write operations not supported", http.StatusMethodNotAllowed)
+					return
+				}
+				if r.Method != http.MethodPost {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := writeProvider.AdminArchiveRow(tableName, pk); err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
+				return
+			}
+
 			// /_/api/tables/{table}/rows — list or create rows
 			tableName, ok := parseRowsPath(path)
 			if !ok {
@@ -763,6 +783,14 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
 				return
 			}
+			if len(parts) >= 3 && parts[1] == "rows" && r.Method == http.MethodDelete {
+				if err := archiveProvider.AdminDeleteArchivedRow(parts[0], parts[2]); err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
+				return
+			}
 			if len(parts) >= 2 && parts[1] == "rows" {
 				if r.Method != http.MethodGet {
 					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -783,12 +811,12 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					return
 				}
 				adminJSONResp(w, http.StatusOK, map[string]any{
-					"rows":   result.Rows,
-					"total":  result.Total,
-					"table":  result.Table,
-					"limit":  result.Limit,
-					"offset": result.Offset,
-					"pages":  (result.Total + result.Limit - 1) / result.Limit,
+					"rows":    result.Rows,
+					"total":   result.Total,
+					"table":   result.Table,
+					"limit":   result.Limit,
+					"offset":  result.Offset,
+					"pages":   (result.Total + result.Limit - 1) / result.Limit,
 					"archive": true,
 				})
 				return
@@ -825,6 +853,24 @@ func parseRowPath(path string) (table, pk string, ok bool) {
 	rest := strings.TrimPrefix(path, "/_/api/tables/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	if len(parts) != 3 || parts[1] != "rows" || parts[0] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	name, err := url.PathUnescape(parts[0])
+	if err != nil || name == "" {
+		return "", "", false
+	}
+	id, err := url.PathUnescape(parts[2])
+	if err != nil || id == "" {
+		return "", "", false
+	}
+	return name, id, true
+}
+
+// parseRowArchivePath matches /_/api/tables/{table}/rows/{pk}/archive
+func parseRowArchivePath(path string) (table, pk string, ok bool) {
+	rest := strings.TrimPrefix(path, "/_/api/tables/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 4 || parts[1] != "rows" || parts[3] != "archive" || parts[0] == "" || parts[2] == "" {
 		return "", "", false
 	}
 	name, err := url.PathUnescape(parts[0])

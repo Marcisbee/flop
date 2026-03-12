@@ -233,6 +233,10 @@ tbody tr.selected{background:var(--bg-active)}
 .file-thumb{width:20px;height:20px;object-fit:cover;border-radius:2px;vertical-align:middle}
 .file-link{color:var(--accent);text-decoration:none;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
 .file-link:hover{text-decoration:underline}
+.file-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.file-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2)}
+.file-item-main{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.file-item-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-cell-editor{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;gap:4px;padding:2px 8px;background:var(--bg);outline:1px solid var(--accent);outline-offset:-1px;z-index:2}
 .file-upload-btn{cursor:pointer}
 .file-remove{color:var(--danger)}
@@ -636,15 +640,25 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
 
   const onUploadFile = useCallback(async (col, e) => {
     if (readOnly) return;
+    const field = schema ? schema[col] : null;
+    const files = Array.from(e.target.files || []);
     if (isCreate) {
-      const f = e.target.files[0];
-      if (!f) return;
-      setPendingFiles(prev => ({ ...prev, [col]: f }));
-      setCol(col, f.name);
+      if (field && field.type === 'fileMulti') {
+        if (files.length === 0) return;
+        setPendingFiles(prev => ({
+          ...prev,
+          [col]: [...normalizeFileItems(prev[col]), ...files]
+        }));
+      } else {
+        const f = files[0];
+        if (!f) return;
+        setPendingFiles(prev => ({ ...prev, [col]: f }));
+        setCol(col, f.name);
+      }
       if (e.target) e.target.value = '';
       return;
     }
-    const f = e.target.files[0];
+    const f = files[0];
     if (!f) return;
     setUploadingCol(col);
     try {
@@ -658,27 +672,38 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
       setUploadingCol('');
       if (e.target) e.target.value = '';
     }
-  }, [tableName, pk, onReload, isCreate, setCol, readOnly]);
+  }, [tableName, pk, onReload, isCreate, setCol, readOnly, schema]);
 
-  const onRemoveFile = useCallback(async (col) => {
+  const onRemoveFile = useCallback(async (col, fileKey = '', pendingIndex = -1) => {
     if (readOnly) return;
+    const field = schema ? schema[col] : null;
     if (isCreate) {
-      setPendingFiles(prev => {
-        const next = { ...prev };
-        delete next[col];
-        return next;
-      });
-      setCol(col, '');
+      if (field && field.type === 'fileMulti' && pendingIndex >= 0) {
+        setPendingFiles(prev => {
+          const next = { ...prev };
+          next[col] = normalizeFileItems(prev[col]).filter((_, idx) => idx !== pendingIndex);
+          if (next[col].length === 0) delete next[col];
+          return next;
+        });
+      } else {
+        setPendingFiles(prev => {
+          const next = { ...prev };
+          delete next[col];
+          return next;
+        });
+        setCol(col, '');
+      }
       return;
     }
     try {
-      await apiDelete('/tables/' + tableName + '/rows/' + pk + '/files/' + col);
+      const suffix = fileKey ? ('?path=' + encodeURIComponent(fileKey)) : '';
+      await apiDelete('/tables/' + tableName + '/rows/' + pk + '/files/' + col + suffix);
       showToast('File removed');
       await onReload();
     } catch (err) {
       showToast(err.message || 'Remove failed', 'error');
     }
-  }, [tableName, pk, onReload, isCreate, setCol, readOnly]);
+  }, [tableName, pk, onReload, isCreate, setCol, readOnly, schema]);
 
   return html`
     <aside class="row-editor">
@@ -702,21 +727,40 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
           if (field && (field.type === 'fileSingle' || field.type === 'fileMulti')) {
             const accept = field.mimeTypes ? field.mimeTypes.join(',') : '';
             const singleFile = isCreate ? pendingFiles[col] : (field.type === 'fileSingle' ? val : null);
-            const fileCount = isCreate
-              ? (pendingFiles[col] ? 1 : 0)
-              : (field.type === 'fileMulti' && Array.isArray(val) ? val.length : 0);
+            const multiFiles = field.type === 'fileMulti'
+              ? (isCreate ? normalizeFileItems(pendingFiles[col]) : normalizeFileItems(val))
+              : [];
+            const fileCount = field.type === 'fileMulti' ? multiFiles.length : (singleFile ? 1 : 0);
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
               <div class="row-editor-readonly">
-                ${field.type === 'fileSingle' ? (singleFile && singleFile.name ? singleFile.name : html`<span class="null">null</span>`) : (fileCount > 0 ? fileCount + ' files' : html`<span class="null">null</span>`)}
+                ${field.type === 'fileSingle' ? (singleFile && fileDisplayName(singleFile) ? fileDisplayName(singleFile) : html`<span class="null">null</span>`) : (fileCount > 0 ? fileCount + ' files' : html`<span class="null">null</span>`)}
               </div>
+              ${field.type === 'fileMulti' && html`
+                <div class="file-list">
+                  ${multiFiles.length > 0 ? multiFiles.map((file, idx) => {
+                    const fileName = fileDisplayName(file) || ('file ' + (idx + 1));
+                    const itemKey = file.path || file.url || fileName + ':' + idx;
+                    return html`<div key=${itemKey} class="file-item">
+                      <span class="file-item-main">
+                        ${isImageFile(file) && file.url ? html`<img class="file-thumb" src=${file.url} alt=${fileName} />` : ''}
+                        ${file.url
+                          ? html`<a href=${file.url} target="_blank" class="file-link file-item-name" onClick=${e => e.stopPropagation()}>${fileName}</a>`
+                          : html`<span class="file-item-name">${fileName}</span>`
+                        }
+                      </span>
+                      ${!readOnly && html`<button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col, isCreate ? fileName : (file.path || ''), isCreate ? idx : -1)}>${icons.trash} Remove</button>`}
+                    </div>`;
+                  }) : html`<span class="null">null</span>`}
+                </div>
+              `}
               <div class="create-actions" style="margin-top:6px">
                 ${!readOnly && html`
                 <label class="btn btn-sm btn-primary file-upload-btn">
                   ${uploadingCol === col ? 'Uploading...' : html`${icons.upload} Upload`}
-                  <input type="file" accept=${accept} onChange=${e => onUploadFile(col, e)} hidden />
+                  <input type="file" accept=${accept} multiple=${field.type === 'fileMulti'} onChange=${e => onUploadFile(col, e)} hidden />
                 </label>
-                <button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col)}>${icons.trash} Remove</button>
+                ${field.type === 'fileSingle' && html`<button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col)}>${icons.trash} Remove</button>`}
                 `}
               </div>
             </div>`;
@@ -888,6 +932,19 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
     loadRows();
   }, [tableName, loadRows, selectedPk]);
 
+  const archiveRow = useCallback(async (pk) => {
+    if (!confirm('Archive row ' + pk + '?')) return;
+    try {
+      await api('/tables/' + tableName + '/rows/' + pk + '/archive', { method: 'POST' });
+      showToast('Row archived');
+    } catch (err) {
+      showToast(err.message || 'Archive failed', 'error');
+    }
+    if (selectedPk != null && String(selectedPk) === String(pk)) setSelectedPk(null);
+    loadRows();
+    onReload?.();
+  }, [tableName, loadRows, selectedPk, onReload]);
+
   const restoreRow = useCallback(async (archiveID) => {
     if (!confirm('Restore archived row ' + archiveID + '?')) return;
     try {
@@ -895,6 +952,19 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
       showToast('Archived row restored');
     } catch (err) {
       showToast(err.message || 'Restore failed', 'error');
+    }
+    if (selectedPk != null && String(selectedPk) === String(archiveID)) setSelectedPk(null);
+    loadRows();
+    onReload?.();
+  }, [tableName, selectedPk, loadRows, onReload]);
+
+  const deleteArchivedRow = useCallback(async (archiveID) => {
+    if (!confirm('Permanently delete archived row ' + archiveID + '?')) return;
+    try {
+      await api('/archive/tables/' + tableName + '/rows/' + archiveID, { method: 'DELETE' });
+      showToast('Archived row deleted');
+    } catch (err) {
+      showToast(err.message || 'Delete failed', 'error');
     }
     if (selectedPk != null && String(selectedPk) === String(archiveID)) setSelectedPk(null);
     loadRows();
@@ -924,9 +994,13 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
       // Upload pending files using the new row's primary key
       if (res && res.row) {
         const pk = res.row[Object.keys(schema)[0]];
-        for (const [col, file] of Object.entries(pendingFiles)) {
-          const upRes = await apiUpload('/tables/' + tableName + '/rows/' + pk + '/files/' + col, file);
-          if (upRes && upRes.error) showToast(col + ': ' + upRes.error, 'error');
+        for (const [col, value] of Object.entries(pendingFiles)) {
+          const files = Array.isArray(value) ? value : [value];
+          for (const file of files) {
+            if (!file) continue;
+            const upRes = await apiUpload('/tables/' + tableName + '/rows/' + pk + '/files/' + col, file);
+            if (upRes && upRes.error) showToast(col + ': ' + upRes.error, 'error');
+          }
         }
       }
       setShowCreate(false);
@@ -1009,9 +1083,10 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
                       const isFile = f && (f.type === 'fileSingle' || f.type === 'fileMulti');
                       const isObj = typeof val === 'object' && val !== null;
                       let display;
-                      if (isFile && f.type === 'fileSingle' && val && val.name) {
+                      if (isFile && f.type === 'fileSingle' && val && val.url) {
                         const isImage = val.mime && val.mime.startsWith('image/');
-                        display = html`<span class="file-display">${isImage ? html`<img class="file-thumb" src=${val.url} alt=${val.name} />` : ''}<a href=${val.url} target="_blank" class="file-link" onClick=${e => e.stopPropagation()}>${val.name}</a></span>`;
+                        const fileName = fileDisplayName(val) || 'file';
+                        display = html`<span class="file-display">${isImage ? html`<img class="file-thumb" src=${val.url} alt=${fileName} />` : ''}<a href=${val.url} target="_blank" class="file-link" onClick=${e => e.stopPropagation()}>${fileName}</a></span>`;
                       } else if (isFile && f.type === 'fileMulti' && Array.isArray(val) && val.length > 0) {
                         display = val.length + ' file' + (val.length !== 1 ? 's' : '');
                       } else if (isFile) {
@@ -1026,8 +1101,14 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
                     })}
                     <td class="td-actions">
                       ${archive
-                        ? html`<button class="btn-icon" onClick=${(e) => { e.stopPropagation(); restoreRow(pk); }} title="Restore">${icons.upload}</button>`
-                        : html`<button class="btn-icon danger" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); deleteRow(pk); }} title="Delete">${icons.trash}</button>`
+                        ? html`
+                            <button class="btn-icon" onClick=${(e) => { e.stopPropagation(); restoreRow(pk); }} title="Restore">${icons.upload}</button>
+                            <button class="btn-icon danger" onClick=${(e) => { e.stopPropagation(); deleteArchivedRow(pk); }} title="Delete Permanently">${icons.trash}</button>
+                          `
+                        : html`
+                            <button class="btn-icon" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); archiveRow(pk); }} title="Archive">${icons.download}</button>
+                            <button class="btn-icon danger" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); deleteRow(pk); }} title="Delete">${icons.trash}</button>
+                          `
                       }
                     </td>
                   </tr>
@@ -1270,6 +1351,29 @@ function extractTraceEvents(detailsObj) {
   if (Array.isArray(detailsObj.trace)) return detailsObj.trace;
   if (Array.isArray(detailsObj.spans)) return detailsObj.spans;
   return [];
+}
+
+function fileDisplayName(file) {
+  if (!file || typeof file !== 'object') return '';
+  if (typeof file.name === 'string' && file.name) return file.name;
+  if (typeof file.path === 'string' && file.path) {
+    const parts = file.path.split('/');
+    return parts[parts.length - 1] || file.path;
+  }
+  if (typeof file.url === 'string' && file.url) {
+    const clean = file.url.split('?')[0];
+    const parts = clean.split('/');
+    return parts[parts.length - 1] || clean;
+  }
+  return '';
+}
+
+function normalizeFileItems(value) {
+  return Array.isArray(value) ? value.filter(file => file && typeof file === 'object') : [];
+}
+
+function isImageFile(file) {
+  return !!(file && typeof file.mime === 'string' && file.mime.startsWith('image/'));
 }
 
 function toNum(v, fallback = 0) {

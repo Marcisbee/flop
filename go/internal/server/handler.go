@@ -1102,7 +1102,7 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 				h.handleFileUpload(w, r, match[1], match[2], match[3])
 				return
 			case "DELETE":
-				h.handleFileDelete(w, match[1], match[2], match[3])
+				h.handleFileDelete(w, r, match[1], match[2], match[3])
 				return
 			}
 		}
@@ -1458,7 +1458,7 @@ func (h *Handler) handleFileUpload(w http.ResponseWriter, r *http.Request, table
 	jsonResponse(w, map[string]interface{}{"ok": true, "file": refMap})
 }
 
-func (h *Handler) handleFileDelete(w http.ResponseWriter, tableName, rowID, fieldName string) {
+func (h *Handler) handleFileDelete(w http.ResponseWriter, r *http.Request, tableName, rowID, fieldName string) {
 	table := h.db.GetTable(tableName)
 	if table == nil {
 		jsonError(w, "Table not found", 404)
@@ -1473,6 +1473,39 @@ func (h *Handler) handleFileDelete(w http.ResponseWriter, tableName, rowID, fiel
 	if err != nil || row == nil {
 		jsonError(w, "Row not found", 404)
 		return
+	}
+
+	if field.Kind == schema.KindFileMulti {
+		targetPath := strings.TrimSpace(r.URL.Query().Get("path"))
+		if targetPath != "" {
+			items, _ := row[fieldName].([]interface{})
+			next := make([]interface{}, 0, len(items))
+			removed := false
+			for _, item := range items {
+				refMap, ok := item.(map[string]interface{})
+				if !ok {
+					next = append(next, item)
+					continue
+				}
+				path, _ := refMap["path"].(string)
+				if !removed && path == targetPath {
+					removed = true
+					_ = storage.DeleteFileRef(h.db.GetDataDir(), &schema.FileRef{Path: path})
+					continue
+				}
+				next = append(next, item)
+			}
+			if !removed {
+				jsonError(w, "File not found", 404)
+				return
+			}
+			if _, err := table.Update(rowID, map[string]interface{}{fieldName: next}, nil); err != nil {
+				jsonError(w, err.Error(), 400)
+				return
+			}
+			jsonResponse(w, map[string]interface{}{"ok": true})
+			return
+		}
 	}
 
 	// Best effort cleanup for the field directory.
