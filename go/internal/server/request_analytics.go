@@ -17,7 +17,7 @@ import (
 const (
 	DefaultRequestLogRetention = 7 * 24 * time.Hour
 	requestLogQueueSize        = 8192
-	requestMaxDetailBytes      = 2048
+	requestMaxDetailBytes      = 16 * 1024
 	requestMaxErrorBytes       = 512
 )
 
@@ -682,11 +682,104 @@ func detailsToText(details map[string]interface{}) string {
 	if len(details) == 0 {
 		return ""
 	}
-	raw, err := jsonx.Marshal(details)
-	if err != nil {
-		return ""
+	if raw, ok := marshalDetailsWithinLimit(details, requestMaxDetailBytes); ok {
+		return raw
 	}
-	return truncateText(string(raw), requestMaxDetailBytes)
+	compact := cloneDetailsMap(details)
+	trimTraceDetailsToFit(compact, requestMaxDetailBytes)
+	if raw, ok := marshalDetailsWithinLimit(compact, requestMaxDetailBytes); ok {
+		return raw
+	}
+	delete(compact, "trace")
+	compact["traceTruncated"] = true
+	if raw, ok := marshalDetailsWithinLimit(compact, requestMaxDetailBytes); ok {
+		return raw
+	}
+	return ""
+}
+
+func marshalDetailsWithinLimit(details map[string]interface{}, maxBytes int) (string, bool) {
+	raw, err := jsonx.Marshal(details)
+	if err != nil || len(raw) > maxBytes {
+		return "", false
+	}
+	return string(raw), true
+}
+
+func cloneDetailsMap(details map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(details))
+	for k, v := range details {
+		out[k] = v
+	}
+	return out
+}
+
+func trimTraceDetailsToFit(details map[string]interface{}, maxBytes int) {
+	rawTrace, ok := details["trace"]
+	if !ok {
+		return
+	}
+	traceItems, ok := rawTrace.([]map[string]interface{})
+	if !ok || len(traceItems) == 0 {
+		return
+	}
+
+	compactTrace := make([]map[string]interface{}, 0, len(traceItems))
+	for _, item := range traceItems {
+		if len(item) == 0 {
+			continue
+		}
+		compacted := make(map[string]interface{}, 8)
+		if v, ok := item["op"]; ok {
+			compacted["op"] = v
+		}
+		if v, ok := item["table"]; ok {
+			compacted["table"] = v
+		}
+		if v, ok := item["index"]; ok {
+			compacted["index"] = v
+		}
+		if v, ok := item["rows"]; ok {
+			compacted["rows"] = v
+		}
+		if v, ok := item["scanned"]; ok {
+			compacted["scanned"] = v
+		}
+		if v, ok := item["ms"]; ok {
+			compacted["ms"] = v
+		}
+		if v, ok := item["note"]; ok {
+			compacted["note"] = v
+		}
+		if v, ok := item["started"]; ok {
+			compacted["started"] = v
+		}
+		if v, ok := item["finished"]; ok {
+			compacted["finished"] = v
+		}
+		compactTrace = append(compactTrace, compacted)
+	}
+	if len(compactTrace) == 0 {
+		delete(details, "trace")
+		return
+	}
+
+	details["trace"] = compactTrace
+	details["traceSpans"] = len(compactTrace)
+	if _, ok := marshalDetailsWithinLimit(details, maxBytes); ok {
+		return
+	}
+
+	for len(compactTrace) > 0 {
+		compactTrace = compactTrace[:len(compactTrace)-1]
+		details["trace"] = compactTrace
+		details["traceSpans"] = len(compactTrace)
+		details["traceDroppedSpans"] = len(traceItems) - len(compactTrace)
+		details["traceTruncated"] = true
+		if _, ok := marshalDetailsWithinLimit(details, maxBytes); ok {
+			return
+		}
+	}
 }
 
 func truncateText(v string, maxBytes int) string {

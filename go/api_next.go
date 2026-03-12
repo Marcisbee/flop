@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
+	"github.com/marcisbee/flop/internal/reqtrace"
 	"github.com/marcisbee/flop/internal/server"
 )
 
@@ -677,28 +678,69 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIHandler) handleView(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	traceCollector := reqtrace.Start()
+	defer traceCollector.End()
+
+	statusCode := http.StatusOK
+	errMessage := ""
+	paramBytes := 0
+	hasAuth := false
+	defer func() {
+		h.recordAnalyticsEvent(analyticsEventInput{
+			start:          start,
+			traceCollector: traceCollector,
+			routeType:      "view",
+			routeName:      strings.TrimPrefix(r.URL.Path, "/api/view/"),
+			method:         r.Method,
+			path:           r.URL.Path,
+			transport:      "http",
+			statusCode:     statusCode,
+			errMessage:     errMessage,
+			userID:         ternaryUserID(h.authFromRequest(r)),
+			details: map[string]any{
+				"queryBytes": len(r.URL.RawQuery),
+				"paramBytes": paramBytes,
+				"hasAuth":    hasAuth,
+				"source":     "api-handler",
+			},
+		})
+	}()
+
 	if r.Method != http.MethodGet {
+		statusCode = http.StatusMethodNotAllowed
+		errMessage = "method not allowed"
 		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/api/view/")
 	def, ok := h.app.viewDefs[name]
 	if !ok {
+		statusCode = http.StatusNotFound
+		errMessage = "view not found"
 		jsonError(w, "view not found", http.StatusNotFound)
 		return
 	}
 	auth, status, err := h.enforceAccess(r, def.access)
+	hasAuth = auth != nil
 	if err != nil {
+		statusCode = status
+		errMessage = err.Error()
 		jsonError(w, err.Error(), status)
 		return
 	}
+	paramBytes = len(r.URL.RawQuery)
 	input, err := def.decodeQuery(r.URL.Query())
 	if err != nil {
+		statusCode = http.StatusBadRequest
+		errMessage = err.Error()
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	result, reads, status, err := h.execView(def, input, auth)
 	if err != nil {
+		statusCode = status
+		errMessage = err.Error()
 		jsonError(w, err.Error(), status)
 		return
 	}
@@ -740,62 +782,196 @@ func (h *APIHandler) handleViewBatch(w http.ResponseWriter, r *http.Request) {
 	auth := h.authFromRequest(r)
 	out := make([]result, 0, len(in.Calls))
 	for _, c := range in.Calls {
+		start := time.Now()
+		traceCollector := reqtrace.Start()
+		statusCode := http.StatusOK
+		errMessage := ""
+		details := map[string]any{
+			"paramBytes": len(c.Params),
+			"hasAuth":    auth != nil,
+			"source":     "api-handler",
+			"batch":      true,
+			"callID":     c.ID,
+			"batchSize":  len(in.Calls),
+		}
+
 		def, ok := h.app.viewDefs[c.Name]
 		if !ok {
+			statusCode = http.StatusNotFound
+			errMessage = "view not found: " + c.Name
 			out = append(out, result{ID: c.ID, Error: "view not found: " + c.Name})
+			traceCollector.End()
+			h.recordAnalyticsEvent(analyticsEventInput{
+				start:          start,
+				traceCollector: traceCollector,
+				routeType:      "view",
+				routeName:      c.Name,
+				method:         http.MethodPost,
+				path:           "/api/view/" + c.Name,
+				transport:      "http",
+				statusCode:     statusCode,
+				errMessage:     errMessage,
+				userID:         ternaryUserID(auth),
+				details:        details,
+			})
 			continue
 		}
 		if _, status, err := h.enforceAccessFromAuth(def.access, auth); err != nil {
 			if status == http.StatusUnauthorized {
+				statusCode = status
+				errMessage = "authentication required"
 				out = append(out, result{ID: c.ID, Error: "authentication required"})
 			} else {
+				statusCode = status
+				errMessage = err.Error()
 				out = append(out, result{ID: c.ID, Error: err.Error()})
 			}
+			traceCollector.End()
+			h.recordAnalyticsEvent(analyticsEventInput{
+				start:          start,
+				traceCollector: traceCollector,
+				routeType:      "view",
+				routeName:      c.Name,
+				method:         http.MethodPost,
+				path:           "/api/view/" + c.Name,
+				transport:      "http",
+				statusCode:     statusCode,
+				errMessage:     errMessage,
+				userID:         ternaryUserID(auth),
+				details:        details,
+			})
 			continue
 		}
 		params, err := def.decodeJSON(c.Params)
 		if err != nil {
+			statusCode = http.StatusBadRequest
+			errMessage = err.Error()
 			out = append(out, result{ID: c.ID, Error: err.Error()})
+			traceCollector.End()
+			h.recordAnalyticsEvent(analyticsEventInput{
+				start:          start,
+				traceCollector: traceCollector,
+				routeType:      "view",
+				routeName:      c.Name,
+				method:         http.MethodPost,
+				path:           "/api/view/" + c.Name,
+				transport:      "http",
+				statusCode:     statusCode,
+				errMessage:     errMessage,
+				userID:         ternaryUserID(auth),
+				details:        details,
+			})
 			continue
 		}
 		data, reads, _, err := h.execView(def, params, auth)
 		if err != nil {
+			statusCode = http.StatusBadRequest
+			errMessage = err.Error()
 			out = append(out, result{ID: c.ID, Error: err.Error()})
+			traceCollector.End()
+			h.recordAnalyticsEvent(analyticsEventInput{
+				start:          start,
+				traceCollector: traceCollector,
+				routeType:      "view",
+				routeName:      c.Name,
+				method:         http.MethodPost,
+				path:           "/api/view/" + c.Name,
+				transport:      "http",
+				statusCode:     statusCode,
+				errMessage:     errMessage,
+				userID:         ternaryUserID(auth),
+				details:        details,
+			})
 			continue
 		}
 		out = append(out, result{ID: c.ID, Data: data, Reads: reads})
+		traceCollector.End()
+		h.recordAnalyticsEvent(analyticsEventInput{
+			start:          start,
+			traceCollector: traceCollector,
+			routeType:      "view",
+			routeName:      c.Name,
+			method:         http.MethodPost,
+			path:           "/api/view/" + c.Name,
+			transport:      "http",
+			statusCode:     statusCode,
+			userID:         ternaryUserID(auth),
+			details:        details,
+		})
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "results": out})
 }
 
 func (h *APIHandler) handleReducer(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	traceCollector := reqtrace.Start()
+	defer traceCollector.End()
+
+	statusCode := http.StatusOK
+	errMessage := ""
+	paramBytes := 0
+	hasAuth := false
+	defer func() {
+		h.recordAnalyticsEvent(analyticsEventInput{
+			start:          start,
+			traceCollector: traceCollector,
+			routeType:      "reducer",
+			routeName:      strings.TrimPrefix(r.URL.Path, "/api/reduce/"),
+			method:         r.Method,
+			path:           r.URL.Path,
+			transport:      "http",
+			statusCode:     statusCode,
+			errMessage:     errMessage,
+			userID:         ternaryUserID(h.authFromRequest(r)),
+			details: map[string]any{
+				"paramBytes": paramBytes,
+				"hasAuth":    hasAuth,
+				"source":     "api-handler",
+			},
+		})
+	}()
+
 	if r.Method != http.MethodPost {
+		statusCode = http.StatusMethodNotAllowed
+		errMessage = "method not allowed"
 		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/api/reduce/")
 	def, ok := h.app.reduceDefs[name]
 	if !ok {
+		statusCode = http.StatusNotFound
+		errMessage = "reducer not found"
 		jsonError(w, "reducer not found", http.StatusNotFound)
 		return
 	}
 	auth, status, err := h.enforceAccess(r, def.access)
+	hasAuth = auth != nil
 	if err != nil {
+		statusCode = status
+		errMessage = err.Error()
 		jsonError(w, err.Error(), status)
 		return
 	}
 	body, err := readAllAndClose(r)
 	if err != nil {
+		statusCode = http.StatusBadRequest
+		errMessage = "failed to read body"
 		jsonError(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
+	paramBytes = len(body)
 	input, err := def.decodeJSON(body)
 	if err != nil {
+		statusCode = http.StatusBadRequest
+		errMessage = err.Error()
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	result, writes, status, err := h.execReducer(def, input, auth)
 	if err != nil {
+		statusCode = status
+		errMessage = err.Error()
 		jsonError(w, err.Error(), status)
 		return
 	}
@@ -803,6 +979,59 @@ func (h *APIHandler) handleReducer(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Flop-Writes", strings.Join(writes, ","))
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "data": result})
+}
+
+type analyticsEventInput struct {
+	start          time.Time
+	traceCollector *reqtrace.Collector
+	routeType      string
+	routeName      string
+	method         string
+	path           string
+	transport      string
+	statusCode     int
+	errMessage     string
+	userID         string
+	details        map[string]any
+}
+
+func (h *APIHandler) recordAnalyticsEvent(in analyticsEventInput) {
+	if h == nil || h.db == nil {
+		return
+	}
+	analytics := h.db.RequestAnalytics()
+	if analytics == nil {
+		return
+	}
+	details := in.details
+	if details == nil {
+		details = map[string]any{}
+	}
+	if spans := in.traceCollector.Spans(); len(spans) > 0 {
+		details["trace"] = spans
+		details["traceSpans"] = len(spans)
+	}
+	analytics.Record(server.AnalyticsEvent{
+		Timestamp:    time.Now(),
+		RouteType:    in.routeType,
+		RouteName:    in.routeName,
+		Method:       in.method,
+		Path:         in.path,
+		Transport:    in.transport,
+		Duration:     time.Since(in.start),
+		OK:           in.statusCode < 400,
+		StatusCode:   in.statusCode,
+		ErrorMessage: in.errMessage,
+		UserID:       in.userID,
+		Details:      details,
+	})
+}
+
+func ternaryUserID(auth *AuthContext) string {
+	if auth == nil {
+		return ""
+	}
+	return auth.ID
 }
 
 func (h *APIHandler) execView(def viewRuntime, input any, auth *AuthContext) (any, []string, int, error) {

@@ -2007,6 +2007,10 @@ func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler 
 		if strings.HasPrefix(path, "/_/api/analytics/") {
 			return
 		}
+		// View/reducer routes self-report from APIHandler so batched calls can be recorded individually.
+		if strings.HasPrefix(path, "/api/view/") || strings.HasPrefix(path, "/api/reduce/") {
+			return
+		}
 		if !strings.HasPrefix(path, "/api/") {
 			return
 		}
