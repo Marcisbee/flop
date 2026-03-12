@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/reqtrace"
@@ -21,6 +23,7 @@ import (
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/server"
+	"github.com/marcisbee/flop/internal/storage"
 )
 
 // Database wraps the internal engine and exposes table operations.
@@ -39,6 +42,7 @@ type Database struct {
 	tableSpecs          map[string]*tableSpec
 	tablePolicy         map[string]tablePolicyMeta
 	materialized        map[string]*materializedRuntime
+	cascadeRefs         map[string][]cascadeArchiveRef
 }
 
 type materializedRuntime struct {
@@ -48,9 +52,23 @@ type materializedRuntime struct {
 	lastError   string
 }
 
+type cascadeArchiveRef struct {
+	tableName string
+	fieldName string
+	multi     bool
+}
+
+type archiveTxn struct {
+	db     *Database
+	txBuf  map[string]*engine.WalBufEntry
+	undo   []func()
+	closed bool
+}
+
 // TableInstance wraps internal engine table and provides CRUD operations.
 type TableInstance struct {
 	ti            *engine.TableInstance
+	db            *Database
 	name          string
 	tableID       int
 	tracker       *tableAccessTracker
@@ -119,10 +137,21 @@ func (a *App) Open() (*Database, error) {
 		tableSpecs:          make(map[string]*tableSpec),
 		tablePolicy:         make(map[string]tablePolicyMeta),
 		materialized:        make(map[string]*materializedRuntime),
+		cascadeRefs:         make(map[string][]cascadeArchiveRef),
 	}
 	for name, spec := range a.tables {
 		d.tableSpecs[name] = spec
 		d.tablePolicy[name] = buildTablePolicyMeta(spec)
+		for _, fs := range spec.Fields {
+			if fs.RefTable == "" || fs.CascadeDelete != "archive" {
+				continue
+			}
+			d.cascadeRefs[fs.RefTable] = append(d.cascadeRefs[fs.RefTable], cascadeArchiveRef{
+				tableName: name,
+				fieldName: fs.JSONName,
+				multi:     fs.Kind == "refMulti",
+			})
+		}
 		if spec.Materialized != nil {
 			d.materialized[name] = &materializedRuntime{spec: spec.Materialized}
 		}
@@ -291,6 +320,7 @@ func (d *Database) Table(name string) *TableInstance {
 	}
 	return &TableInstance{
 		ti:            ti,
+		db:            d,
 		name:          name,
 		tableID:       d.tableNameToID[name],
 		spec:          d.tableSpecs[name],
@@ -406,6 +436,10 @@ func (d *Database) materializedStatus(name string) (bool, time.Time, string) {
 // Insert inserts a row into the table. Returns the inserted row
 // (with auto-generated fields filled).
 func (ti *TableInstance) Insert(data map[string]any) (map[string]any, error) {
+	return ti.insertWithTx(data, nil)
+}
+
+func (ti *TableInstance) insertWithTx(data map[string]any, txBuf map[string]*engine.WalBufEntry) (map[string]any, error) {
 	ti.markWrite()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
@@ -420,7 +454,7 @@ func (ti *TableInstance) Insert(data map[string]any) (map[string]any, error) {
 			}
 		}
 	}
-	row, err := ti.ti.Insert(data, nil)
+	row, err := ti.ti.Insert(data, txBuf)
 	if err != nil {
 		return nil, err
 	}
@@ -480,6 +514,10 @@ func (ti *TableInstance) Get(pk string) (map[string]any, error) {
 
 // Update updates a row by primary key. Returns the updated row.
 func (ti *TableInstance) Update(pk string, fields map[string]any) (map[string]any, error) {
+	return ti.updateWithTx(pk, fields, nil)
+}
+
+func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, txBuf map[string]*engine.WalBufEntry) (map[string]any, error) {
 	ti.markWrite()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
@@ -507,7 +545,7 @@ func (ti *TableInstance) Update(pk string, fields map[string]any) (map[string]an
 			}
 		}
 	}
-	row, err := ti.ti.Update(pk, fields, nil)
+	row, err := ti.ti.Update(pk, fields, txBuf)
 	if err != nil {
 		return nil, err
 	}
@@ -523,6 +561,10 @@ func (ti *TableInstance) Update(pk string, fields map[string]any) (map[string]an
 
 // Delete deletes a row by primary key. Returns true if the row existed.
 func (ti *TableInstance) Delete(pk string) (bool, error) {
+	return ti.deleteWithTx(pk, nil)
+}
+
+func (ti *TableInstance) deleteWithTx(pk string, txBuf map[string]*engine.WalBufEntry) (bool, error) {
 	ti.markWrite()
 	if ti.isNil() {
 		return false, fmt.Errorf("table is nil")
@@ -539,7 +581,54 @@ func (ti *TableInstance) Delete(pk string) (bool, error) {
 			return false, ErrAccessDenied
 		}
 	}
-	return ti.ti.Delete(pk, nil)
+	return ti.ti.Delete(pk, txBuf)
+}
+
+func (ti *TableInstance) Archive(pk string) (*storage.ArchivedRow, error) {
+	ti.markWrite()
+	if ti.isNil() {
+		return nil, fmt.Errorf("table is nil")
+	}
+	if ti.enforcePolicy && ti.requiresDeletePolicy() {
+		row, err := ti.ti.Get(pk)
+		if err != nil {
+			return nil, err
+		}
+		if row == nil {
+			return nil, nil
+		}
+		if !ti.allowDelete(row) {
+			return nil, ErrAccessDenied
+		}
+	}
+	tx := newArchiveTxn(ti.db)
+	record, err := ti.archiveCascade(tx, pk, "", ti.name, pk, 0)
+	if err != nil {
+		tx.rollback()
+		return nil, err
+	}
+	if err := tx.commit(); err != nil {
+		tx.rollback()
+		return nil, err
+	}
+	return record, nil
+}
+
+func (ti *TableInstance) RestoreArchive(archiveID string) error {
+	ti.markWrite()
+	if ti.isNil() {
+		return fmt.Errorf("table is nil")
+	}
+	tx := newArchiveTxn(ti.db)
+	if err := ti.restoreCascade(tx, archiveID, ""); err != nil {
+		tx.rollback()
+		return err
+	}
+	if err := tx.commit(); err != nil {
+		tx.rollback()
+		return err
+	}
+	return nil
 }
 
 // ReplaceAll replaces all rows in the table with the provided dataset.
@@ -1024,6 +1113,205 @@ func (ti *TableInstance) checkWritableFields(oldRow, nextRow, incoming map[strin
 	return nil
 }
 
+func (ti *TableInstance) archiveCascade(tx *archiveTxn, pk, cascadeGroupID, rootTable, rootPK string, depth int) (*storage.ArchivedRow, error) {
+	if tx == nil || ti == nil || ti.ti == nil {
+		return nil, fmt.Errorf("archive transaction unavailable")
+	}
+	if cascadeGroupID == "" {
+		group, err := newArchiveGroupID()
+		if err != nil {
+			return nil, err
+		}
+		cascadeGroupID = group
+	}
+	record, err := ti.ti.Archive(pk, engine.ArchiveOptions{
+		DeletedBy:        archiveDeletedBy(ti.auth),
+		CascadeGroupID:   cascadeGroupID,
+		CascadeRootTable: rootTable,
+		CascadeRootPK:    rootPK,
+		CascadeDepth:     depth,
+	}, tx.txBuf)
+	if err != nil || record == nil {
+		return record, err
+	}
+	tx.addUndo(func() { _ = ti.ti.RollbackArchive(record) })
+
+	for _, ref := range ti.db.cascadeRefs[ti.name] {
+		child := ti.db.Table(ref.tableName)
+		if child == nil {
+			continue
+		}
+		child.auth = ti.auth
+		child.enforcePolicy = ti.enforcePolicy
+		rows, err := child.rowsReferencing(ref.fieldName, pk, ref.multi)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			childPK := toString(row[child.primaryKeyField()])
+			if childPK == "" {
+				continue
+			}
+			if _, err := child.archiveCascade(tx, childPK, cascadeGroupID, rootTable, rootPK, depth+1); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return record, nil
+}
+
+func (ti *TableInstance) restoreCascade(tx *archiveTxn, archiveID, groupID string) error {
+	if tx == nil || ti == nil || ti.ti == nil {
+		return fmt.Errorf("restore transaction unavailable")
+	}
+	record, _, err := ti.ti.GetArchived(archiveID)
+	if err != nil {
+		return err
+	}
+	if record == nil {
+		return fmt.Errorf("archived row not found: %s", archiveID)
+	}
+	if groupID == "" {
+		groupID = record.CascadeGroupID
+	}
+	restoredRecord, _, err := ti.ti.RestoreArchived(archiveID, tx.txBuf)
+	if err != nil {
+		return err
+	}
+	tx.addUndo(func() { _ = ti.ti.RollbackRestore(restoredRecord) })
+
+	if groupID == "" {
+		return nil
+	}
+	children, err := ti.db.findArchivedGroup(groupID)
+	if err != nil {
+		return err
+	}
+	for _, item := range children {
+		if item == nil || item.record == nil || item.record.ArchiveID == archiveID {
+			continue
+		}
+		if item.record.CascadeDepth <= record.CascadeDepth {
+			continue
+		}
+		restoredChild, _, err := item.table.ti.RestoreArchived(item.record.ArchiveID, tx.txBuf)
+		if err != nil {
+			return err
+		}
+		table := item.table
+		tx.addUndo(func() { _ = table.ti.RollbackRestore(restoredChild) })
+	}
+	return nil
+}
+
+func (ti *TableInstance) rowsReferencing(fieldName, pk string, multi bool) ([]map[string]any, error) {
+	total := ti.ti.Count()
+	if total <= 0 {
+		return []map[string]any{}, nil
+	}
+	rows, err := ti.ti.Scan(total, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0)
+	for _, row := range rows {
+		val := row[fieldName]
+		if !multi {
+			if toString(val) == pk {
+				out = append(out, row)
+			}
+			continue
+		}
+		switch items := val.(type) {
+		case []interface{}:
+			for _, item := range items {
+				if toString(item) == pk {
+					out = append(out, row)
+					break
+				}
+			}
+		case []string:
+			for _, item := range items {
+				if item == pk {
+					out = append(out, row)
+					break
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func (ti *TableInstance) primaryKeyField() string {
+	if ti == nil || ti.ti == nil || ti.ti.GetDef() == nil || len(ti.ti.GetDef().CompiledSchema.Fields) == 0 {
+		return "id"
+	}
+	return ti.ti.GetDef().CompiledSchema.Fields[0].Name
+}
+
+func (ti *TableInstance) rawRow(pk string) ([]byte, error) {
+	if ti == nil || ti.ti == nil {
+		return nil, fmt.Errorf("table is nil")
+	}
+	return ti.ti.GetRaw(pk)
+}
+
+func (ti *TableInstance) rollbackInserted(pk string) error {
+	if ti == nil || ti.ti == nil {
+		return fmt.Errorf("table is nil")
+	}
+	return ti.ti.RollbackInsert(pk)
+}
+
+func (ti *TableInstance) rollbackRawRow(raw []byte) error {
+	if ti == nil || ti.ti == nil {
+		return fmt.Errorf("table is nil")
+	}
+	return ti.ti.RollbackRawRow(raw)
+}
+
+type archivedGroupItem struct {
+	table  *TableInstance
+	record *storage.ArchivedRow
+}
+
+func (d *Database) findArchivedGroup(groupID string) ([]*archivedGroupItem, error) {
+	if d == nil || d.db == nil {
+		return nil, nil
+	}
+	items := make([]*archivedGroupItem, 0)
+	for name := range d.db.Tables {
+		table := d.Table(name)
+		if table == nil {
+			continue
+		}
+		records, _, err := table.ti.ScanArchived(1_000_000, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			if record != nil && record.CascadeGroupID == groupID {
+				items = append(items, &archivedGroupItem{table: table, record: record})
+			}
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].record.CascadeDepth == items[j].record.CascadeDepth {
+			return items[i].record.DeletedAtUnixMs < items[j].record.DeletedAtUnixMs
+		}
+		return items[i].record.CascadeDepth < items[j].record.CascadeDepth
+	})
+	return items, nil
+}
+
+func newArchiveGroupID() (string, error) {
+	var buf [12]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return "g_" + hex.EncodeToString(buf[:]), nil
+}
+
 func (ti *TableInstance) fieldByJSONName(name string) *fieldSpec {
 	if ti == nil || ti.spec == nil {
 		return nil
@@ -1073,6 +1361,51 @@ func cloneRow(row map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func newArchiveTxn(db *Database) *archiveTxn {
+	return &archiveTxn{
+		db:    db,
+		txBuf: make(map[string]*engine.WalBufEntry),
+	}
+}
+
+func (tx *archiveTxn) addUndo(fn func()) {
+	if tx == nil || fn == nil {
+		return
+	}
+	tx.undo = append(tx.undo, fn)
+}
+
+func (tx *archiveTxn) rollback() {
+	if tx == nil || tx.closed {
+		return
+	}
+	for i := len(tx.undo) - 1; i >= 0; i-- {
+		tx.undo[i]()
+	}
+	tx.closed = true
+}
+
+func (tx *archiveTxn) commit() error {
+	if tx == nil || tx.closed {
+		return nil
+	}
+	tx.closed = true
+	if len(tx.txBuf) == 0 {
+		return nil
+	}
+	return tx.db.db.EnqueueCommit(tx.txBuf)
+}
+
+func archiveDeletedBy(auth *AuthContext) string {
+	if auth == nil {
+		return ""
+	}
+	if strings.TrimSpace(auth.ID) != "" {
+		return auth.ID
+	}
+	return auth.Email
 }
 
 func (ti *TableInstance) markRead() {
@@ -1267,6 +1600,28 @@ func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 	return tables, nil
 }
 
+func (p *EngineAdminProvider) AdminArchiveTables() ([]AdminTable, error) {
+	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
+	for name, t := range p.DB.db.Tables {
+		records, total, err := t.ScanArchived(1, 0)
+		if err != nil {
+			return nil, err
+		}
+		_ = records
+		s, _ := marshalArchiveSchema(t.GetDef().CompiledSchema)
+		tables = append(tables, AdminTable{
+			Name:        name,
+			SourceTable: name,
+			Archive:     true,
+			Schema:      s,
+			RowCount:    total,
+			ReadOnly:    true,
+		})
+	}
+	sort.Slice(tables, func(i, j int) bool { return tables[i].Name < tables[j].Name })
+	return tables, nil
+}
+
 // marshalOrderedSchema produces an ordered JSON object of field definitions
 // matching the format the admin SPA expects.
 func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
@@ -1305,6 +1660,29 @@ func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 	}
 	buf.WriteByte('}')
 	return jsonx.RawMessage(buf.Bytes()), nil
+}
+
+func marshalArchiveSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
+	base, err := marshalOrderedSchema(cs)
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]map[string]any
+	if err := jsonx.Unmarshal(base, &raw); err != nil {
+		return nil, err
+	}
+	extra := map[string]map[string]any{
+		"_archiveId":      {"type": "string", "required": true},
+		"_originalPk":     {"type": "string", "required": true},
+		"_deletedAt":      {"type": "timestamp", "required": true},
+		"_deletedBy":      {"type": "string"},
+		"_cascadeGroupId": {"type": "string"},
+		"_cascadeDepth":   {"type": "integer"},
+	}
+	for k, v := range extra {
+		raw[k] = v
+	}
+	return jsonx.Marshal(raw)
 }
 
 func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
@@ -1348,6 +1726,42 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 		Total:  ti.Count(),
 		Offset: offset,
 		Limit:  limit,
+	}, true, nil
+}
+
+func (p *EngineAdminProvider) AdminArchiveRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
+	ti := p.DB.db.GetTable(table)
+	if ti == nil {
+		return AdminRowsPage{}, false, nil
+	}
+	records, total, err := ti.ScanArchived(limit, offset)
+	if err != nil {
+		return AdminRowsPage{}, true, err
+	}
+	rows := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		row, err := ti.DeserializeArchivedRow(record)
+		if err != nil {
+			return AdminRowsPage{}, true, err
+		}
+		row["_archiveId"] = record.ArchiveID
+		row["_originalPk"] = record.OriginalPK
+		row["_deletedAt"] = record.DeletedAtUnixMs
+		row["_deletedBy"] = record.DeletedBy
+		row["_cascadeGroupId"] = record.CascadeGroupID
+		row["_cascadeDepth"] = record.CascadeDepth
+		rows = append(rows, row)
+	}
+	return AdminRowsPage{
+		Table:   table,
+		Archive: true,
+		Rows:    rows,
+		Total:   total,
+		Offset:  offset,
+		Limit:   limit,
 	}, true, nil
 }
 
@@ -1446,6 +1860,14 @@ func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
 		return fmt.Errorf("row not found: %s", pk)
 	}
 	return nil
+}
+
+func (p *EngineAdminProvider) AdminRestoreRow(table, archiveID string) error {
+	ti := p.DB.Table(table)
+	if ti == nil {
+		return fmt.Errorf("table not found: %s", table)
+	}
+	return ti.RestoreArchive(archiveID)
 }
 
 func (p *EngineAdminProvider) secret() string {

@@ -375,8 +375,10 @@ type TableInstance struct {
 
 	def              *schema.TableDef
 	tableFile        *storage.TableFile
+	archiveFile      *storage.TableFile
 	wal              *storage.WAL
 	primaryIndex     *storage.HashIndex
+	archiveIndex     *storage.HashIndex
 	secondaryIdxs    map[string]interface{} // *HashIndex, *MultiIndex, or *FullTextIndex
 	indexDefsByKey   map[string]schema.IndexDef
 	indexStateMu     sync.RWMutex
@@ -409,6 +411,7 @@ func newTableInstance(name string, def *schema.TableDef, db *Database) (*TableIn
 		Name:             name,
 		def:              def,
 		primaryIndex:     storage.NewHashIndex(),
+		archiveIndex:     storage.NewHashIndex(),
 		secondaryIdxs:    make(map[string]interface{}),
 		indexDefsByKey:   make(map[string]schema.IndexDef),
 		indexesToRebuild: make(map[string]bool),
@@ -423,9 +426,12 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	ti.pubsub = pubsub
 
 	flopPath := filepath.Join(dataDir, ti.Name+".flop")
+	archiveFlopPath := filepath.Join(dataDir, ti.Name+".archive.flop")
 	walPath := filepath.Join(dataDir, ti.Name+".wal")
 	idxPath := filepath.Join(dataDir, ti.Name+".idx")
 	midxPath := filepath.Join(dataDir, ti.Name+".midx")
+	archiveIdxPath := filepath.Join(dataDir, ti.Name+".archive.idx")
+	archiveMidxPath := filepath.Join(dataDir, ti.Name+".archive.midx")
 
 	currentStored := schema.CompiledToStored(ti.def.CompiledSchema)
 
@@ -440,6 +446,11 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 			return err
 		}
 		ti.tableFile = tf
+		archiveTF, err := storage.CreateTableFile(archiveFlopPath, 1, maxCachePages)
+		if err != nil {
+			return err
+		}
+		ti.archiveFile = archiveTF
 	} else {
 		// Existing table — check for schema changes
 		latestVersion := tableMeta.CurrentSchemaVersion
@@ -460,6 +471,16 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 			return err
 		}
 		ti.tableFile = tf
+		archiveTF, err := storage.OpenTableFile(archiveFlopPath, maxCachePages)
+		if err != nil {
+			if os.IsNotExist(err) {
+				archiveTF, err = storage.CreateTableFile(archiveFlopPath, 1, maxCachePages)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		ti.archiveFile = archiveTF
 	}
 
 	ti.tableMeta = tableMeta
@@ -514,6 +535,14 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		if err := ti.rebuildIndex(); err != nil {
 			return err
 		}
+	}
+	if idx, err := storage.ReadMappedIndexFile(archiveMidxPath); err == nil && idx.Size() > 0 {
+		ti.archiveIndex = idx
+	} else if idx, err := storage.ReadIndexFile(archiveIdxPath); err == nil && idx.Size() > 0 {
+		ti.archiveIndex = idx
+		_ = storage.WriteMappedIndexFile(archiveMidxPath, ti.archiveIndex)
+	} else if err := ti.rebuildArchiveIndex(); err != nil {
+		return err
 	}
 	ti.initializeAutoIncrementCounters()
 
@@ -668,6 +697,10 @@ func (ti *TableInstance) applyWALEntry(entry storage.WALEntry) error {
 		return ti.applyWALUpdate(entry.Data, entry.LSN)
 	case storage.WALOpDelete:
 		return ti.applyWALDelete(string(entry.Data), entry.LSN)
+	case storage.WALOpArchiveInsert:
+		return ti.applyWALArchiveInsert(entry.Data)
+	case storage.WALOpArchiveDelete:
+		return ti.applyWALArchiveDelete(string(entry.Data))
 	default:
 		return nil
 	}
@@ -778,6 +811,50 @@ func (ti *TableInstance) applyWALDelete(pk string, recordLSN uint64) error {
 	return nil
 }
 
+func (ti *TableInstance) applyWALArchiveInsert(serialized []byte) error {
+	if ti.archiveFile == nil {
+		return nil
+	}
+	record, err := storage.DeserializeArchivedRow(serialized)
+	if err != nil || record == nil || strings.TrimSpace(record.ArchiveID) == "" {
+		return err
+	}
+	if ti.archiveIndex.Has(record.ArchiveID) {
+		return nil
+	}
+	pageNum, page, err := ti.archiveFile.FindOrAllocatePage(len(serialized))
+	if err != nil {
+		return err
+	}
+	slotIndex := page.InsertRow(serialized)
+	if slotIndex == -1 {
+		return fmt.Errorf("wal replay archive insert failed: no slot")
+	}
+	ti.archiveFile.MarkPageDirty(pageNum)
+	ti.archiveFile.IncrementTotalRows()
+	ti.archiveIndex.Set(record.ArchiveID, schema.RowPointer{PageNumber: pageNum, SlotIndex: uint16(slotIndex)})
+	return nil
+}
+
+func (ti *TableInstance) applyWALArchiveDelete(archiveID string) error {
+	if ti.archiveFile == nil || archiveID == "" {
+		return nil
+	}
+	pointer, ok := ti.archiveIndex.Get(archiveID)
+	if !ok {
+		return nil
+	}
+	page, err := ti.archiveFile.GetPage(pointer.PageNumber)
+	if err != nil {
+		return err
+	}
+	page.DeleteRow(int(pointer.SlotIndex))
+	ti.archiveFile.MarkPageDirty(pointer.PageNumber)
+	ti.archiveFile.DecrementTotalRows()
+	ti.archiveIndex.Delete(archiveID)
+	return nil
+}
+
 func pageLSNAtLeast(page *storage.Page, recordLSN uint64) bool {
 	if page == nil || recordLSN == 0 {
 		return false
@@ -805,6 +882,24 @@ func (ti *TableInstance) rebuildIndex() error {
 				SlotIndex:  uint16(scanned.SlotIndex),
 			})
 		}
+		return true
+	})
+}
+
+func (ti *TableInstance) rebuildArchiveIndex() error {
+	ti.archiveIndex.Clear()
+	if ti.archiveFile == nil {
+		return nil
+	}
+	return ti.archiveFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		record, err := storage.DeserializeArchivedRow(scanned.Data)
+		if err != nil || record == nil || strings.TrimSpace(record.ArchiveID) == "" {
+			return true
+		}
+		ti.archiveIndex.Set(record.ArchiveID, schema.RowPointer{
+			PageNumber: scanned.PageNumber,
+			SlotIndex:  uint16(scanned.SlotIndex),
+		})
 		return true
 	})
 }
@@ -1290,18 +1385,23 @@ func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 	return ti.getUnlocked(key)
 }
 
-func (ti *TableInstance) getUnlocked(key string) (map[string]interface{}, error) {
-	pointer, ok := ti.primaryIndex.Get(key)
-	if !ok {
-		return nil, nil
+func (ti *TableInstance) GetRaw(key string) ([]byte, error) {
+	rowLock := ti.rowLockForKey(key)
+	rowLock.Lock()
+	defer rowLock.Unlock()
+	_, raw, ok, err := ti.getRawUnlocked(key)
+	if err != nil || !ok {
+		return nil, err
 	}
+	return append([]byte(nil), raw...), nil
+}
 
-	page, err := ti.tableFile.GetPage(pointer.PageNumber)
+func (ti *TableInstance) getUnlocked(key string) (map[string]interface{}, error) {
+	_, rawData, ok, err := ti.getRawUnlocked(key)
 	if err != nil {
 		return nil, err
 	}
-	rawData := page.ReadRow(int(pointer.SlotIndex))
-	if rawData == nil {
+	if !ok {
 		return nil, nil
 	}
 
@@ -1325,6 +1425,22 @@ func (ti *TableInstance) getUnlocked(key string) (map[string]interface{}, error)
 	}
 
 	return row, nil
+}
+
+func (ti *TableInstance) getRawUnlocked(key string) (schema.RowPointer, []byte, bool, error) {
+	pointer, ok := ti.primaryIndex.Get(key)
+	if !ok {
+		return schema.RowPointer{}, nil, false, nil
+	}
+	page, err := ti.tableFile.GetPage(pointer.PageNumber)
+	if err != nil {
+		return schema.RowPointer{}, nil, false, err
+	}
+	rawData := page.ReadRow(int(pointer.SlotIndex))
+	if rawData == nil {
+		return schema.RowPointer{}, nil, false, nil
+	}
+	return pointer, rawData, true, nil
 }
 
 // Update modifies an existing row. If txBuf is non-nil, WAL records are buffered
@@ -1969,6 +2085,269 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	return true, nil
 }
 
+type ArchiveOptions struct {
+	DeletedBy        string
+	CascadeGroupID   string
+	CascadeRootTable string
+	CascadeRootPK    string
+	CascadeDepth     int
+}
+
+func (ti *TableInstance) Archive(key string, opts ArchiveOptions, txBuf map[string]*walBufEntry) (*storage.ArchivedRow, error) {
+	ti.mu.RLock()
+	rowLock := ti.rowLockForKey(key)
+	rowLock.Lock()
+	var change *ChangeEvent
+	defer func() {
+		rowLock.Unlock()
+		ti.mu.RUnlock()
+		if change != nil {
+			ti.pubsub.Publish(*change)
+		}
+	}()
+
+	pointer, rawData, ok, err := ti.getRawUnlocked(key)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	existing, err := ti.deserializeCurrentRow(rawData)
+	if err != nil {
+		return nil, err
+	}
+
+	archiveID, err := generateArchiveID()
+	if err != nil {
+		return nil, err
+	}
+	archived := &storage.ArchivedRow{
+		ArchiveID:        archiveID,
+		OriginalPK:       key,
+		DeletedAtUnixMs:  time.Now().UnixMilli(),
+		DeletedBy:        opts.DeletedBy,
+		CascadeGroupID:   opts.CascadeGroupID,
+		CascadeRootTable: opts.CascadeRootTable,
+		CascadeRootPK:    opts.CascadeRootPK,
+		CascadeDepth:     opts.CascadeDepth,
+		RowData:          append([]byte(nil), rawData...),
+	}
+	archiveSerialized, err := storage.SerializeArchivedRow(archived)
+	if err != nil {
+		return nil, err
+	}
+	if err := ti.applyWALArchiveInsert(archiveSerialized); err != nil {
+		return nil, err
+	}
+
+	txID := ti.wal.BeginTransaction()
+	isTx := txBuf != nil
+	deleteData := []byte(key)
+	beginRecord := ti.wal.BuildBeginRecord(txID)
+	deleteRecord, _ := ti.wal.BuildRecordWithLSN(txID, storage.WALOpDelete, deleteData)
+	archiveRecord, _ := ti.wal.BuildRecordWithLSN(txID, storage.WALOpArchiveInsert, archiveSerialized)
+
+	pendingAdded := false
+	ti.addPendingKey(key)
+	pendingAdded = true
+	defer func() {
+		if pendingAdded {
+			ti.clearPendingKeys([]string{key})
+		}
+	}()
+
+	page, err := ti.tableFile.GetPage(pointer.PageNumber)
+	if err != nil {
+		_ = ti.applyWALArchiveDelete(archiveID)
+		return nil, err
+	}
+	pageLock := ti.pageLockFor(pointer.PageNumber)
+	pageLock.Lock()
+	page.DeleteRow(int(pointer.SlotIndex))
+	ti.tableFile.MarkPageDirty(pointer.PageNumber)
+	ti.tableFile.DecrementTotalRows()
+	pageLock.Unlock()
+
+	ti.primaryIndex.Delete(key)
+	for _, indexDef := range ti.def.Indexes {
+		indexKey := secondaryIndexKey(indexDef)
+		idx := ti.secondaryIdxs[indexKey]
+		switch idx := idx.(type) {
+		case *storage.FullTextIndex:
+			idx.Delete(key)
+		case *storage.HashIndex:
+			k := storage.CompositeKeyFromRow(existing, indexDef.Fields)
+			idx.Delete(k)
+		case *storage.MultiIndex:
+			if allIndexFieldsUnset(existing, indexDef.Fields) {
+				continue
+			}
+			k := storage.CompositeKeyFromRow(existing, indexDef.Fields)
+			idx.Delete(k, pointer)
+		}
+	}
+
+	if err := storage.ArchiveRowFiles(ti.dataDir, ti.Name, key, archiveID); err != nil {
+		_ = ti.applyWALInsert(rawData, 0)
+		_ = ti.applyWALArchiveDelete(archiveID)
+		return nil, err
+	}
+
+	if isTx {
+		entry := txBuf[ti.Name]
+		if entry == nil {
+			entry = &walBufEntry{}
+			txBuf[ti.Name] = entry
+		}
+		entry.records = append(entry.records, beginRecord, archiveRecord, deleteRecord)
+		entry.txIDs = append(entry.txIDs, txID)
+		entry.pending = append(entry.pending, key)
+		pendingAdded = false
+	} else {
+		walBuf := map[string]*walBufEntry{
+			ti.Name: {records: [][]byte{beginRecord, archiveRecord, deleteRecord}, txIDs: []uint32{txID}, pending: []string{key}},
+		}
+		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			_ = storage.RestoreArchivedRowFiles(ti.dataDir, ti.Name, archiveID, key)
+			_ = ti.applyWALInsert(rawData, 0)
+			_ = ti.applyWALArchiveDelete(archiveID)
+			return nil, err
+		}
+		pendingAdded = false
+	}
+
+	change = &ChangeEvent{Table: ti.Name, Op: "delete", RowID: key, Data: nil}
+	return archived, nil
+}
+
+func (ti *TableInstance) RestoreArchived(archiveID string, txBuf map[string]*walBufEntry) (*storage.ArchivedRow, map[string]interface{}, error) {
+	ti.mu.RLock()
+	defer ti.mu.RUnlock()
+
+	archived, _, err := ti.GetArchived(archiveID)
+	if err != nil || archived == nil {
+		return archived, nil, err
+	}
+	row, err := ti.deserializeCurrentRow(archived.RowData)
+	if err != nil {
+		return nil, nil, err
+	}
+	pk := archived.OriginalPK
+	if pk == "" {
+		pk = toString(row[ti.primaryKeyField()])
+	}
+	if pk == "" {
+		return nil, nil, fmt.Errorf("archived row %s missing primary key", archiveID)
+	}
+	if existing, err := ti.getUnlocked(pk); err != nil {
+		return nil, nil, err
+	} else if existing != nil {
+		return nil, nil, fmt.Errorf("restore conflict: row %s already exists", pk)
+	}
+
+	if err := ti.applyWALInsert(archived.RowData, 0); err != nil {
+		return nil, nil, err
+	}
+	if err := ti.applyWALArchiveDelete(archiveID); err != nil {
+		_ = ti.applyWALDelete(pk, 0)
+		return nil, nil, err
+	}
+	if err := storage.RestoreArchivedRowFiles(ti.dataDir, ti.Name, archiveID, pk); err != nil {
+		_ = ti.applyWALArchiveInsert(mustArchiveBytes(archived))
+		_ = ti.applyWALDelete(pk, 0)
+		return nil, nil, err
+	}
+
+	txID := ti.wal.BeginTransaction()
+	beginRecord := ti.wal.BuildBeginRecord(txID)
+	insertRecord, _ := ti.wal.BuildRecordWithLSN(txID, storage.WALOpInsert, archived.RowData)
+	archiveDeleteRecord, _ := ti.wal.BuildRecordWithLSN(txID, storage.WALOpArchiveDelete, []byte(archiveID))
+	if txBuf != nil {
+		entry := txBuf[ti.Name]
+		if entry == nil {
+			entry = &walBufEntry{}
+			txBuf[ti.Name] = entry
+		}
+		entry.records = append(entry.records, beginRecord, insertRecord, archiveDeleteRecord)
+		entry.txIDs = append(entry.txIDs, txID)
+	} else {
+		walBuf := map[string]*walBufEntry{
+			ti.Name: {records: [][]byte{beginRecord, insertRecord, archiveDeleteRecord}, txIDs: []uint32{txID}},
+		}
+		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			return nil, nil, err
+		}
+	}
+	return archived, row, nil
+}
+
+func mustArchiveBytes(row *storage.ArchivedRow) []byte {
+	data, _ := storage.SerializeArchivedRow(row)
+	return data
+}
+
+func (ti *TableInstance) RollbackArchive(record *storage.ArchivedRow) error {
+	if record == nil {
+		return nil
+	}
+	row, err := ti.deserializeCurrentRow(record.RowData)
+	if err != nil {
+		return err
+	}
+	pk := record.OriginalPK
+	if pk == "" {
+		pk = toString(row[ti.primaryKeyField()])
+	}
+	if err := storage.RestoreArchivedRowFiles(ti.dataDir, ti.Name, record.ArchiveID, pk); err != nil {
+		return err
+	}
+	if err := ti.applyWALInsert(record.RowData, 0); err != nil {
+		return err
+	}
+	return ti.applyWALArchiveDelete(record.ArchiveID)
+}
+
+func (ti *TableInstance) RollbackRestore(record *storage.ArchivedRow) error {
+	if record == nil {
+		return nil
+	}
+	row, err := ti.deserializeCurrentRow(record.RowData)
+	if err != nil {
+		return err
+	}
+	pk := record.OriginalPK
+	if pk == "" {
+		pk = toString(row[ti.primaryKeyField()])
+	}
+	if err := storage.ArchiveRowFiles(ti.dataDir, ti.Name, pk, record.ArchiveID); err != nil {
+		return err
+	}
+	if err := ti.applyWALArchiveInsert(mustArchiveBytes(record)); err != nil {
+		return err
+	}
+	return ti.applyWALDelete(pk, 0)
+}
+
+func generateArchiveID() (string, error) {
+	var buf [12]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return "a_" + hex.EncodeToString(buf[:]), nil
+}
+
+func (ti *TableInstance) RollbackInsert(pk string) error {
+	return ti.applyWALDelete(pk, 0)
+}
+
+func (ti *TableInstance) RollbackRawRow(raw []byte) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	return ti.applyWALUpdate(raw, 0)
+}
+
 // Count returns the number of rows.
 func (ti *TableInstance) Count() int {
 	return ti.primaryIndex.Size()
@@ -2462,6 +2841,65 @@ func (ti *TableInstance) GetByPointer(pointer schema.RowPointer) (map[string]int
 	return ti.deserializeCurrentRow(rawData)
 }
 
+func (ti *TableInstance) GetArchived(archiveID string) (*storage.ArchivedRow, schema.RowPointer, error) {
+	pointer, ok := ti.archiveIndex.Get(archiveID)
+	if !ok {
+		return nil, schema.RowPointer{}, nil
+	}
+	page, err := ti.archiveFile.GetPage(pointer.PageNumber)
+	if err != nil {
+		return nil, schema.RowPointer{}, err
+	}
+	rawData := page.ReadRow(int(pointer.SlotIndex))
+	if rawData == nil {
+		return nil, schema.RowPointer{}, nil
+	}
+	record, err := storage.DeserializeArchivedRow(rawData)
+	if err != nil {
+		return nil, schema.RowPointer{}, err
+	}
+	return record, pointer, nil
+}
+
+func (ti *TableInstance) DeserializeArchivedRow(record *storage.ArchivedRow) (map[string]interface{}, error) {
+	if record == nil {
+		return nil, nil
+	}
+	return ti.deserializeCurrentRow(record.RowData)
+}
+
+func (ti *TableInstance) ScanArchived(limit, offset int) ([]*storage.ArchivedRow, int, error) {
+	if ti.archiveFile == nil {
+		return []*storage.ArchivedRow{}, 0, nil
+	}
+	total := int(atomic.LoadUint32(&ti.archiveFile.TotalRows))
+	if limit <= 0 {
+		return []*storage.ArchivedRow{}, total, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]*storage.ArchivedRow, 0, limit)
+	seen := 0
+	err := ti.archiveFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		record, err := storage.DeserializeArchivedRow(scanned.Data)
+		if err != nil || record == nil {
+			return true
+		}
+		if seen < offset {
+			seen++
+			return true
+		}
+		if len(out) >= limit {
+			return false
+		}
+		out = append(out, record)
+		seen++
+		return true
+	})
+	return out, total, err
+}
+
 func (ti *TableInstance) deserializeCurrentRow(rawData []byte) (map[string]interface{}, error) {
 	row, sv, _, err := storage.DeserializeRow(rawData, 0, ti.def.CompiledSchema)
 	if err != nil {
@@ -2607,6 +3045,12 @@ func (ti *TableInstance) Checkpoint() error {
 		ti.mu.Unlock()
 		return err
 	}
+	if ti.archiveFile != nil {
+		if err := ti.archiveFile.Flush(); err != nil {
+			ti.mu.Unlock()
+			return err
+		}
+	}
 	failpoint.Hit("checkpoint_after_table_flush")
 	idxPath := filepath.Join(ti.dataDir, ti.Name+".idx")
 	if err := storage.WriteIndexFile(idxPath, ti.primaryIndex); err != nil {
@@ -2620,6 +3064,20 @@ func (ti *TableInstance) Checkpoint() error {
 		return err
 	}
 	persistedFiles = append(persistedFiles, midxPath)
+	if ti.archiveFile != nil {
+		archiveIdxPath := filepath.Join(ti.dataDir, ti.Name+".archive.idx")
+		if err := storage.WriteIndexFile(archiveIdxPath, ti.archiveIndex); err != nil {
+			ti.mu.Unlock()
+			return err
+		}
+		persistedFiles = append(persistedFiles, archiveIdxPath)
+		archiveMidxPath := filepath.Join(ti.dataDir, ti.Name+".archive.midx")
+		if err := storage.WriteMappedIndexFile(archiveMidxPath, ti.archiveIndex); err != nil {
+			ti.mu.Unlock()
+			return err
+		}
+		persistedFiles = append(persistedFiles, archiveMidxPath)
+	}
 	for indexKey, indexDef := range ti.indexDefsByKey {
 		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
 			continue
@@ -2693,7 +3151,14 @@ func (ti *TableInstance) Close() error {
 	if err := ti.Checkpoint(); err != nil {
 		return err
 	}
-	ti.tableFile.Close()
+	if ti.archiveFile != nil {
+		if err := ti.archiveFile.Close(); err != nil {
+			return err
+		}
+	}
+	if err := ti.tableFile.Close(); err != nil {
+		return err
+	}
 	return ti.wal.Close()
 }
 

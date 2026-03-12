@@ -428,7 +428,7 @@ function Toasts() {
 
 // ── Components ──
 
-function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnabled, onSelect, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onBackup, onRestore, onLogout }) {
+function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, observeEnabled, onSelect, onSelectArchive, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onBackup, onRestore, onLogout }) {
   const [tableSearch, setTableSearch] = useState('');
   
   const filteredTables = useMemo(() => {
@@ -451,7 +451,7 @@ function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnab
         ${filteredTables.map(t => html`
           <button
             key=${t.name}
-            class=${"sidebar-item" + (viewMode === 'table' && t.name === currentTable ? " active" : "")}
+            class=${"sidebar-item" + (viewMode === 'table' && !currentArchive && t.name === currentTable ? " active" : "")}
             onClick=${() => onSelect(t.name)}
           >
             <span class="sidebar-item-icon">${icons.table}</span>
@@ -461,6 +461,20 @@ function Sidebar({ tables, currentTable, viewMode, analyticsEnabled, observeEnab
           </button>
         `)}
         ${filteredTables.length === 0 && html`<div style="padding:8px 16px;color:var(--text-dimmed);font-size:12px;">No tables match "${tableSearch}"</div>`}
+        ${archiveTables && archiveTables.length > 0 && html`
+          <div class="sidebar-section-label" style="padding:10px 8px 4px">ARCHIVE</div>
+          ${archiveTables.map(t => html`
+            <button
+              key=${"archive-" + t.name}
+              class=${"sidebar-item" + (viewMode === 'table' && currentArchive && t.name === currentTable ? " active" : "")}
+              onClick=${() => onSelectArchive(t.name)}
+            >
+              <span class="sidebar-item-icon">${icons.table}</span>
+              <span class="sidebar-item-label">${t.name}</span>
+              <span class="sidebar-item-count">${t.rowCount}</span>
+            </button>
+          `)}
+        `}
         ${analyticsEnabled && html`
           <div class="sidebar-section-label" style="padding:10px 8px 4px">OBSERVE</div>
           <button
@@ -532,7 +546,7 @@ function parseEditorInput(field, input) {
   return input;
 }
 
-function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, onClose, onSave, onCreate, onReload }) {
+function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, onClose, onSave, onCreate, onReload, readOnly = false }) {
   const isCreate = mode === 'create';
   const pkField = cols[0];
   const pk = row ? row[pkField] : '';
@@ -621,6 +635,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
   }, [schema, row, cols, form, pk, onSave, isCreate, onCreate, pendingFiles]);
 
   const onUploadFile = useCallback(async (col, e) => {
+    if (readOnly) return;
     if (isCreate) {
       const f = e.target.files[0];
       if (!f) return;
@@ -643,9 +658,10 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
       setUploadingCol('');
       if (e.target) e.target.value = '';
     }
-  }, [tableName, pk, onReload, isCreate, setCol]);
+  }, [tableName, pk, onReload, isCreate, setCol, readOnly]);
 
   const onRemoveFile = useCallback(async (col) => {
+    if (readOnly) return;
     if (isCreate) {
       setPendingFiles(prev => {
         const next = { ...prev };
@@ -662,7 +678,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
     } catch (err) {
       showToast(err.message || 'Remove failed', 'error');
     }
-  }, [tableName, pk, onReload, isCreate, setCol]);
+  }, [tableName, pk, onReload, isCreate, setCol, readOnly]);
 
   return html`
     <aside class="row-editor">
@@ -677,9 +693,9 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
         ${cols.map(col => {
           const field = schema ? schema[col] : null;
           const val = row ? row[col] : null;
-          const ro = isCreate
+          const ro = readOnly || (isCreate
             ? (isAutoField(schema, col) || (field && field.cached === true))
-            : (isAutoField(schema, col) || isReadOnly(schema, col) || val === '[REDACTED]');
+            : (isAutoField(schema, col) || isReadOnly(schema, col) || val === '[REDACTED]'));
           const typeLabel = field ? field.type + (field.refTable ? ' -> ' + field.refTable : '') : '';
           const inputVal = form[col] ?? '';
 
@@ -695,11 +711,13 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
                 ${field.type === 'fileSingle' ? (singleFile && singleFile.name ? singleFile.name : html`<span class="null">null</span>`) : (fileCount > 0 ? fileCount + ' files' : html`<span class="null">null</span>`)}
               </div>
               <div class="create-actions" style="margin-top:6px">
+                ${!readOnly && html`
                 <label class="btn btn-sm btn-primary file-upload-btn">
                   ${uploadingCol === col ? 'Uploading...' : html`${icons.upload} Upload`}
                   <input type="file" accept=${accept} onChange=${e => onUploadFile(col, e)} hidden />
                 </label>
                 <button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col)}>${icons.trash} Remove</button>
+                `}
               </div>
             </div>`;
           }
@@ -724,7 +742,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
           if (field && field.type === 'boolean') {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <select value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
+              <select value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
                 <option value="">null</option>
                 <option value="true">true</option>
                 <option value="false">false</option>
@@ -735,7 +753,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
           if (field && field.type === 'enum' && field.enumValues) {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <select value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
+              <select value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
                 <option value="">--</option>
                 ${field.enumValues.map(v => html`<option key=${v} value=${v}>${v}</option>`)}
               </select>
@@ -756,27 +774,27 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
           if (field && ['json', 'vector', 'roles', 'set', 'refMulti'].includes(field.type)) {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <textarea value=${inputVal} onInput=${e => setCol(col, e.target.value)}></textarea>
+              <textarea value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)}></textarea>
             </div>`;
           }
 
           const inputType = field && (field.type === 'number' || field.type === 'integer' || field.type === 'timestamp') ? 'number' : 'text';
           return html`<div key=${col} class="row-editor-field">
             <label>${col} <span class="type-badge">${typeLabel}</span></label>
-            <input type=${inputType} value=${inputVal} onInput=${e => setCol(col, e.target.value)} />
+            <input type=${inputType} value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)} />
           </div>`;
         })}
       </div>
       <div class="row-editor-actions">
         ${isCreate && createError && html`<span class="create-error" style="margin-right:auto">${createError}</span>`}
         <button class="btn" onClick=${onClose}>Close</button>
-        <button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${isCreate ? (saving ? 'Creating...' : 'Create Row') : (saving ? 'Saving...' : 'Save Changes')}</button>
+        ${!readOnly && html`<button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${isCreate ? (saving ? 'Creating...' : 'Create Row') : (saving ? 'Saving...' : 'Save Changes')}</button>`}
       </div>
     </aside>
   `;
 }
 
-function DataTable({ tableName, tableMeta, schema, onReload, sseSignal }) {
+function DataTable({ tableName, tableMeta, schema, archive = false, onReload, sseSignal }) {
   const [rows, setRows] = useState([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -789,20 +807,23 @@ function DataTable({ tableName, tableMeta, schema, onReload, sseSignal }) {
   const [refreshingMaterialized, setRefreshingMaterialized] = useState(false);
 
   const isMaterialized = !!tableMeta?.materialized;
-  const isReadOnlyTable = !!tableMeta?.readOnly;
+  const isReadOnlyTable = !!tableMeta?.readOnly || archive;
+  const rowsBasePath = archive ? ('/archive/tables/' + tableName + '/rows') : ('/tables/' + tableName + '/rows');
 
   const cols = useMemo(() => schema ? Object.keys(schema) : (rows.length > 0 ? Object.keys(rows[0]) : []), [schema, rows]);
 
   const loadRows = useCallback(async (p, q) => {
     const pg = p || page;
     const sq = q !== undefined ? q : searchQuery;
-    const params = new URLSearchParams({ page: pg, limit: 50 });
-    if (sq) {
+    const params = new URLSearchParams({ limit: 50 });
+    if (archive) params.set('offset', String((pg - 1) * 50));
+    else params.set('page', pg);
+    if (sq && !archive) {
       const isFilter = /[=<>~]|!=|!~/.test(sq);
       params.set(isFilter ? 'filter' : 'search', sq);
     }
     try {
-      const data = await api('/tables/' + tableName + '/rows?' + params);
+      const data = await api(rowsBasePath + '?' + params);
       if (data) {
         setRows(data.rows || []);
         setTotalPages(data.pages);
@@ -811,7 +832,7 @@ function DataTable({ tableName, tableMeta, schema, onReload, sseSignal }) {
     } catch (err) {
       if (err && err.message) showToast(err.message, 'error');
     }
-  }, [tableName, page, searchQuery]);
+  }, [tableName, page, searchQuery, archive, rowsBasePath]);
 
   useEffect(() => {
     setPage(1);
@@ -866,6 +887,19 @@ function DataTable({ tableName, tableMeta, schema, onReload, sseSignal }) {
     if (selectedPk != null && String(selectedPk) === String(pk)) setSelectedPk(null);
     loadRows();
   }, [tableName, loadRows, selectedPk]);
+
+  const restoreRow = useCallback(async (archiveID) => {
+    if (!confirm('Restore archived row ' + archiveID + '?')) return;
+    try {
+      await api('/archive/tables/' + tableName + '/rows/' + archiveID + '/restore', { method: 'POST' });
+      showToast('Archived row restored');
+    } catch (err) {
+      showToast(err.message || 'Restore failed', 'error');
+    }
+    if (selectedPk != null && String(selectedPk) === String(archiveID)) setSelectedPk(null);
+    loadRows();
+    onReload?.();
+  }, [tableName, selectedPk, loadRows, onReload]);
 
   const refreshMaterialized = useCallback(async () => {
     if (!isMaterialized || refreshingMaterialized) return;
@@ -924,9 +958,9 @@ function DataTable({ tableName, tableMeta, schema, onReload, sseSignal }) {
         <div class="panel-actions">
           <div class="search-box">
             ${icons.search}
-            <input type="text" placeholder='name="..." count>=5' value=${search} onInput=${onSearchInput} onKeyDown=${onSearchKey} />
+            <input type="text" placeholder=${archive ? 'Archive search not available' : 'name="..." count>=5'} value=${search} disabled=${archive} onInput=${onSearchInput} onKeyDown=${onSearchKey} />
             <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search all string fields">?</span>
-            <button class="btn-filter" onClick=${applyFilter}>${icons.chevRight}</button>
+            <button class="btn-filter" disabled=${archive} onClick=${applyFilter}>${icons.chevRight}</button>
           </div>
           <button class="btn btn-primary" disabled=${isReadOnlyTable} onClick=${() => { setSelectedPk(null); setCreateErr(''); setShowCreate(true); }}>
             ${icons.plus} New Row
@@ -991,7 +1025,10 @@ function DataTable({ tableName, tableMeta, schema, onReload, sseSignal }) {
                       return html`<td key=${c} class=${ro ? "td-readonly" : ""}>${rendered}</td>`;
                     })}
                     <td class="td-actions">
-                      <button class="btn-icon danger" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); deleteRow(pk); }} title="Delete">${icons.trash}</button>
+                      ${archive
+                        ? html`<button class="btn-icon" onClick=${(e) => { e.stopPropagation(); restoreRow(pk); }} title="Restore">${icons.upload}</button>`
+                        : html`<button class="btn-icon danger" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); deleteRow(pk); }} title="Delete">${icons.trash}</button>`
+                      }
                     </td>
                   </tr>
                 `;
@@ -1014,6 +1051,7 @@ function DataTable({ tableName, tableMeta, schema, onReload, sseSignal }) {
           schema=${schema}
           cols=${cols}
           row=${selectedRow}
+          readOnly=${archive}
           onClose=${() => setSelectedPk(null)}
           onSave=${saveRow}
           onReload=${loadRows}
@@ -1747,7 +1785,9 @@ function ObservePanel() {
 // ── Main App ──
 function App() {
   const [tables, setTables] = useState([]);
+  const [archiveTables, setArchiveTables] = useState([]);
   const [currentTable, setCurrentTable] = useState(null);
+  const [currentArchive, setCurrentArchive] = useState(false);
   const [viewMode, setViewMode] = useState('table');
   const [analyticsEnabled, setAnalyticsEnabled] = useState(false);
   const [observeEnabled, setObserveEnabled] = useState(false);
@@ -1756,6 +1796,8 @@ function App() {
   const loadTables = useCallback(async () => {
     const data = await api('/tables');
     if (data) setTables(data.tables);
+    const archiveData = await api('/archive/tables').catch(() => null);
+    if (archiveData) setArchiveTables(archiveData.tables || []);
   }, []);
 
   // SSE change signal — bumped for the currently viewed table so DataTable can debounce-reload
@@ -1857,7 +1899,14 @@ function App() {
         setViewMode('observe');
         return;
       }
+      if (h.startsWith('_archive/')) {
+        setViewMode('table');
+        setCurrentArchive(true);
+        setCurrentTable(decodeURIComponent(h.slice('_archive/'.length)));
+        return;
+      }
       setViewMode('table');
+      setCurrentArchive(false);
       setCurrentTable(decoded);
     }
     read();
@@ -1867,8 +1916,16 @@ function App() {
 
   const selectTable = useCallback((name) => {
     setViewMode('table');
+    setCurrentArchive(false);
     setCurrentTable(name);
     window.location.hash = name;
+  }, []);
+
+  const selectArchive = useCallback((name) => {
+    setViewMode('table');
+    setCurrentArchive(true);
+    setCurrentTable(name);
+    window.location.hash = '_archive/' + encodeURIComponent(name);
   }, []);
 
   const selectAnalyticsVolume = useCallback(() => {
@@ -1910,18 +1967,22 @@ function App() {
 
   const currentSchema = useMemo(() => {
     if (!currentTable) return null;
-    const t = tables.find(t => t.name === currentTable);
+    const source = currentArchive ? archiveTables : tables;
+    const t = source.find(t => t.name === currentTable);
     return t ? t.schema : null;
-  }, [tables, currentTable]);
+  }, [tables, archiveTables, currentTable, currentArchive]);
 
   return html`
     <${Sidebar}
       tables=${tables}
+      archiveTables=${archiveTables}
       currentTable=${currentTable}
+      currentArchive=${currentArchive}
       viewMode=${viewMode}
       analyticsEnabled=${analyticsEnabled}
       observeEnabled=${observeEnabled}
       onSelect=${selectTable}
+      onSelectArchive=${selectArchive}
       onSelectAnalyticsVolume=${selectAnalyticsVolume}
       onSelectAnalyticsPerformance=${selectAnalyticsPerformance}
       onSelectObserve=${selectObserve}
@@ -1935,7 +1996,7 @@ function App() {
         : viewMode === 'observe' && observeEnabled
         ? html`<${ObservePanel} />`
         : currentTable
-        ? html`<${DataTable} key=${currentTable} tableName=${currentTable} tableMeta=${tables.find(t => t.name === currentTable)} schema=${currentSchema} onReload=${loadTables} sseSignal=${sseSignal} />`
+        ? html`<${DataTable} key=${(currentArchive ? 'archive:' : 'table:') + currentTable} tableName=${currentTable} tableMeta=${(currentArchive ? archiveTables : tables).find(t => t.name === currentTable)} schema=${currentSchema} archive=${currentArchive} onReload=${loadTables} sseSignal=${sseSignal} />`
         : html`<${EmptyState} />`
       }
     </div>

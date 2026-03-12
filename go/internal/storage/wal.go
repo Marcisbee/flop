@@ -18,6 +18,8 @@ const (
 	WALOpUpdate = 2
 	WALOpDelete = 3
 	WALOpCommit = 4
+	WALOpArchiveInsert = 5
+	WALOpArchiveDelete = 6
 
 	// WALOpFlagAutoCommit is a flag bit set on the op byte to indicate the
 	// record is self-committing (no separate commit record needed). Used for

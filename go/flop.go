@@ -3,6 +3,7 @@ package flop
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"os"
 	"path/filepath"
@@ -794,6 +795,7 @@ func (b *RefFieldRules) Unique() *RefFieldRules          { b.spec.Unique = true;
 func (b *RefFieldRules) Default(v any) *RefFieldRules    { b.spec.Default = v; return b }
 func (b *RefFieldRules) Autogen(p string) *RefFieldRules { b.spec.Autogen = p; return b }
 func (b *RefFieldRules) Index() *RefFieldRules           { b.spec.Indexed = true; return b }
+func (b *RefFieldRules) CascadeArchive() *RefFieldRules  { b.spec.CascadeDelete = "archive"; b.spec.Indexed = true; return b }
 func (b *RefFieldRules) Virtual() *RefFieldRules         { b.spec.Virtual = true; return b }
 func (b *RefFieldRules) Access(access FieldAccess) *RefFieldRules {
 	b.spec.Access = access
@@ -803,6 +805,11 @@ func (b *RefFieldRules) Access(access FieldAccess) *RefFieldRules {
 func (b *RefMultiFieldRules) Required() *RefMultiFieldRules     { b.spec.Required = true; return b }
 func (b *RefMultiFieldRules) Default(v any) *RefMultiFieldRules { b.spec.Default = v; return b }
 func (b *RefMultiFieldRules) Index() *RefMultiFieldRules        { b.spec.Indexed = true; return b }
+func (b *RefMultiFieldRules) CascadeArchive() *RefMultiFieldRules {
+	b.spec.CascadeDelete = "archive"
+	b.spec.Indexed = true
+	return b
+}
 func (b *RefMultiFieldRules) Virtual() *RefMultiFieldRules      { b.spec.Virtual = true; return b }
 func (b *RefMultiFieldRules) Access(access FieldAccess) *RefMultiFieldRules {
 	b.spec.Access = access
@@ -945,37 +952,131 @@ func Set(field string, value any) Update {
 }
 
 func (t *Table[T]) Insert(scope any, row T) (T, error) {
-	_ = scope
 	if t == nil {
 		var zero T
 		return zero, ErrNotImplemented
 	}
-	return row, nil
+	ti, tx, err := resolveTypedTableScope(scope, t.name)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	data, err := valueToRowMap(row)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	var out map[string]any
+	if tx != nil {
+		out, err = ti.insertWithTx(data, tx.inner.txBuf)
+		if err == nil && tx.inner != nil {
+			pk := toString(out[ti.primaryKeyField()])
+			if pk != "" {
+				tx.inner.addUndo(func() { _ = ti.rollbackInserted(pk) })
+			}
+		}
+	} else {
+		out, err = ti.Insert(data)
+	}
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	var typed T
+	if err := rowMapToValue(out, &typed); err != nil {
+		var zero T
+		return zero, err
+	}
+	return typed, nil
 }
 
 func (t *Table[T]) Get(scope any, id string) (*T, error) {
-	_, _ = scope, id
-	return nil, ErrNotImplemented
+	ti, _, err := resolveTypedTableScope(scope, t.name)
+	if err != nil {
+		return nil, err
+	}
+	row, err := ti.Get(id)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	var typed T
+	if err := rowMapToValue(row, &typed); err != nil {
+		return nil, err
+	}
+	return &typed, nil
 }
 
 func (t *Table[T]) Update(scope any, id string, updates ...Update) error {
-	_, _, _ = scope, id, updates
-	return ErrNotImplemented
+	ti, tx, err := resolveTypedTableScope(scope, t.name)
+	if err != nil {
+		return err
+	}
+	merged := make(map[string]any)
+	for _, update := range updates {
+		for k, v := range update {
+			merged[k] = v
+		}
+	}
+	if tx != nil {
+		before, err := ti.rawRow(id)
+		if err != nil {
+			return err
+		}
+		_, err = ti.updateWithTx(id, merged, tx.inner.txBuf)
+		if err == nil && len(before) > 0 && tx.inner != nil {
+			tx.inner.addUndo(func() { _ = ti.rollbackRawRow(before) })
+		}
+		return err
+	}
+	_, err = ti.Update(id, merged)
+	return err
 }
 
 func (t *Table[T]) Delete(scope any, id string) (bool, error) {
-	_, _ = scope, id
-	return false, ErrNotImplemented
+	ti, tx, err := resolveTypedTableScope(scope, t.name)
+	if err != nil {
+		return false, err
+	}
+	if tx != nil {
+		before, err := ti.rawRow(id)
+		if err != nil {
+			return false, err
+		}
+		ok, err := ti.deleteWithTx(id, tx.inner.txBuf)
+		if err == nil && ok && len(before) > 0 && tx.inner != nil {
+			tx.inner.addUndo(func() { _ = ti.rollbackRawRow(before) })
+		}
+		return ok, err
+	}
+	return ti.Delete(id)
 }
 
 func (t *Table[T]) Scan(scope any, limit, offset int) ([]T, error) {
-	_, _, _ = scope, limit, offset
-	return nil, ErrNotImplemented
+	ti, _, err := resolveTypedTableScope(scope, t.name)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := ti.Scan(limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, 0, len(rows))
+	for _, row := range rows {
+		var typed T
+		if err := rowMapToValue(row, &typed); err != nil {
+			return nil, err
+		}
+		out = append(out, typed)
+	}
+	return out, nil
 }
 
 func (t *Table[T]) Count(scope any) int {
-	_ = scope
-	return 0
+	ti, _, err := resolveTypedTableScope(scope, t.name)
+	if err != nil || ti == nil {
+		return 0
+	}
+	return ti.Count()
 }
 
 type AccessPolicy struct {
@@ -1031,7 +1132,10 @@ type ReducerCtx struct {
 	DB      *DBAccessor
 }
 
-type Tx struct{}
+type Tx struct {
+	DB    *DBAccessor
+	inner *archiveTxn
+}
 
 func (ctx *ViewCtx) RequireAuth() (*AuthContext, error) {
 	if ctx == nil || ctx.Request.Auth == nil {
@@ -1048,12 +1152,114 @@ func (ctx *ReducerCtx) RequireAuth() (*AuthContext, error) {
 }
 
 func Transaction[T any](ctx *ReducerCtx, fn func(*Tx) (T, error)) (T, error) {
-	_ = ctx
 	if fn == nil {
 		var zero T
 		return zero, errors.New("transaction function is nil")
 	}
-	return fn(&Tx{})
+	if ctx == nil || ctx.DB == nil || ctx.DB.db == nil {
+		var zero T
+		return zero, errors.New("transaction requires reducer context with database")
+	}
+	inner := newArchiveTxn(ctx.DB.db)
+	tx := &Tx{
+		DB: &DBAccessor{
+			db:            ctx.DB.db,
+			tracker:       ctx.DB.tracker,
+			auth:          ctx.DB.auth,
+			enforcePolicy: ctx.DB.enforcePolicy,
+		},
+		inner: inner,
+	}
+	result, err := fn(tx)
+	if err != nil {
+		inner.rollback()
+		var zero T
+		return zero, err
+	}
+	if err := inner.commit(); err != nil {
+		inner.rollback()
+		var zero T
+		return zero, err
+	}
+	return result, nil
+}
+
+func resolveTypedTableScope(scope any, tableName string) (*TableInstance, *Tx, error) {
+	switch s := scope.(type) {
+	case *Tx:
+		if s == nil || s.DB == nil {
+			return nil, nil, errors.New("transaction scope is nil")
+		}
+		ti := s.DB.Table(tableName)
+		if ti == nil {
+			return nil, nil, fmt.Errorf("table not found: %s", tableName)
+		}
+		return ti, s, nil
+	case *ReducerCtx:
+		if s == nil || s.DB == nil {
+			return nil, nil, errors.New("reducer scope is nil")
+		}
+		ti := s.DB.Table(tableName)
+		if ti == nil {
+			return nil, nil, fmt.Errorf("table not found: %s", tableName)
+		}
+		return ti, nil, nil
+	case *ViewCtx:
+		if s == nil || s.DB == nil {
+			return nil, nil, errors.New("view scope is nil")
+		}
+		ti := s.DB.Table(tableName)
+		if ti == nil {
+			return nil, nil, fmt.Errorf("table not found: %s", tableName)
+		}
+		return ti, nil, nil
+	case *DBAccessor:
+		if s == nil {
+			return nil, nil, errors.New("db scope is nil")
+		}
+		ti := s.Table(tableName)
+		if ti == nil {
+			return nil, nil, fmt.Errorf("table not found: %s", tableName)
+		}
+		return ti, nil, nil
+	case *Database:
+		if s == nil {
+			return nil, nil, errors.New("database scope is nil")
+		}
+		ti := s.Table(tableName)
+		if ti == nil {
+			return nil, nil, fmt.Errorf("table not found: %s", tableName)
+		}
+		return ti, nil, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported scope type %T", scope)
+	}
+}
+
+func valueToRowMap(v any) (map[string]any, error) {
+	if v == nil {
+		return map[string]any{}, nil
+	}
+	if row, ok := v.(map[string]any); ok {
+		return row, nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]any)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func rowMapToValue(row map[string]any, out any) error {
+	raw, err := json.Marshal(row)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
 }
 
 type ViewDef[In, Out any] struct {
@@ -1242,6 +1448,7 @@ type FieldSpec struct {
 	VectorDims      int      `json:"vectorDims,omitempty"`
 	RefTable        string   `json:"refTable,omitempty"`
 	RefField        string   `json:"refField,omitempty"`
+	CascadeDelete   string   `json:"cascadeDelete,omitempty"`
 	Relation        string   `json:"relation,omitempty"`
 	RelationTable   string   `json:"relationTable,omitempty"`
 	RelationField   string   `json:"relationField,omitempty"`
@@ -1445,6 +1652,7 @@ type fieldSpec struct {
 	VectorDimensions int
 	RefTable         string
 	RefField         string
+	CascadeDelete    string
 	Relation         string
 	RelationTable    string
 	RelationField    string
@@ -1480,6 +1688,7 @@ func (fs *fieldSpec) toPublic() FieldSpec {
 		VectorDims:      fs.VectorDimensions,
 		RefTable:        fs.RefTable,
 		RefField:        fs.RefField,
+		CascadeDelete:   fs.CascadeDelete,
 		Relation:        fs.Relation,
 		RelationTable:   fs.RelationTable,
 		RelationField:   fs.RelationField,

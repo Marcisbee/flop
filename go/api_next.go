@@ -343,6 +343,7 @@ func (a *DBAccessor) Table(name string) *TableInstance {
 	}
 	return &TableInstance{
 		ti:            ti,
+		db:            a.db,
 		name:          name,
 		tableID:       tableID,
 		tracker:       a.tracker,

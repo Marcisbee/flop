@@ -37,3 +37,4 @@ examples/movies-go-react/movies-server
 /examples/movies-go2-react/data
 /zig/.zig-cache
 /zig/zig-out
+/.agents

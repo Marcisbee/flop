@@ -19,6 +19,8 @@ type AdminTable struct {
 	Name                 string           `json:"name"`
 	Schema               jsonx.RawMessage `json:"schema,omitempty"`
 	RowCount             int              `json:"rowCount"`
+	Archive              bool             `json:"archive,omitempty"`
+	SourceTable          string           `json:"sourceTable,omitempty"`
 	ReadOnly             bool             `json:"readOnly,omitempty"`
 	Materialized         bool             `json:"materialized,omitempty"`
 	LastRefreshUnixMilli int64            `json:"lastRefreshUnixMilli,omitempty"`
@@ -27,6 +29,7 @@ type AdminTable struct {
 
 type AdminRowsPage struct {
 	Table  string           `json:"table"`
+	Archive bool            `json:"archive,omitempty"`
 	Rows   []map[string]any `json:"rows"`
 	Total  int              `json:"total"`
 	Offset int              `json:"offset"`
@@ -50,6 +53,12 @@ type AdminWriteProvider interface {
 	AdminCreateRow(table string, data map[string]any) (map[string]any, error)
 	AdminUpdateRow(table, pk string, fields map[string]any) error
 	AdminDeleteRow(table, pk string) error
+}
+
+type AdminArchiveProvider interface {
+	AdminArchiveTables() ([]AdminTable, error)
+	AdminArchiveRows(table string, limit, offset int) (AdminRowsPage, bool, error)
+	AdminRestoreRow(table, archiveID string) error
 }
 
 type AdminAuthProvider interface {
@@ -135,6 +144,7 @@ func MountDefaultAdminWithConfig(mux *http.ServeMux, provider AdminProvider, cfg
 func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler {
 	authProvider, authEnabled := provider.(AdminAuthProvider)
 	writeProvider, writeEnabled := provider.(AdminWriteProvider)
+	archiveProvider, archiveEnabled := provider.(AdminArchiveProvider)
 	sseProvider, sseEnabled := provider.(AdminSSEProvider)
 	filterProvider, filterEnabled := provider.(AdminFilterProvider)
 	analyticsProvider, analyticsCapable := provider.(AdminAnalyticsProvider)
@@ -512,6 +522,28 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			return
 		}
 
+		if path == "/_/api/archive/tables" {
+			if r.Method != http.MethodGet {
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if !archiveEnabled {
+				adminJSONResp(w, http.StatusOK, map[string]any{"tables": []AdminTable{}})
+				return
+			}
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			tables, err := archiveProvider.AdminArchiveTables()
+			if err != nil {
+				adminJSONError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			adminJSONResp(w, http.StatusOK, map[string]any{"tables": tables})
+			return
+		}
+
 		if strings.HasPrefix(path, "/_/api/materialized/") && strings.HasSuffix(path, "/refresh") {
 			if authEnabled && !isAuthorizedRequest(r, authProvider) {
 				adminJSONError(w, "authentication required", http.StatusUnauthorized)
@@ -705,6 +737,63 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				"pages": pages,
 				"limit": limit,
 			})
+			return
+		}
+
+		if strings.HasPrefix(path, "/_/api/archive/tables/") {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !archiveEnabled {
+				adminJSONError(w, "archive unavailable", http.StatusNotFound)
+				return
+			}
+			rest := strings.TrimPrefix(path, "/_/api/archive/tables/")
+			parts := strings.Split(rest, "/")
+			if len(parts) >= 4 && parts[1] == "rows" && parts[3] == "restore" {
+				if r.Method != http.MethodPost {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := archiveProvider.AdminRestoreRow(parts[0], parts[2]); err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
+				return
+			}
+			if len(parts) >= 2 && parts[1] == "rows" {
+				if r.Method != http.MethodGet {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				limit := clampInt(parseIntOr(r.URL.Query().Get("limit"), 50), 1, 1000)
+				offset := parseIntOr(r.URL.Query().Get("offset"), 0)
+				if offset < 0 {
+					offset = 0
+				}
+				result, found, err := archiveProvider.AdminArchiveRows(parts[0], limit, offset)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if !found {
+					adminJSONError(w, "not found", http.StatusNotFound)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"rows":   result.Rows,
+					"total":  result.Total,
+					"table":  result.Table,
+					"limit":  result.Limit,
+					"offset": result.Offset,
+					"pages":  (result.Total + result.Limit - 1) / result.Limit,
+					"archive": true,
+				})
+				return
+			}
+			adminJSONError(w, "not found", http.StatusNotFound)
 			return
 		}
 
