@@ -254,6 +254,7 @@ func (s *Server) Use(mw func(http.Handler) http.Handler) {
 // RegisterView registers a view as a GET endpoint.
 func (s *Server) RegisterView(path string, v *ViewDef) {
 	s.views[v.Name] = v
+	s.db.CompileView(v)
 
 	s.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 		// Clone view def with request params

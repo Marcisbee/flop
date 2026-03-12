@@ -16,6 +16,7 @@ type DB struct {
 	nextTblID uint16
 	mu        sync.RWMutex
 	fts       map[string]*ftsEntry
+	queries   map[string]*ViewDef
 }
 
 // ftsEntry holds the FTS index and the searchable field names for a table.

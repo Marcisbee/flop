@@ -173,7 +173,18 @@ func OpenPager(path string) (*Pager, error) {
 		return nil, err
 	}
 
-	if info.Size() == 0 {
+	needsInit := info.Size() == 0
+	if !needsInit && info.Size()%PageSize != 0 {
+		// File exists but is not page-aligned — legacy/incompatible format.
+		// Truncate and re-initialize as a fresh pager.
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("truncate legacy file: %w", err)
+		}
+		needsInit = true
+	}
+
+	if needsInit {
 		// Initialize with meta page
 		var meta Page
 		meta.SetType(PageMeta)

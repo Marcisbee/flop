@@ -16,6 +16,7 @@ type Table struct {
 	pager     *Pager        // pager for primary data file
 	indexes   []*StoreIndex // secondary indexes (in-memory, rebuilt on load)
 	nextID    atomic.Uint64
+	rowCount  atomic.Int64  // cached row count for O(1) Count()
 	mu        sync.RWMutex
 	archive   *BTree      // shadow storage for soft-deleted rows
 	archPager *Pager      // pager for archive data file
@@ -107,6 +108,12 @@ func NewTable(schema *Schema, tableID uint16, dataPath, archivePath string) (*Ta
 		t.nextID.Store(maxID + 1)
 	}
 
+	// Initialize row count from BTree (one-time scan at startup)
+	if t.primary.RootPageID() != 0 {
+		cnt, _ := t.primary.Count()
+		t.rowCount.Store(int64(cnt))
+	}
+
 	return t, nil
 }
 
@@ -173,6 +180,7 @@ func (t *Table) Insert(data map[string]any) (*Row, error) {
 	if err := t.primary.Put(key, encoded); err != nil {
 		return nil, fmt.Errorf("primary put: %w", err)
 	}
+	t.rowCount.Add(1)
 
 	// Update indexes
 	for _, idx := range t.indexes {
@@ -294,6 +302,7 @@ func (t *Table) Delete(id uint64) error {
 	if err := t.primary.Delete(key); err != nil {
 		return fmt.Errorf("primary delete: %w", err)
 	}
+	t.rowCount.Add(-1)
 
 	// Remove from indexes
 	for _, idx := range t.indexes {
@@ -328,6 +337,7 @@ func (t *Table) Restore(id uint64) (*Row, error) {
 	if err := t.archive.Delete(key); err != nil {
 		return nil, fmt.Errorf("archive delete: %w", err)
 	}
+	t.rowCount.Add(1)
 
 	for _, idx := range t.indexes {
 		t.indexPut(idx, row.Data, row.ID)
@@ -350,11 +360,9 @@ func (t *Table) Scan(fn func(*Row) bool) error {
 	})
 }
 
-// Count returns the number of rows.
+// Count returns the number of rows. O(1) using cached count.
 func (t *Table) Count() (int, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.primary.Count()
+	return int(t.rowCount.Load()), nil
 }
 
 // Flush persists all changes to disk.
@@ -650,6 +658,19 @@ func (t *Table) buildIndexes() {
 		for _, idx := range t.indexes {
 			t.indexPut(idx, row.Data, row.ID)
 		}
+		return true
+	})
+}
+
+// BuildIndex populates a single index by scanning all rows.
+// Used for indexes added after the initial buildIndexes pass (e.g., auto-indexes from views).
+func (t *Table) BuildIndex(idx *StoreIndex) {
+	t.primary.Scan(func(key, val []byte) bool {
+		row, err := t.decodeRow(val)
+		if err != nil {
+			return true
+		}
+		t.indexPut(idx, row.Data, row.ID)
 		return true
 	})
 }

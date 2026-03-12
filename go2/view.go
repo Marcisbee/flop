@@ -2,6 +2,7 @@ package flop
 
 import (
 	"container/heap"
+	"fmt"
 	"sort"
 )
 
@@ -45,6 +46,7 @@ type ViewDef struct {
 	Includes   []string // ref fields to resolve
 	SearchQ    string   // full-text search query
 	PermFilter func(auth any, row *Row) bool
+	compiled   *CompiledQuery // precompiled bytecode (set by CompileViews)
 }
 
 // ViewResult holds the result of executing a view.
@@ -53,11 +55,148 @@ type ViewResult struct {
 	Total int
 }
 
+// AutoIndex analyzes a view's filters and creates any missing secondary indexes
+// on the table. Called automatically at view registration time.
+func (db *DB) AutoIndex(v *ViewDef) {
+	table := db.Table(v.Table)
+	if table == nil {
+		return
+	}
+
+	for _, f := range v.Filters {
+		if f.Field == "id" {
+			continue // primary key, no index needed
+		}
+		switch f.Op {
+		case OpEq, OpGt, OpGte, OpLt, OpLte:
+			// Check if an index already covers this field
+			found := false
+			for _, idx := range table.indexes {
+				if len(idx.Fields) == 1 && idx.Fields[0] == f.Field {
+					found = true
+					break
+				}
+			}
+			if !found {
+				idx := &StoreIndex{
+					Name:   f.Field + "_auto",
+					Fields: []string{f.Field},
+					Unique: false,
+					store:  NewStore(""),
+				}
+				table.indexes = append(table.indexes, idx)
+				// Populate immediately if table already has data
+				if table.primary.RootPageID() != 0 {
+					table.BuildIndex(idx)
+				}
+			}
+		}
+	}
+}
+
+// CompileView precompiles a view into bytecode for faster execution.
+// Call this once at registration time. If the view uses features not supported
+// by the VM (PermFilter, SearchQ, Includes, OpIn, OpContains), compilation
+// is skipped and ExecuteView falls back to the interpreted path.
+func (db *DB) CompileView(v *ViewDef) {
+	// Auto-create indexes based on view filters
+	db.AutoIndex(v)
+
+	// Skip compilation for views the VM can't handle
+	if v.PermFilter != nil || v.SearchQ != "" {
+		return
+	}
+	for _, f := range v.Filters {
+		if f.Op == OpIn || f.Op == OpContains {
+			return
+		}
+	}
+	table := db.Table(v.Table)
+	if table == nil {
+		return
+	}
+	v.compiled = CompileView(v, table, db)
+}
+
+// RegisterQuery pre-compiles a named ViewDef for later use with DB.Query().
+// Unlike RegisterView on Server, this does NOT create an HTTP endpoint.
+// Use this when you need precompiled queries inside custom handlers.
+func (db *DB) RegisterQuery(name string, v *ViewDef) {
+	v.Name = name
+	db.CompileView(v)
+	if db.queries == nil {
+		db.queries = make(map[string]*ViewDef)
+	}
+	db.queries[name] = v
+}
+
+// Query executes a pre-registered query by name with dynamic filter values.
+// Pass params as field→value pairs. Returns rows matching the query.
+func (db *DB) Query(name string, params map[string]any) ([]*Row, error) {
+	v, ok := db.queries[name]
+	if !ok {
+		return nil, fmt.Errorf("query %q not registered", name)
+	}
+
+	// Clone and set filter values from params
+	vCopy := *v
+	vCopy.Filters = make([]Filter, len(v.Filters))
+	copy(vCopy.Filters, v.Filters)
+	for i := range vCopy.Filters {
+		if val, ok := params[vCopy.Filters[i].Field]; ok {
+			vCopy.Filters[i].Value = val
+		}
+	}
+
+	// Override limit/offset from params if provided
+	if lim, ok := params["_limit"]; ok {
+		vCopy.Limit = int(toFloat(lim))
+	}
+	if off, ok := params["_offset"]; ok {
+		vCopy.Offset = int(toFloat(off))
+	}
+
+	result, err := db.ExecuteView(&vCopy)
+	if err != nil {
+		return nil, err
+	}
+	return result.Rows, nil
+}
+
 // ExecuteView runs a precompiled view against the database.
 func (db *DB) ExecuteView(v *ViewDef) (*ViewResult, error) {
 	table := db.Table(v.Table)
 	if table == nil {
 		return nil, nil
+	}
+
+	// Fast path: use bytecode VM if the view was precompiled
+	// and doesn't have dynamic features (PermFilter, SearchQ)
+	if v.compiled != nil && v.PermFilter == nil && v.SearchQ == "" {
+		result, err := v.compiled.Execute(table, db, v)
+		if err != nil {
+			return nil, err
+		}
+		// Apply dynamic limit/offset set via Query() params that weren't
+		// baked into the compiled bytecode.
+		if v.Offset > 0 || v.Limit > 0 {
+			rows := result.Rows
+			if v.Offset > 0 {
+				if v.Offset < len(rows) {
+					rows = rows[v.Offset:]
+				} else {
+					rows = nil
+				}
+			}
+			if v.Limit > 0 && len(rows) > v.Limit {
+				rows = rows[:v.Limit]
+			}
+			result.Rows = rows
+		}
+		if len(v.Includes) > 0 {
+			db.resolveIncludes(v, result.Rows)
+		}
+		return result, nil
 	}
 
 	// Index lookup path: filters match a secondary index → skip full scan.
@@ -596,6 +735,11 @@ func toFloat(v any) float64 {
 		return n
 	case float32:
 		return float64(n)
+	case bool:
+		if n {
+			return 1
+		}
+		return 0
 	}
 	return 0
 }
