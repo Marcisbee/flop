@@ -42,6 +42,8 @@ type Database struct {
 	enablePprof         bool
 	analyticsMu         sync.Mutex
 	analytics           *server.RequestAnalytics
+	mediaIndexMu        sync.Mutex
+	mediaIndexRebuild   bool
 	cronRunner          *cron.Runner
 	tableNames          []string
 	tableNameToID       map[string]int
@@ -70,6 +72,7 @@ type archiveTxn struct {
 	db     *Database
 	txBuf  map[string]*engine.WalBufEntry
 	undo   []func()
+	media  []mediaIndexOp
 	closed bool
 }
 
@@ -513,6 +516,9 @@ func (ti *TableInstance) insertWithTx(data map[string]any, txBuf map[string]*eng
 	if err != nil {
 		return nil, err
 	}
+	if txBuf == nil {
+		_ = ti.db.applyMediaIndexOps(mediaIndexSyncRowOp(ti.name, row))
+	}
 	if ti.enforcePolicy && ti.requiresReadFiltering() {
 		row, ok := ti.filterReadableRow(row)
 		if !ok {
@@ -604,6 +610,9 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, txBuf ma
 	if err != nil {
 		return nil, err
 	}
+	if txBuf == nil {
+		_ = ti.db.applyMediaIndexOps(mediaIndexSyncRowOp(ti.name, row))
+	}
 	if ti.enforcePolicy && ti.requiresReadFiltering() {
 		row, ok := ti.filterReadableRow(row)
 		if !ok {
@@ -636,7 +645,14 @@ func (ti *TableInstance) deleteWithTx(pk string, txBuf map[string]*engine.WalBuf
 			return false, ErrAccessDenied
 		}
 	}
-	return ti.ti.Delete(pk, txBuf)
+	ok, err := ti.ti.Delete(pk, txBuf)
+	if err != nil {
+		return false, err
+	}
+	if ok && txBuf == nil {
+		_ = ti.db.applyMediaIndexOps(mediaIndexRemoveRowOp(ti.name, pk))
+	}
+	return ok, nil
 }
 
 type ArchiveOptions struct {
@@ -770,14 +786,17 @@ func (ti *TableInstance) ReplaceAll(rows []map[string]any) error {
 		}
 	}
 	if len(desired) == 0 {
-		return nil
+		return ti.db.applyMediaIndexOps(mediaIndexSyncTableOp(ti.name, rows))
 	}
 	toInsert := make([]map[string]any, 0, len(desired))
 	for _, row := range desired {
 		toInsert = append(toInsert, row)
 	}
 	_, err := ti.ti.BulkInsert(toInsert, 1000)
-	return err
+	if err != nil {
+		return err
+	}
+	return ti.db.applyMediaIndexOps(mediaIndexSyncTableOp(ti.name, rows))
 }
 
 // Scan returns rows with pagination.
@@ -1224,6 +1243,7 @@ func (ti *TableInstance) archiveCascade(tx *archiveTxn, pk, cascadeGroupID, root
 		return record, err
 	}
 	tx.addUndo(func() { _ = ti.ti.RollbackArchive(record) })
+	tx.addMedia(mediaIndexRemoveRowOp(ti.name, pk))
 
 	for _, ref := range ti.db.cascadeRefs[ti.name] {
 		child := ti.db.Table(ref.tableName)
@@ -1263,11 +1283,14 @@ func (ti *TableInstance) restoreCascade(tx *archiveTxn, archiveID, groupID strin
 	if groupID == "" {
 		groupID = record.CascadeGroupID
 	}
-	restoredRecord, _, err := ti.ti.RestoreArchived(archiveID, tx.txBuf)
+	restoredRecord, restoredRow, err := ti.ti.RestoreArchived(archiveID, tx.txBuf)
 	if err != nil {
 		return err
 	}
 	tx.addUndo(func() { _ = ti.ti.RollbackRestore(restoredRecord) })
+	if restoredRow != nil {
+		tx.addMedia(mediaIndexSyncRowOp(ti.name, restoredRow))
+	}
 
 	if groupID == "" {
 		return nil
@@ -1283,12 +1306,15 @@ func (ti *TableInstance) restoreCascade(tx *archiveTxn, archiveID, groupID strin
 		if item.record.CascadeDepth <= record.CascadeDepth {
 			continue
 		}
-		restoredChild, _, err := item.table.ti.RestoreArchived(item.record.ArchiveID, tx.txBuf)
+		restoredChild, restoredChildRow, err := item.table.ti.RestoreArchived(item.record.ArchiveID, tx.txBuf)
 		if err != nil {
 			return err
 		}
 		table := item.table
 		tx.addUndo(func() { _ = table.ti.RollbackRestore(restoredChild) })
+		if restoredChildRow != nil {
+			tx.addMedia(mediaIndexSyncRowOp(table.name, restoredChildRow))
+		}
 	}
 	return nil
 }
@@ -1466,6 +1492,13 @@ func (tx *archiveTxn) addUndo(fn func()) {
 	tx.undo = append(tx.undo, fn)
 }
 
+func (tx *archiveTxn) addMedia(op mediaIndexOp) {
+	if tx == nil || op == nil {
+		return
+	}
+	tx.media = append(tx.media, op)
+}
+
 func (tx *archiveTxn) rollback() {
 	if tx == nil || tx.closed {
 		return
@@ -1481,10 +1514,12 @@ func (tx *archiveTxn) commit() error {
 		return nil
 	}
 	tx.closed = true
-	if len(tx.txBuf) == 0 {
-		return nil
+	if len(tx.txBuf) > 0 {
+		if err := tx.db.db.EnqueueCommit(tx.txBuf); err != nil {
+			return err
+		}
 	}
-	return tx.db.db.EnqueueCommit(tx.txBuf)
+	return tx.db.applyMediaIndexOps(tx.media...)
 }
 
 func archiveDeletedBy(auth *AuthContext) string {
@@ -2073,7 +2108,7 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return nil, fmt.Errorf("materialized table is read-only: %s", table)
 	}
-	ti := p.DB.db.GetTable(table)
+	ti := p.DB.Table(table)
 	if ti == nil {
 		return nil, fmt.Errorf("table not found: %s", table)
 	}
@@ -2082,14 +2117,14 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 			return nil, err
 		}
 	}
-	return ti.Insert(data, nil)
+	return ti.Insert(data)
 }
 
 func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string]any) error {
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return fmt.Errorf("materialized table is read-only: %s", table)
 	}
-	ti := p.DB.db.GetTable(table)
+	ti := p.DB.Table(table)
 	if ti == nil {
 		return fmt.Errorf("table not found: %s", table)
 	}
@@ -2098,7 +2133,7 @@ func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string
 			return err
 		}
 	}
-	_, err := ti.Update(pk, fields, nil)
+	_, err := ti.Update(pk, fields)
 	return err
 }
 
@@ -2106,11 +2141,11 @@ func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return fmt.Errorf("materialized table is read-only: %s", table)
 	}
-	ti := p.DB.db.GetTable(table)
+	ti := p.DB.Table(table)
 	if ti == nil {
 		return fmt.Errorf("table not found: %s", table)
 	}
-	deleted, err := ti.Delete(pk, nil)
+	deleted, err := ti.Delete(pk)
 	if err != nil {
 		return err
 	}
@@ -2280,93 +2315,14 @@ func (d *Database) adminMediaRows(limit, offset int, search string, orphansOnly 
 	if d == nil || d.db == nil {
 		return nil, 0, fmt.Errorf("database not available")
 	}
-	dataDir := d.db.GetDataDir()
-	itemsByPath := map[string]*AdminMediaRow{}
-	existingPaths := map[string]bool{}
-	usedPaths := map[string]bool{}
-	usageSeen := map[string]bool{}
-	mediaRows := make([]AdminMediaRow, 0)
-
-	scanAdminMediaFilesOnDisk(dataDir, itemsByPath, existingPaths)
-
-	tableNames := make([]string, 0, len(d.db.Tables))
-	for name := range d.db.Tables {
-		tableNames = append(tableNames, name)
+	idx, err := loadMediaIndex(d.db.GetDataDir())
+	if err != nil {
+		d.ensureMediaIndexBackground()
+		idx = newMediaIndex()
+	} else if !idx.Complete {
+		d.ensureMediaIndexBackground()
 	}
-	sort.Strings(tableNames)
-
-	for _, tableName := range tableNames {
-		table := d.db.Tables[tableName]
-		if table == nil {
-			continue
-		}
-		def := table.GetDef()
-		tableRows, err := table.Scan(1_000_000, 0)
-		if err != nil {
-			return nil, 0, fmt.Errorf("scan media rows for %s: %w", tableName, err)
-		}
-		pkField := def.CompiledSchema.Fields[0].Name
-		for _, row := range tableRows {
-			rowID := fmt.Sprint(row[pkField])
-			for _, field := range def.CompiledSchema.Fields {
-				if !adminFieldCanContainMedia(field.Kind, row[field.Name]) {
-					continue
-				}
-				refs := adminCollectMediaRefs(row[field.Name], field.Kind)
-				for _, ref := range refs {
-					if !existingPaths[ref.Path] {
-						continue
-					}
-					item := ensureAdminMediaItem(itemsByPath, dataDir, ref)
-					if item == nil {
-						continue
-					}
-					usedPaths[item.Path] = true
-					usageKey := item.Path + "|" + tableName + "|" + rowID + "|" + field.Name
-					if usageSeen[usageKey] {
-						continue
-					}
-					usageSeen[usageKey] = true
-					mediaRows = append(mediaRows, AdminMediaRow{
-						Path:       item.Path,
-						Name:       item.Name,
-						URL:        item.URL,
-						Mime:       item.Mime,
-						RefSize:    item.RefSize,
-						DiskSize:   item.DiskSize,
-						ThumbCount: item.ThumbCount,
-						ThumbBytes: item.ThumbBytes,
-						Width:      item.Width,
-						Height:     item.Height,
-						Orphaned:   false,
-						TableName:  tableName,
-						RowID:      rowID,
-						FieldName:  field.Name,
-						Thumbs:     append([]string(nil), field.ThumbSizes...),
-					})
-				}
-			}
-		}
-	}
-
-	for _, item := range itemsByPath {
-		if usedPaths[item.Path] {
-			continue
-		}
-		mediaRows = append(mediaRows, AdminMediaRow{
-			Path:       item.Path,
-			Name:       item.Name,
-			URL:        item.URL,
-			Mime:       item.Mime,
-			RefSize:    item.RefSize,
-			DiskSize:   item.DiskSize,
-			ThumbCount: item.ThumbCount,
-			ThumbBytes: item.ThumbBytes,
-			Width:      item.Width,
-			Height:     item.Height,
-			Orphaned:   true,
-		})
-	}
+	mediaRows := flattenMediaIndexRows(idx)
 
 	if search = strings.ToLower(strings.TrimSpace(search)); search != "" || orphansOnly {
 		filtered := mediaRows[:0]
@@ -2610,6 +2566,28 @@ func adminMediaRefFromAny(value interface{}) (schema.FileRef, bool) {
 			return schema.FileRef{}, false
 		}
 		return *v, true
+	case FileRef:
+		if strings.TrimSpace(v.Path) == "" {
+			return schema.FileRef{}, false
+		}
+		return schema.FileRef{
+			Path: v.Path,
+			Name: v.Name,
+			URL:  v.URL,
+			Mime: v.Mime,
+			Size: v.Size,
+		}, true
+	case *FileRef:
+		if v == nil || strings.TrimSpace(v.Path) == "" {
+			return schema.FileRef{}, false
+		}
+		return schema.FileRef{
+			Path: v.Path,
+			Name: v.Name,
+			URL:  v.URL,
+			Mime: v.Mime,
+			Size: v.Size,
+		}, true
 	case string:
 		path := strings.TrimSpace(v)
 		if path == "" || !strings.HasPrefix(path, "_files/") {
@@ -2639,6 +2617,7 @@ func adminMediaRefFromAPIURL(raw string) (schema.FileRef, bool) {
 	if cut := strings.IndexAny(rel, "?#"); cut >= 0 {
 		rel = rel[:cut]
 	}
+	rel = strings.TrimRight(rel, ").,;:]}")
 	rel = strings.TrimPrefix(rel, "/")
 	parts := strings.Split(rel, "/")
 	if len(parts) < 4 {
@@ -2658,11 +2637,8 @@ func adminMediaRefFromAPIURL(raw string) (schema.FileRef, bool) {
 
 func adminFieldCanContainMedia(kind schema.FieldKind, value any) bool {
 	switch kind {
-	case schema.KindFileSingle, schema.KindFileMulti, schema.KindJson:
+	case schema.KindFileSingle, schema.KindFileMulti:
 		return value != nil
-	case schema.KindString:
-		s, ok := value.(string)
-		return ok && strings.Contains(s, "/api/files/")
 	default:
 		return false
 	}

@@ -1065,6 +1065,7 @@ func (t *Table[T]) Insert(scope any, row T) (T, error) {
 			if pk != "" {
 				tx.inner.addUndo(func() { _ = ti.rollbackInserted(pk) })
 			}
+			tx.inner.addMedia(mediaIndexSyncRowOp(t.name, out))
 		}
 	} else {
 		out, err = ti.Insert(data)
@@ -1116,6 +1117,9 @@ func (t *Table[T]) Update(scope any, id string, updates ...Update) error {
 		_, err = ti.updateWithTx(id, merged, tx.inner.txBuf)
 		if err == nil && len(before) > 0 && tx.inner != nil {
 			tx.inner.addUndo(func() { _ = ti.rollbackRawRow(before) })
+			if after, getErr := ti.ti.Get(id); getErr == nil && len(after) > 0 {
+				tx.inner.addMedia(mediaIndexSyncRowOp(t.name, after))
+			}
 		}
 		return err
 	}
@@ -1136,6 +1140,7 @@ func (t *Table[T]) Delete(scope any, id string) (bool, error) {
 		ok, err := ti.deleteWithTx(id, tx.inner.txBuf)
 		if err == nil && ok && len(before) > 0 && tx.inner != nil {
 			tx.inner.addUndo(func() { _ = ti.rollbackRawRow(before) })
+			tx.inner.addMedia(mediaIndexRemoveRowOp(t.name, id))
 		}
 		return ok, err
 	}

@@ -27,6 +27,7 @@ func (d *Database) StoreFileForField(tableName, rowID, fieldName, filename strin
 	if ref == nil {
 		return nil, nil
 	}
+	_ = d.applyMediaIndexOps(mediaIndexUpsertFileOp(*ref))
 	return &FileRef{
 		Path: ref.Path,
 		Name: ref.Name,
