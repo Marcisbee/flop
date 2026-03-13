@@ -92,7 +92,20 @@ func StoreFile(dataDir, tableName, rowID, fieldName, filename string, data []byt
 // DeleteFileRef removes a file from disk.
 func DeleteFileRef(dataDir string, ref *schema.FileRef) error {
 	filePath := filepath.Join(dataDir, ref.Path)
-	return os.Remove(filePath)
+	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	parts := strings.Split(filepath.ToSlash(strings.TrimPrefix(ref.Path, "_files/")), "/")
+	if len(parts) == 4 {
+		thumbDir := filepath.Join(dataDir, "_thumbs", parts[0], parts[1], parts[2])
+		pattern := filepath.Join(thumbDir, "*_"+parts[3])
+		if matches, err := filepath.Glob(pattern); err == nil {
+			for _, match := range matches {
+				_ = os.Remove(match)
+			}
+		}
+	}
+	return nil
 }
 
 // DeleteRowFiles removes the entire row's file directory.

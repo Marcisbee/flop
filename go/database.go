@@ -1512,6 +1512,8 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 				RefField:         fs.RefField,
 				MimeTypes:        append([]string(nil), fs.MimeTypes...),
 				ThumbSizes:       append([]string(nil), fs.ThumbSizes...),
+				MaxUploadBytes:   fs.MaxUploadBytes,
+				StoreOnlyThumbs:  fs.StoreOnlyThumbs,
 				Cached:           fs.Cached,
 			}
 			fieldByJSON[fs.JSONName] = fs
@@ -1751,6 +1753,12 @@ func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 		}
 		if len(f.MimeTypes) > 0 {
 			entry["mimeTypes"] = f.MimeTypes
+		}
+		if f.MaxUploadBytes > 0 {
+			entry["maxUploadBytes"] = f.MaxUploadBytes
+		}
+		if f.StoreOnlyThumbs {
+			entry["storeOnlyThumbs"] = true
 		}
 		val, _ := jsonx.Marshal(entry)
 		buf.Write(val)

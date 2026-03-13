@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
+	"github.com/marcisbee/flop/internal/images"
 	"github.com/marcisbee/flop/internal/jsonstd"
 	"github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/reqtrace"
@@ -266,18 +267,18 @@ func (h *Handler) handleFileServing(w http.ResponseWriter, r *http.Request, path
 		jsonError(w, "thumbnails not configured for this field", 400)
 		return
 	}
-	if !IsThumbAllowed(thumbParam, cf.ThumbSizes) {
+	if !images.IsThumbAllowed(thumbParam, cf.ThumbSizes) {
 		jsonError(w, "thumb size not allowed: "+thumbParam, 400)
 		return
 	}
 
-	size, err := ParseThumbSize(thumbParam)
+	size, err := images.ParseThumbSize(thumbParam)
 	if err != nil {
 		jsonError(w, err.Error(), 400)
 		return
 	}
 
-	thumbPath := ThumbPath(h.db.GetDataDir(), tableName, rowID, fieldName, filename, size)
+	thumbPath := images.ThumbPath(h.db.GetDataDir(), tableName, rowID, fieldName, filename, size)
 
 	// Serve cached thumbnail if it exists
 	if _, statErr := os.Stat(thumbPath); statErr == nil {
@@ -292,7 +293,7 @@ func (h *Handler) handleFileServing(w http.ResponseWriter, r *http.Request, path
 		return
 	}
 
-	if err := GenerateThumb(srcPath, thumbPath, size); err != nil {
+	if err := images.GenerateThumb(srcPath, thumbPath, size); err != nil {
 		jsonError(w, "thumbnail generation failed: "+err.Error(), 500)
 		return
 	}
@@ -1206,6 +1207,12 @@ func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 		if len(f.MimeTypes) > 0 {
 			entry["mimeTypes"] = f.MimeTypes
 		}
+		if f.MaxUploadBytes > 0 {
+			entry["maxUploadBytes"] = f.MaxUploadBytes
+		}
+		if f.StoreOnlyThumbs {
+			entry["storeOnlyThumbs"] = true
+		}
 		val, err := jsonx.Marshal(entry)
 		if err != nil {
 			return nil, err
@@ -1420,12 +1427,7 @@ func (h *Handler) handleFileUpload(w http.ResponseWriter, r *http.Request, table
 	if mime == "" {
 		mime = storage.MimeFromExtension(header.Filename)
 	}
-	if !storage.ValidateMimeType(mime, field.MimeTypes) {
-		jsonError(w, fmt.Sprintf("File type %s not allowed. Accepted: %s", mime, strings.Join(field.MimeTypes, ", ")), 400)
-		return
-	}
-
-	ref, err := storage.StoreFile(h.db.GetDataDir(), tableName, rowID, fieldName, header.Filename, data, mime)
+	ref, err := storage.StoreFileWithField(h.db.GetDataDir(), tableName, rowID, fieldName, header.Filename, data, mime, field)
 	if err != nil {
 		jsonError(w, err.Error(), 400)
 		return
@@ -1508,8 +1510,9 @@ func (h *Handler) handleFileDelete(w http.ResponseWriter, r *http.Request, table
 		}
 	}
 
-	// Best effort cleanup for the field directory.
+	// Best effort cleanup for the field directory and any precomputed thumbs.
 	_ = os.RemoveAll(filepath.Join(h.db.GetDataDir(), "_files", tableName, rowID, fieldName))
+	_ = os.RemoveAll(filepath.Join(h.db.GetDataDir(), "_thumbs", tableName, rowID, fieldName))
 
 	update := map[string]interface{}{fieldName: nil}
 	if field.Kind == schema.KindFileMulti {

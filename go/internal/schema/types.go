@@ -80,6 +80,8 @@ type CompiledField struct {
 	VectorDimensions int
 	Cached           bool     // engine-managed computed field
 	ThumbSizes       []string // allowed thumbnail sizes, e.g. "160x160", "1200x0"
+	MaxUploadBytes   int64
+	StoreOnlyThumbs  bool
 }
 
 // CompiledSchema is the in-memory representation of a table schema.

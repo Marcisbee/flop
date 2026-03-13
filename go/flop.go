@@ -104,6 +104,7 @@ func New(config Config) *App {
 // FileRef is the built-in file field value type exposed to apps and generators.
 type FileRef struct {
 	Path string `json:"path"`
+	Name string `json:"name"`
 	URL  string `json:"url"`
 	Mime string `json:"mime"`
 	Size int64  `json:"size"`
@@ -293,6 +294,16 @@ func (fb *FieldBuilder[T]) FileMulti(mime ...string) *FieldBuilder[T] {
 // Thumbs defines allowed thumbnail sizes for file fields (AutoTable API).
 func (fb *FieldBuilder[T]) Thumbs(sizes ...string) *FieldBuilder[T] {
 	fb.spec.ThumbSizes = append(fb.spec.ThumbSizes[:0:0], sizes...)
+	return fb
+}
+
+func (fb *FieldBuilder[T]) MaxUploadBytes(n int64) *FieldBuilder[T] {
+	fb.spec.MaxUploadBytes = n
+	return fb
+}
+
+func (fb *FieldBuilder[T]) StoreOnlyThumbs() *FieldBuilder[T] {
+	fb.spec.StoreOnlyThumbs = true
 	return fb
 }
 
@@ -837,6 +848,16 @@ func (b *FileSingleFieldRules) Thumbs(sizes ...string) *FileSingleFieldRules {
 	return b
 }
 
+func (b *FileSingleFieldRules) MaxUploadBytes(n int64) *FileSingleFieldRules {
+	b.spec.MaxUploadBytes = n
+	return b
+}
+
+func (b *FileSingleFieldRules) StoreOnlyThumbs() *FileSingleFieldRules {
+	b.spec.StoreOnlyThumbs = true
+	return b
+}
+
 func (b *FileMultiFieldRules) Required() *FileMultiFieldRules { b.spec.Required = true; return b }
 func (b *FileMultiFieldRules) Virtual() *FileMultiFieldRules  { b.spec.Virtual = true; return b }
 func (b *FileMultiFieldRules) Access(access FieldAccess) *FileMultiFieldRules {
@@ -847,6 +868,16 @@ func (b *FileMultiFieldRules) Access(access FieldAccess) *FileMultiFieldRules {
 // Thumbs defines allowed thumbnail sizes for image file fields.
 func (b *FileMultiFieldRules) Thumbs(sizes ...string) *FileMultiFieldRules {
 	b.spec.ThumbSizes = append(b.spec.ThumbSizes[:0:0], sizes...)
+	return b
+}
+
+func (b *FileMultiFieldRules) MaxUploadBytes(n int64) *FileMultiFieldRules {
+	b.spec.MaxUploadBytes = n
+	return b
+}
+
+func (b *FileMultiFieldRules) StoreOnlyThumbs() *FileMultiFieldRules {
+	b.spec.StoreOnlyThumbs = true
 	return b
 }
 
@@ -1483,6 +1514,8 @@ type FieldSpec struct {
 	RelationField   string   `json:"relationField,omitempty"`
 	MimeTypes       []string `json:"mimeTypes,omitempty"`
 	ThumbSizes      []string `json:"thumbSizes,omitempty"`
+	MaxUploadBytes  int64    `json:"maxUploadBytes,omitempty"`
+	StoreOnlyThumbs bool     `json:"storeOnlyThumbs,omitempty"`
 	MinLen          *int     `json:"minLen,omitempty"`
 	MaxLen          *int     `json:"maxLen,omitempty"`
 	Min             *float64 `json:"min,omitempty"`
@@ -1687,6 +1720,8 @@ type fieldSpec struct {
 	RelationField    string
 	MimeTypes        []string
 	ThumbSizes       []string
+	MaxUploadBytes   int64
+	StoreOnlyThumbs  bool
 	MinLen           *int
 	MaxLen           *int
 	Min              *float64
@@ -1723,6 +1758,8 @@ func (fs *fieldSpec) toPublic() FieldSpec {
 		RelationField:   fs.RelationField,
 		MimeTypes:       append([]string(nil), fs.MimeTypes...),
 		ThumbSizes:      append([]string(nil), fs.ThumbSizes...),
+		MaxUploadBytes:  fs.MaxUploadBytes,
+		StoreOnlyThumbs: fs.StoreOnlyThumbs,
 		MinLen:          copyIntPtr(fs.MinLen),
 		MaxLen:          copyIntPtr(fs.MaxLen),
 		Min:             copyFloatPtr(fs.Min),
