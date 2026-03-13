@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1077,6 +1078,11 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 		return
 	}
 
+	if path == "/_/api/media" && r.Method == "GET" {
+		h.handleListMedia(w, r)
+		return
+	}
+
 	// Table rows
 	if re := regexp.MustCompile(`^/_/api/tables/([^/]+)/rows$`); true {
 		match := re.FindStringSubmatch(path)
@@ -1176,6 +1182,343 @@ func (h *Handler) handleListTables(w http.ResponseWriter) {
 	jsonResponse(w, map[string]interface{}{"tables": tables})
 }
 
+type adminMediaUsage struct {
+	TableName string `json:"tableName"`
+	RowID     string `json:"rowId"`
+	FieldName string `json:"fieldName"`
+	Multi     bool   `json:"multi"`
+}
+
+type adminMediaItem struct {
+	Path       string            `json:"path"`
+	Name       string            `json:"name"`
+	URL        string            `json:"url"`
+	Mime       string            `json:"mime"`
+	RefSize    int64             `json:"refSize"`
+	DiskSize   int64             `json:"diskSize"`
+	ThumbCount int               `json:"thumbCount"`
+	ThumbBytes int64             `json:"thumbBytes"`
+	Width      int               `json:"width,omitempty"`
+	Height     int               `json:"height,omitempty"`
+	Orphaned   bool              `json:"orphaned"`
+	Usages     []adminMediaUsage `json:"usages"`
+}
+
+func (h *Handler) handleListMedia(w http.ResponseWriter, r *http.Request) {
+	items, err := h.buildMediaInventory()
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+	orphanOnly := r.URL.Query().Get("orphans") == "1"
+	if search != "" || orphanOnly {
+		filtered := items[:0]
+		for _, item := range items {
+			if orphanOnly && !item.Orphaned {
+				continue
+			}
+			if search != "" {
+				haystack := strings.ToLower(strings.Join([]string{
+					item.Path,
+					item.Name,
+					item.URL,
+					item.Mime,
+				}, "\n"))
+				for _, usage := range item.Usages {
+					haystack += "\n" + strings.ToLower(usage.TableName) + "\n" + strings.ToLower(usage.RowID) + "\n" + strings.ToLower(usage.FieldName)
+				}
+				if !strings.Contains(haystack, search) {
+					continue
+				}
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
+	}
+
+	jsonResponse(w, map[string]interface{}{"items": items})
+}
+
+func (h *Handler) buildMediaInventory() ([]*adminMediaItem, error) {
+	dataDir := h.db.GetDataDir()
+	itemsByPath := map[string]*adminMediaItem{}
+
+	tableNames := make([]string, 0, len(h.db.Tables))
+	for name := range h.db.Tables {
+		tableNames = append(tableNames, name)
+	}
+	sort.Strings(tableNames)
+
+	for _, tableName := range tableNames {
+		table := h.db.Tables[tableName]
+		if table == nil {
+			continue
+		}
+		def := table.GetDef()
+		fileFields := make([]schema.CompiledField, 0, len(def.CompiledSchema.Fields))
+		for _, field := range def.CompiledSchema.Fields {
+			if field.Kind == schema.KindFileSingle || field.Kind == schema.KindFileMulti {
+				fileFields = append(fileFields, field)
+			}
+		}
+		if len(fileFields) == 0 {
+			continue
+		}
+
+		rows, err := table.Scan(1_000_000, 0)
+		if err != nil {
+			return nil, fmt.Errorf("scan media rows for %s: %w", tableName, err)
+		}
+		pkField := def.CompiledSchema.Fields[0].Name
+		for _, row := range rows {
+			rowID := fmt.Sprint(row[pkField])
+			for _, field := range fileFields {
+				refs := mediaRefsFromValue(row[field.Name], field.Kind)
+				for _, ref := range refs {
+					item := ensureMediaItem(itemsByPath, dataDir, ref)
+					if item == nil {
+						continue
+					}
+					item.Usages = append(item.Usages, adminMediaUsage{
+						TableName: tableName,
+						RowID:     rowID,
+						FieldName: field.Name,
+						Multi:     field.Kind == schema.KindFileMulti,
+					})
+				}
+			}
+		}
+	}
+
+	scanMediaFilesOnDisk(dataDir, itemsByPath)
+
+	items := make([]*adminMediaItem, 0, len(itemsByPath))
+	for _, item := range itemsByPath {
+		if len(item.Usages) == 0 {
+			item.Orphaned = true
+		}
+		sort.Slice(item.Usages, func(i, j int) bool {
+			if item.Usages[i].TableName != item.Usages[j].TableName {
+				return item.Usages[i].TableName < item.Usages[j].TableName
+			}
+			if item.Usages[i].RowID != item.Usages[j].RowID {
+				return item.Usages[i].RowID < item.Usages[j].RowID
+			}
+			return item.Usages[i].FieldName < item.Usages[j].FieldName
+		})
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Orphaned != items[j].Orphaned {
+			return !items[i].Orphaned && items[j].Orphaned
+		}
+		return items[i].Path < items[j].Path
+	})
+	return items, nil
+}
+
+func scanMediaFilesOnDisk(dataDir string, itemsByPath map[string]*adminMediaItem) {
+	_ = filepath.Walk(dataDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dataDir, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if !strings.HasPrefix(rel, "_files/") && !strings.Contains(rel, "/_files/") {
+			return nil
+		}
+		if idx := strings.Index(rel, "_files/"); idx > 0 {
+			rel = rel[idx:]
+		}
+		if _, exists := itemsByPath[rel]; exists {
+			return nil
+		}
+		ref := schema.FileRef{
+			Path: rel,
+			Name: filepath.Base(path),
+			URL:  "/api/files/" + strings.TrimPrefix(filepath.ToSlash(rel), "_files/"),
+			Size: info.Size(),
+			Mime: storage.MimeFromExtension(path),
+		}
+		item := ensureMediaItem(itemsByPath, dataDir, ref)
+		if item != nil {
+			item.Orphaned = true
+		}
+		return nil
+	})
+}
+
+func ensureMediaItem(items map[string]*adminMediaItem, dataDir string, ref schema.FileRef) *adminMediaItem {
+	ref.Path = strings.TrimSpace(ref.Path)
+	if ref.Path == "" {
+		return nil
+	}
+	if item := items[ref.Path]; item != nil {
+		if item.Name == "" {
+			item.Name = ref.Name
+		}
+		if item.URL == "" {
+			item.URL = ref.URL
+		}
+		if item.Mime == "" {
+			item.Mime = ref.Mime
+		}
+		if item.RefSize == 0 {
+			item.RefSize = ref.Size
+		}
+		return item
+	}
+
+	item := &adminMediaItem{
+		Path:    ref.Path,
+		Name:    ref.Name,
+		URL:     ref.URL,
+		Mime:    ref.Mime,
+		RefSize: ref.Size,
+	}
+	fillMediaItemDetails(item, dataDir)
+	items[ref.Path] = item
+	return item
+}
+
+func fillMediaItemDetails(item *adminMediaItem, dataDir string) {
+	fullPath := filepath.Join(dataDir, filepath.FromSlash(item.Path))
+	if stat, err := os.Stat(fullPath); err == nil {
+		item.DiskSize = stat.Size()
+	}
+	if strings.HasPrefix(item.Mime, "image/") || looksLikeImagePath(item.Path) {
+		if w, h, err := images.ReadDimensions(fullPath); err == nil {
+			item.Width = w
+			item.Height = h
+		}
+	}
+
+	parts := strings.Split(strings.TrimPrefix(item.Path, "_files/"), "/")
+	if len(parts) != 4 {
+		return
+	}
+	thumbDir := filepath.Join(dataDir, "_thumbs", parts[0], parts[1], parts[2])
+	matches, err := filepath.Glob(filepath.Join(thumbDir, "*_"+parts[3]))
+	if err != nil {
+		return
+	}
+	item.ThumbCount = len(matches)
+	for _, match := range matches {
+		if stat, err := os.Stat(match); err == nil {
+			item.ThumbBytes += stat.Size()
+		}
+	}
+}
+
+func mediaRefsFromValue(value interface{}, kind schema.FieldKind) []schema.FileRef {
+	switch kind {
+	case schema.KindFileSingle:
+		if ref, ok := mediaRefFromAny(value); ok {
+			return []schema.FileRef{ref}
+		}
+	case schema.KindFileMulti:
+		rv := reflect.ValueOf(value)
+		if !rv.IsValid() || rv.Kind() != reflect.Slice {
+			return nil
+		}
+		refs := make([]schema.FileRef, 0, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			item := rv.Index(i).Interface()
+			if ref, ok := mediaRefFromAny(item); ok {
+				refs = append(refs, ref)
+			}
+		}
+		return refs
+	}
+	return nil
+}
+
+func mediaRefFromAny(value interface{}) (schema.FileRef, bool) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		ref := schema.FileRef{
+			Path: stringValue(v["path"]),
+			Name: stringValue(v["name"]),
+			URL:  stringValue(v["url"]),
+			Mime: stringValue(v["mime"]),
+			Size: int64Value(v["size"]),
+		}
+		if ref.Path == "" {
+			return schema.FileRef{}, false
+		}
+		return ref, true
+	case map[string]string:
+		ref := schema.FileRef{
+			Path: v["path"],
+			Name: v["name"],
+			URL:  v["url"],
+			Mime: v["mime"],
+		}
+		if ref.Path == "" {
+			return schema.FileRef{}, false
+		}
+		return ref, true
+	case schema.FileRef:
+		if strings.TrimSpace(v.Path) == "" {
+			return schema.FileRef{}, false
+		}
+		return v, true
+	case *schema.FileRef:
+		if v == nil || strings.TrimSpace(v.Path) == "" {
+			return schema.FileRef{}, false
+		}
+		return *v, true
+	case string:
+		path := strings.TrimSpace(v)
+		if path == "" || !strings.HasPrefix(path, "_files/") {
+			return schema.FileRef{}, false
+		}
+		return schema.FileRef{
+			Path: path,
+			Name: filepath.Base(path),
+			URL:  "/api/files/" + strings.TrimPrefix(path, "_files/"),
+			Mime: storage.MimeFromExtension(path),
+		}, true
+	default:
+		return schema.FileRef{}, false
+	}
+}
+
+func stringValue(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func int64Value(v interface{}) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return 0
+	}
+}
+
+func looksLikeImagePath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return true
+	default:
+		return false
+	}
+}
+
 func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('{')
@@ -1210,8 +1553,14 @@ func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 		if f.MaxUploadBytes > 0 {
 			entry["maxUploadBytes"] = f.MaxUploadBytes
 		}
-		if f.StoreOnlyThumbs {
-			entry["storeOnlyThumbs"] = true
+		if f.ImageMaxSize != "" {
+			entry["imageMaxSize"] = f.ImageMaxSize
+		}
+		if f.ImageFit != "" {
+			entry["imageFit"] = f.ImageFit
+		}
+		if f.DiscardOriginal {
+			entry["discardOriginal"] = true
 		}
 		val, err := jsonx.Marshal(entry)
 		if err != nil {

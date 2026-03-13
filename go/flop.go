@@ -302,9 +302,27 @@ func (fb *FieldBuilder[T]) MaxUploadBytes(n int64) *FieldBuilder[T] {
 	return fb
 }
 
-func (fb *FieldBuilder[T]) StoreOnlyThumbs() *FieldBuilder[T] {
-	fb.spec.StoreOnlyThumbs = true
+func (fb *FieldBuilder[T]) ImageMax(size string) *FieldBuilder[T] {
+	fb.spec.ImageMaxSize = size
 	return fb
+}
+
+func (fb *FieldBuilder[T]) ImageFit(mode string) *FieldBuilder[T] {
+	fb.spec.ImageFit = strings.ToLower(strings.TrimSpace(mode))
+	return fb
+}
+
+func (fb *FieldBuilder[T]) ImageFitCover() *FieldBuilder[T] {
+	return fb.ImageFit("cover")
+}
+
+func (fb *FieldBuilder[T]) DiscardOriginal() *FieldBuilder[T] {
+	fb.spec.DiscardOriginal = true
+	return fb
+}
+
+func (fb *FieldBuilder[T]) StoreOnlyThumbs() *FieldBuilder[T] {
+	return fb.DiscardOriginal()
 }
 
 func (fb *FieldBuilder[T]) HasMany(other any, foreignField string) *FieldBuilder[T] {
@@ -853,9 +871,27 @@ func (b *FileSingleFieldRules) MaxUploadBytes(n int64) *FileSingleFieldRules {
 	return b
 }
 
-func (b *FileSingleFieldRules) StoreOnlyThumbs() *FileSingleFieldRules {
-	b.spec.StoreOnlyThumbs = true
+func (b *FileSingleFieldRules) ImageMax(size string) *FileSingleFieldRules {
+	b.spec.ImageMaxSize = size
 	return b
+}
+
+func (b *FileSingleFieldRules) ImageFit(mode string) *FileSingleFieldRules {
+	b.spec.ImageFit = strings.ToLower(strings.TrimSpace(mode))
+	return b
+}
+
+func (b *FileSingleFieldRules) ImageFitCover() *FileSingleFieldRules {
+	return b.ImageFit("cover")
+}
+
+func (b *FileSingleFieldRules) DiscardOriginal() *FileSingleFieldRules {
+	b.spec.DiscardOriginal = true
+	return b
+}
+
+func (b *FileSingleFieldRules) StoreOnlyThumbs() *FileSingleFieldRules {
+	return b.DiscardOriginal()
 }
 
 func (b *FileMultiFieldRules) Required() *FileMultiFieldRules { b.spec.Required = true; return b }
@@ -876,9 +912,27 @@ func (b *FileMultiFieldRules) MaxUploadBytes(n int64) *FileMultiFieldRules {
 	return b
 }
 
-func (b *FileMultiFieldRules) StoreOnlyThumbs() *FileMultiFieldRules {
-	b.spec.StoreOnlyThumbs = true
+func (b *FileMultiFieldRules) ImageMax(size string) *FileMultiFieldRules {
+	b.spec.ImageMaxSize = size
 	return b
+}
+
+func (b *FileMultiFieldRules) ImageFit(mode string) *FileMultiFieldRules {
+	b.spec.ImageFit = strings.ToLower(strings.TrimSpace(mode))
+	return b
+}
+
+func (b *FileMultiFieldRules) ImageFitCover() *FileMultiFieldRules {
+	return b.ImageFit("cover")
+}
+
+func (b *FileMultiFieldRules) DiscardOriginal() *FileMultiFieldRules {
+	b.spec.DiscardOriginal = true
+	return b
+}
+
+func (b *FileMultiFieldRules) StoreOnlyThumbs() *FileMultiFieldRules {
+	return b.DiscardOriginal()
 }
 
 func (b *SetFieldRules) Required() *SetFieldRules     { b.spec.Required = true; return b }
@@ -1515,7 +1569,9 @@ type FieldSpec struct {
 	MimeTypes       []string `json:"mimeTypes,omitempty"`
 	ThumbSizes      []string `json:"thumbSizes,omitempty"`
 	MaxUploadBytes  int64    `json:"maxUploadBytes,omitempty"`
-	StoreOnlyThumbs bool     `json:"storeOnlyThumbs,omitempty"`
+	ImageMaxSize    string   `json:"imageMaxSize,omitempty"`
+	ImageFit        string   `json:"imageFit,omitempty"`
+	DiscardOriginal bool     `json:"discardOriginal,omitempty"`
 	MinLen          *int     `json:"minLen,omitempty"`
 	MaxLen          *int     `json:"maxLen,omitempty"`
 	Min             *float64 `json:"min,omitempty"`
@@ -1721,7 +1777,9 @@ type fieldSpec struct {
 	MimeTypes        []string
 	ThumbSizes       []string
 	MaxUploadBytes   int64
-	StoreOnlyThumbs  bool
+	ImageMaxSize     string
+	ImageFit         string
+	DiscardOriginal  bool
 	MinLen           *int
 	MaxLen           *int
 	Min              *float64
@@ -1759,7 +1817,9 @@ func (fs *fieldSpec) toPublic() FieldSpec {
 		MimeTypes:       append([]string(nil), fs.MimeTypes...),
 		ThumbSizes:      append([]string(nil), fs.ThumbSizes...),
 		MaxUploadBytes:  fs.MaxUploadBytes,
-		StoreOnlyThumbs: fs.StoreOnlyThumbs,
+		ImageMaxSize:    fs.ImageMaxSize,
+		ImageFit:        fs.ImageFit,
+		DiscardOriginal: fs.DiscardOriginal,
 		MinLen:          copyIntPtr(fs.MinLen),
 		MaxLen:          copyIntPtr(fs.MaxLen),
 		Min:             copyFloatPtr(fs.Min),

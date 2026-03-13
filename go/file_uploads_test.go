@@ -10,15 +10,17 @@ import (
 	"testing"
 )
 
-func TestStoreFileForFieldStoreOnlyThumbs(t *testing.T) {
+func TestStoreFileForFieldDiscardOriginal(t *testing.T) {
 	tmp := t.TempDir()
 	app := New(Config{DataDir: tmp})
 	Define(app, "users", func(s *SchemaBuilder) {
 		s.String("id").Primary()
 		s.FileSingle("avatar", "image/png", "image/jpeg").
 			MaxUploadBytes(2<<20).
+			ImageMax("180x180").
+			ImageFitCover().
 			Thumbs("100x100", "500x500").
-			StoreOnlyThumbs()
+			DiscardOriginal()
 	})
 	db, err := app.Open()
 	if err != nil {
@@ -44,8 +46,8 @@ func TestStoreFileForFieldStoreOnlyThumbs(t *testing.T) {
 		t.Fatalf("expected canonical file on disk: %v", err)
 	}
 	w, h := readImageSize(t, fullPath)
-	if w != 500 || h != 333 {
-		t.Fatalf("expected canonical image to be resized to 500x333, got %dx%d", w, h)
+	if w != 180 || h != 180 {
+		t.Fatalf("expected canonical image to be cropped to 180x180, got %dx%d", w, h)
 	}
 
 	thumbPath := filepath.Join(tmp, "_thumbs", "users", "u1", "avatar", "100x100_"+filepath.Base(ref.Path))
@@ -53,8 +55,13 @@ func TestStoreFileForFieldStoreOnlyThumbs(t *testing.T) {
 		t.Fatalf("expected precomputed thumb on disk: %v", err)
 	}
 	tw, th := readImageSize(t, thumbPath)
-	if tw != 100 || th != 66 {
-		t.Fatalf("expected 100 thumb to preserve aspect ratio as 100x66, got %dx%d", tw, th)
+	if tw != 100 || th != 100 {
+		t.Fatalf("expected 100 thumb from square canonical image, got %dx%d", tw, th)
+	}
+
+	largeThumbPath := filepath.Join(tmp, "_thumbs", "users", "u1", "avatar", "500x500_"+filepath.Base(ref.Path))
+	if _, err := os.Stat(largeThumbPath); err != nil {
+		t.Fatalf("expected 500 thumb on disk: %v", err)
 	}
 }
 

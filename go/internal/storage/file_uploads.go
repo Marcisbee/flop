@@ -25,36 +25,56 @@ func StoreFileWithField(dataDir, tableName, rowID, fieldName, filename string, d
 	if field.MaxUploadBytes > 0 && int64(len(data)) > field.MaxUploadBytes {
 		return nil, fmt.Errorf("file exceeds max upload size of %d bytes", field.MaxUploadBytes)
 	}
-	if !field.StoreOnlyThumbs {
+
+	if !isImageMime(mime) {
+		if field.ImageMaxSize != "" || field.DiscardOriginal || len(field.ThumbSizes) > 0 {
+			return nil, fmt.Errorf("image processing requires an image mime type")
+		}
 		return StoreFile(dataDir, tableName, rowID, fieldName, filename, data, mime)
 	}
-	if !isImageMime(mime) {
-		return nil, fmt.Errorf("store-only-thumbs requires an image mime type")
-	}
-	if len(field.ThumbSizes) == 0 {
-		return nil, fmt.Errorf("store-only-thumbs requires at least one thumb size")
+
+	thumbSizes, err := parseThumbSizes(field.ThumbSizes)
+	if err != nil {
+		return nil, err
 	}
 
-	sizes, err := parseThumbSizes(field.ThumbSizes)
+	var canonicalSize *images.ThumbSize
+	if field.ImageMaxSize != "" {
+		size, err := images.ParseThumbSize(field.ImageMaxSize)
+		if err != nil {
+			return nil, err
+		}
+		canonicalSize = &size
+	} else if field.DiscardOriginal {
+		if len(thumbSizes) == 0 {
+			return nil, fmt.Errorf("discard-original requires imageMax or at least one thumb size")
+		}
+		size := thumbSizes[largestThumbIndex(thumbSizes)]
+		canonicalSize = &size
+	}
+
+	mode := imageResizeMode(field)
+	storedData := data
+	storedMime := mime
+	if canonicalSize != nil {
+		storedData, storedMime, err = resizeImageBytesWithMode(data, mime, *canonicalSize, mode)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	ref, err := StoreFile(dataDir, tableName, rowID, fieldName, filename, storedData, storedMime)
 	if err != nil {
 		return nil, err
 	}
-	primaryIdx := largestThumbIndex(sizes)
-	primaryData, primaryMime, err := resizeImageBytes(data, mime, sizes[primaryIdx])
-	if err != nil {
-		return nil, err
-	}
-	ref, err := StoreFile(dataDir, tableName, rowID, fieldName, filename, primaryData, primaryMime)
-	if err != nil {
-		return nil, err
+
+	if len(thumbSizes) == 0 {
+		return ref, nil
 	}
 
 	thumbDir := filepath.Join(dataDir, "_thumbs", tableName, rowID, fieldName)
 	_ = os.RemoveAll(thumbDir)
-	for i, size := range sizes {
-		if i == primaryIdx {
-			continue
-		}
+	for _, size := range thumbSizes {
 		thumbPath := images.ThumbPath(dataDir, tableName, rowID, fieldName, filepath.Base(ref.Path), size)
 		if err := images.GenerateThumb(filepath.Join(dataDir, ref.Path), thumbPath, size); err != nil {
 			return nil, err
@@ -92,16 +112,30 @@ func largestThumbIndex(sizes []images.ThumbSize) int {
 }
 
 func resizeImageBytes(data []byte, mime string, size images.ThumbSize) ([]byte, string, error) {
+	return resizeImageBytesWithMode(data, mime, size, images.ResizeContain)
+}
+
+func resizeImageBytesWithMode(data []byte, mime string, size images.ThumbSize, mode images.ResizeMode) ([]byte, string, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", fmt.Errorf("decode image: %w", err)
 	}
 	outExt := outputExtForMime(mime)
-	resized, normalizedExt, err := images.ResizeEncodedImage(img, outExt, size)
+	resized, normalizedExt, err := images.ResizeEncodedImage(img, outExt, size, mode)
 	if err != nil {
 		return nil, "", err
 	}
 	return resized, mimeForOutputExt(normalizedExt), nil
+}
+
+func imageResizeMode(field *schema.CompiledField) images.ResizeMode {
+	if field == nil {
+		return images.ResizeContain
+	}
+	if strings.EqualFold(field.ImageFit, string(images.ResizeCover)) {
+		return images.ResizeCover
+	}
+	return images.ResizeContain
 }
 
 func outputExtForMime(mime string) string {

@@ -22,6 +22,13 @@ type ThumbSize struct {
 	Height int
 }
 
+type ResizeMode string
+
+const (
+	ResizeContain ResizeMode = "contain"
+	ResizeCover   ResizeMode = "cover"
+)
+
 func ParseThumbSize(s string) (ThumbSize, error) {
 	parts := strings.SplitN(strings.ToLower(s), "x", 2)
 	if len(parts) != 2 {
@@ -58,7 +65,7 @@ func GenerateThumb(srcPath, destPath string, size ThumbSize) error {
 		return fmt.Errorf("decode image: %w", err)
 	}
 
-	data, _, err := ResizeEncodedImage(img, filepath.Ext(destPath), size)
+	data, _, err := ResizeEncodedImage(img, filepath.Ext(destPath), size, ResizeContain)
 	if err != nil {
 		return err
 	}
@@ -71,19 +78,34 @@ func GenerateThumb(srcPath, destPath string, size ThumbSize) error {
 	return nil
 }
 
-func ResizeEncodedImage(img image.Image, ext string, size ThumbSize) ([]byte, string, error) {
+func ReadDimensions(path string) (int, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return 0, 0, err
+	}
+	return cfg.Width, cfg.Height, nil
+}
+
+func ResizeEncodedImage(img image.Image, ext string, size ThumbSize, mode ResizeMode) ([]byte, string, error) {
 	bounds := img.Bounds()
-	newW, newH := calcThumbDimensions(bounds.Dx(), bounds.Dy(), size)
+	newW, newH := calcOutputDimensions(bounds.Dx(), bounds.Dy(), size, mode)
 	if newW <= 0 || newH <= 0 {
 		return nil, "", fmt.Errorf("invalid computed dimensions: %dx%d", newW, newH)
 	}
-	if newW > bounds.Dx() && newH > bounds.Dy() {
-		newW = bounds.Dx()
-		newH = bounds.Dy()
-	}
 
 	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
-	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+	if normalizeResizeMode(mode) == ResizeCover && size.Width > 0 && size.Height > 0 {
+		srcRect := coverSourceRect(bounds, newW, newH)
+		draw.CatmullRom.Scale(dst, dst.Bounds(), img, srcRect, draw.Over, nil)
+	} else {
+		draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+	}
 
 	normalizedExt := normalizeOutputExt(ext)
 	var buf bytes.Buffer
@@ -110,7 +132,14 @@ func IsThumbAllowed(size string, allowed []string) bool {
 	return false
 }
 
-func calcThumbDimensions(origW, origH int, size ThumbSize) (int, int) {
+func calcOutputDimensions(origW, origH int, size ThumbSize, mode ResizeMode) (int, int) {
+	if normalizeResizeMode(mode) == ResizeCover && size.Width > 0 && size.Height > 0 {
+		return size.Width, size.Height
+	}
+	return calcContainDimensions(origW, origH, size)
+}
+
+func calcContainDimensions(origW, origH int, size ThumbSize) (int, int) {
 	w, h := size.Width, size.Height
 	if w == 0 && h == 0 {
 		return origW, origH
@@ -135,6 +164,41 @@ func calcThumbDimensions(origW, origH int, size ThumbSize) (int, int) {
 		h = 1
 	}
 	return w, h
+}
+
+func coverSourceRect(bounds image.Rectangle, targetW, targetH int) image.Rectangle {
+	origW := bounds.Dx()
+	origH := bounds.Dy()
+	if origW <= 0 || origH <= 0 || targetW <= 0 || targetH <= 0 {
+		return bounds
+	}
+	srcW := origW
+	srcH := origH
+	targetRatio := float64(targetW) / float64(targetH)
+	srcRatio := float64(origW) / float64(origH)
+	if srcRatio > targetRatio {
+		srcW = int(float64(origH) * targetRatio)
+		if srcW < 1 {
+			srcW = 1
+		}
+	} else if srcRatio < targetRatio {
+		srcH = int(float64(origW) / targetRatio)
+		if srcH < 1 {
+			srcH = 1
+		}
+	}
+	minX := bounds.Min.X + (origW-srcW)/2
+	minY := bounds.Min.Y + (origH-srcH)/2
+	return image.Rect(minX, minY, minX+srcW, minY+srcH)
+}
+
+func normalizeResizeMode(mode ResizeMode) ResizeMode {
+	switch strings.ToLower(strings.TrimSpace(string(mode))) {
+	case string(ResizeCover):
+		return ResizeCover
+	default:
+		return ResizeContain
+	}
 }
 
 func normalizeOutputExt(ext string) string {

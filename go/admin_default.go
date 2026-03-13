@@ -36,6 +36,31 @@ type AdminRowsPage struct {
 	Limit   int              `json:"limit"`
 }
 
+type AdminMediaUsage struct {
+	TableName string `json:"tableName"`
+	RowID     string `json:"rowId"`
+	FieldName string `json:"fieldName"`
+	Multi     bool   `json:"multi"`
+}
+
+type AdminMediaRow struct {
+	Path       string   `json:"path"`
+	Name       string   `json:"name"`
+	URL        string   `json:"url"`
+	Mime       string   `json:"mime"`
+	RefSize    int64    `json:"refSize"`
+	DiskSize   int64    `json:"diskSize"`
+	ThumbCount int      `json:"thumbCount"`
+	ThumbBytes int64    `json:"thumbBytes"`
+	Width      int      `json:"width,omitempty"`
+	Height     int      `json:"height,omitempty"`
+	Orphaned   bool     `json:"orphaned"`
+	TableName  string   `json:"tableName,omitempty"`
+	RowID      string   `json:"rowId,omitempty"`
+	FieldName  string   `json:"fieldName,omitempty"`
+	Thumbs     []string `json:"thumbs,omitempty"`
+}
+
 type AdminProvider interface {
 	AdminTables() ([]AdminTable, error)
 	AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error)
@@ -47,6 +72,10 @@ type AdminProvider interface {
 // an index lookup instead of a full table scan (for simple field="value" filters).
 type AdminFilterProvider interface {
 	AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int, indexField, indexValue string) (rows []map[string]any, total int, found bool, err error)
+}
+
+type AdminMediaProvider interface {
+	AdminMediaRows(limit, offset int, search string, orphansOnly bool) ([]AdminMediaRow, int, error)
 }
 
 type AdminWriteProvider interface {
@@ -149,6 +178,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 	archiveProvider, archiveEnabled := provider.(AdminArchiveProvider)
 	sseProvider, sseEnabled := provider.(AdminSSEProvider)
 	filterProvider, filterEnabled := provider.(AdminFilterProvider)
+	mediaProvider, mediaEnabled := provider.(AdminMediaProvider)
 	analyticsProvider, analyticsCapable := provider.(AdminAnalyticsProvider)
 	indexStatsProvider, indexStatsCapable := provider.(AdminIndexStatsProvider)
 	pprofProvider, pprofCapable := provider.(AdminPprofProvider)
@@ -544,6 +574,37 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				return
 			}
 			adminJSONResp(w, http.StatusOK, map[string]any{"tables": tables})
+			return
+		}
+
+		if path == "/_/api/media" {
+			if r.Method != http.MethodGet {
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !mediaEnabled {
+				adminJSONResp(w, http.StatusOK, map[string]any{"rows": []AdminMediaRow{}, "total": 0, "page": 1, "pages": 0, "limit": 50})
+				return
+			}
+			limit := clampInt(parseIntOr(r.URL.Query().Get("limit"), 50), 1, 200)
+			page := parseIntOr(r.URL.Query().Get("page"), 1)
+			if page < 1 {
+				page = 1
+			}
+			offset := (page - 1) * limit
+			search := strings.TrimSpace(r.URL.Query().Get("search"))
+			orphansOnly := r.URL.Query().Get("orphans") == "1"
+			rows, total, err := mediaProvider.AdminMediaRows(limit, offset, search, orphansOnly)
+			if err != nil {
+				adminJSONError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			pages := (total + limit - 1) / limit
+			adminJSONResp(w, http.StatusOK, map[string]any{"rows": rows, "total": total, "page": page, "pages": pages, "limit": limit})
 			return
 		}
 

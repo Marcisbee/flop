@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/reqtrace"
@@ -13,7 +14,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +25,7 @@ import (
 
 	"github.com/marcisbee/flop/internal/cron"
 	"github.com/marcisbee/flop/internal/engine"
+	"github.com/marcisbee/flop/internal/images"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/server"
 	"github.com/marcisbee/flop/internal/storage"
@@ -377,8 +382,47 @@ func (d *Database) GetDataDir() string {
 func (d *Database) FileHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, "/api/files/")
-		filePath := filepath.Join(d.db.GetDataDir(), "_files", rel)
-		http.ServeFile(w, r, filePath)
+		parts := strings.SplitN(rel, "/", 4)
+		thumbParam := r.URL.Query().Get("thumb")
+		if thumbParam == "" || len(parts) < 4 {
+			filePath := filepath.Join(d.db.GetDataDir(), "_files", rel)
+			http.ServeFile(w, r, filePath)
+			return
+		}
+
+		tableName, rowID, fieldName, filename := parts[0], parts[1], parts[2], parts[3]
+		ti := d.db.GetTable(tableName)
+		if ti == nil {
+			http.NotFound(w, r)
+			return
+		}
+		field := ti.GetDef().CompiledSchema.FieldMap[fieldName]
+		if field == nil || len(field.ThumbSizes) == 0 || !images.IsThumbAllowed(thumbParam, field.ThumbSizes) {
+			http.Error(w, "thumb size not allowed", http.StatusBadRequest)
+			return
+		}
+		size, err := images.ParseThumbSize(thumbParam)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		thumbPath := images.ThumbPath(d.db.GetDataDir(), tableName, rowID, fieldName, filename, size)
+		if _, err := os.Stat(thumbPath); err == nil {
+			http.ServeFile(w, r, thumbPath)
+			return
+		}
+
+		srcPath := filepath.Join(d.db.GetDataDir(), "_files", tableName, rowID, fieldName, filename)
+		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		if err := images.GenerateThumb(srcPath, thumbPath, size); err != nil {
+			http.Error(w, "thumbnail generation failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		http.ServeFile(w, r, thumbPath)
 	})
 }
 
@@ -1513,7 +1557,9 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 				MimeTypes:        append([]string(nil), fs.MimeTypes...),
 				ThumbSizes:       append([]string(nil), fs.ThumbSizes...),
 				MaxUploadBytes:   fs.MaxUploadBytes,
-				StoreOnlyThumbs:  fs.StoreOnlyThumbs,
+				ImageMaxSize:     fs.ImageMaxSize,
+				ImageFit:         fs.ImageFit,
+				DiscardOriginal:  fs.DiscardOriginal,
 				Cached:           fs.Cached,
 			}
 			fieldByJSON[fs.JSONName] = fs
@@ -1757,8 +1803,14 @@ func marshalOrderedSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 		if f.MaxUploadBytes > 0 {
 			entry["maxUploadBytes"] = f.MaxUploadBytes
 		}
-		if f.StoreOnlyThumbs {
-			entry["storeOnlyThumbs"] = true
+		if f.ImageMaxSize != "" {
+			entry["imageMaxSize"] = f.ImageMaxSize
+		}
+		if f.ImageFit != "" {
+			entry["imageFit"] = f.ImageFit
+		}
+		if f.DiscardOriginal {
+			entry["discardOriginal"] = true
 		}
 		val, _ := jsonx.Marshal(entry)
 		buf.Write(val)
@@ -2132,6 +2184,13 @@ func (p *EngineAdminProvider) AdminIndexStats() any {
 	return p.DB.db.IndexStatsReport()
 }
 
+func (p *EngineAdminProvider) AdminMediaRows(limit, offset int, search string, orphansOnly bool) ([]AdminMediaRow, int, error) {
+	if p == nil || p.DB == nil {
+		return nil, 0, fmt.Errorf("database not available")
+	}
+	return p.DB.adminMediaRows(limit, offset, search, orphansOnly)
+}
+
 // AdminEnablePprof reports whether profiling endpoints are enabled.
 func (p *EngineAdminProvider) AdminRefreshMaterialized(table string) error {
 	if p == nil || p.DB == nil {
@@ -2213,6 +2272,429 @@ func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler 
 			Details:      details,
 		})
 	})
+}
+
+var adminMediaURLPattern = regexp.MustCompile(`(?:https?://[^/\s"'<>]+)?(/api/files/[^\s"'<>]+)`)
+
+func (d *Database) adminMediaRows(limit, offset int, search string, orphansOnly bool) ([]AdminMediaRow, int, error) {
+	if d == nil || d.db == nil {
+		return nil, 0, fmt.Errorf("database not available")
+	}
+	dataDir := d.db.GetDataDir()
+	itemsByPath := map[string]*AdminMediaRow{}
+	existingPaths := map[string]bool{}
+	usedPaths := map[string]bool{}
+	usageSeen := map[string]bool{}
+	mediaRows := make([]AdminMediaRow, 0)
+
+	scanAdminMediaFilesOnDisk(dataDir, itemsByPath, existingPaths)
+
+	tableNames := make([]string, 0, len(d.db.Tables))
+	for name := range d.db.Tables {
+		tableNames = append(tableNames, name)
+	}
+	sort.Strings(tableNames)
+
+	for _, tableName := range tableNames {
+		table := d.db.Tables[tableName]
+		if table == nil {
+			continue
+		}
+		def := table.GetDef()
+		tableRows, err := table.Scan(1_000_000, 0)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan media rows for %s: %w", tableName, err)
+		}
+		pkField := def.CompiledSchema.Fields[0].Name
+		for _, row := range tableRows {
+			rowID := fmt.Sprint(row[pkField])
+			for _, field := range def.CompiledSchema.Fields {
+				if !adminFieldCanContainMedia(field.Kind, row[field.Name]) {
+					continue
+				}
+				refs := adminCollectMediaRefs(row[field.Name], field.Kind)
+				for _, ref := range refs {
+					if !existingPaths[ref.Path] {
+						continue
+					}
+					item := ensureAdminMediaItem(itemsByPath, dataDir, ref)
+					if item == nil {
+						continue
+					}
+					usedPaths[item.Path] = true
+					usageKey := item.Path + "|" + tableName + "|" + rowID + "|" + field.Name
+					if usageSeen[usageKey] {
+						continue
+					}
+					usageSeen[usageKey] = true
+					mediaRows = append(mediaRows, AdminMediaRow{
+						Path:       item.Path,
+						Name:       item.Name,
+						URL:        item.URL,
+						Mime:       item.Mime,
+						RefSize:    item.RefSize,
+						DiskSize:   item.DiskSize,
+						ThumbCount: item.ThumbCount,
+						ThumbBytes: item.ThumbBytes,
+						Width:      item.Width,
+						Height:     item.Height,
+						Orphaned:   false,
+						TableName:  tableName,
+						RowID:      rowID,
+						FieldName:  field.Name,
+						Thumbs:     append([]string(nil), field.ThumbSizes...),
+					})
+				}
+			}
+		}
+	}
+
+	for _, item := range itemsByPath {
+		if usedPaths[item.Path] {
+			continue
+		}
+		mediaRows = append(mediaRows, AdminMediaRow{
+			Path:       item.Path,
+			Name:       item.Name,
+			URL:        item.URL,
+			Mime:       item.Mime,
+			RefSize:    item.RefSize,
+			DiskSize:   item.DiskSize,
+			ThumbCount: item.ThumbCount,
+			ThumbBytes: item.ThumbBytes,
+			Width:      item.Width,
+			Height:     item.Height,
+			Orphaned:   true,
+		})
+	}
+
+	if search = strings.ToLower(strings.TrimSpace(search)); search != "" || orphansOnly {
+		filtered := mediaRows[:0]
+		for _, row := range mediaRows {
+			if orphansOnly && !row.Orphaned {
+				continue
+			}
+			if search != "" {
+				haystack := strings.ToLower(strings.Join([]string{
+					row.Path,
+					row.Name,
+					row.Mime,
+					row.TableName,
+					row.RowID,
+					row.FieldName,
+					strings.Join(row.Thumbs, " "),
+				}, "\n"))
+				if !strings.Contains(haystack, search) {
+					continue
+				}
+			}
+			filtered = append(filtered, row)
+		}
+		mediaRows = filtered
+	}
+
+	sort.Slice(mediaRows, func(i, j int) bool {
+		if mediaRows[i].Orphaned != mediaRows[j].Orphaned {
+			return !mediaRows[i].Orphaned && mediaRows[j].Orphaned
+		}
+		if mediaRows[i].TableName != mediaRows[j].TableName {
+			return mediaRows[i].TableName < mediaRows[j].TableName
+		}
+		if mediaRows[i].RowID != mediaRows[j].RowID {
+			return mediaRows[i].RowID < mediaRows[j].RowID
+		}
+		if mediaRows[i].FieldName != mediaRows[j].FieldName {
+			return mediaRows[i].FieldName < mediaRows[j].FieldName
+		}
+		return mediaRows[i].Path < mediaRows[j].Path
+	})
+
+	total := len(mediaRows)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	pageRows := mediaRows[offset:end]
+	if pageRows == nil {
+		pageRows = []AdminMediaRow{}
+	}
+	return pageRows, total, nil
+}
+
+func scanAdminMediaFilesOnDisk(dataDir string, itemsByPath map[string]*AdminMediaRow, existingPaths map[string]bool) {
+	filesRoot := filepath.Join(dataDir, "_files")
+	_ = filepath.Walk(filesRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dataDir, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if !strings.HasPrefix(rel, "_files/") {
+			return nil
+		}
+		existingPaths[rel] = true
+		if _, exists := itemsByPath[rel]; exists {
+			return nil
+		}
+		ref := schema.FileRef{
+			Path: rel,
+			Name: filepath.Base(path),
+			URL:  "/api/files/" + strings.TrimPrefix(filepath.ToSlash(rel), "_files/"),
+			Size: info.Size(),
+			Mime: storage.MimeFromExtension(path),
+		}
+		item := ensureAdminMediaItem(itemsByPath, dataDir, ref)
+		if item != nil {
+			item.Orphaned = true
+		}
+		return nil
+	})
+}
+
+func ensureAdminMediaItem(items map[string]*AdminMediaRow, dataDir string, ref schema.FileRef) *AdminMediaRow {
+	ref.Path = strings.TrimSpace(ref.Path)
+	if ref.Path == "" {
+		return nil
+	}
+	if item := items[ref.Path]; item != nil {
+		if item.Name == "" {
+			item.Name = ref.Name
+		}
+		if item.URL == "" {
+			item.URL = ref.URL
+		}
+		if item.Mime == "" {
+			item.Mime = ref.Mime
+		}
+		if item.RefSize == 0 {
+			item.RefSize = ref.Size
+		}
+		return item
+	}
+
+	item := &AdminMediaRow{
+		Path:    ref.Path,
+		Name:    ref.Name,
+		URL:     ref.URL,
+		Mime:    ref.Mime,
+		RefSize: ref.Size,
+	}
+	fillAdminMediaItemDetails(item, dataDir)
+	items[ref.Path] = item
+	return item
+}
+
+func fillAdminMediaItemDetails(item *AdminMediaRow, dataDir string) {
+	fullPath := filepath.Join(dataDir, filepath.FromSlash(item.Path))
+	if stat, err := os.Stat(fullPath); err == nil {
+		item.DiskSize = stat.Size()
+	}
+	if strings.HasPrefix(item.Mime, "image/") || adminLooksLikeImagePath(item.Path) {
+		if w, h, err := images.ReadDimensions(fullPath); err == nil {
+			item.Width = w
+			item.Height = h
+		}
+	}
+
+	parts := strings.Split(strings.TrimPrefix(item.Path, "_files/"), "/")
+	if len(parts) != 4 {
+		return
+	}
+	thumbDir := filepath.Join(dataDir, "_thumbs", parts[0], parts[1], parts[2])
+	matches, err := filepath.Glob(filepath.Join(thumbDir, "*_"+parts[3]))
+	if err != nil {
+		return
+	}
+	item.ThumbCount = len(matches)
+	for _, match := range matches {
+		if stat, err := os.Stat(match); err == nil {
+			item.ThumbBytes += stat.Size()
+		}
+	}
+}
+
+func adminCollectMediaRefs(value interface{}, kind schema.FieldKind) []schema.FileRef {
+	switch kind {
+	case schema.KindFileSingle:
+		if ref, ok := adminMediaRefFromAny(value); ok {
+			return []schema.FileRef{ref}
+		}
+	case schema.KindFileMulti:
+		rv := reflect.ValueOf(value)
+		if !rv.IsValid() || rv.Kind() != reflect.Slice {
+			return nil
+		}
+		refs := make([]schema.FileRef, 0, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			if ref, ok := adminMediaRefFromAny(rv.Index(i).Interface()); ok {
+				refs = append(refs, ref)
+			}
+		}
+		return refs
+	case schema.KindString:
+		s, ok := value.(string)
+		if !ok || !strings.Contains(s, "/api/files/") {
+			return nil
+		}
+		return adminExtractMediaRefsFromText(s)
+	case schema.KindJson:
+		if value == nil {
+			return nil
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil
+		}
+		text := string(data)
+		if !strings.Contains(text, "/api/files/") {
+			return nil
+		}
+		return adminExtractMediaRefsFromText(text)
+	}
+	return nil
+}
+
+func adminExtractMediaRefsFromText(text string) []schema.FileRef {
+	seen := map[string]bool{}
+	var refs []schema.FileRef
+	for _, match := range adminMediaURLPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		if ref, ok := adminMediaRefFromAPIURL(match[1]); ok && !seen[ref.Path] {
+			seen[ref.Path] = true
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+func adminMediaRefFromAny(value interface{}) (schema.FileRef, bool) {
+	switch v := value.(type) {
+	case map[string]any:
+		ref := schema.FileRef{
+			Path: adminStringValue(v["path"]),
+			Name: adminStringValue(v["name"]),
+			URL:  adminStringValue(v["url"]),
+			Mime: adminStringValue(v["mime"]),
+			Size: adminInt64Value(v["size"]),
+		}
+		if ref.Path == "" {
+			return schema.FileRef{}, false
+		}
+		return ref, true
+	case map[string]string:
+		ref := schema.FileRef{
+			Path: v["path"],
+			Name: v["name"],
+			URL:  v["url"],
+			Mime: v["mime"],
+		}
+		if strings.TrimSpace(ref.Path) == "" {
+			return schema.FileRef{}, false
+		}
+		return ref, true
+	case schema.FileRef:
+		if strings.TrimSpace(v.Path) == "" {
+			return schema.FileRef{}, false
+		}
+		return v, true
+	case *schema.FileRef:
+		if v == nil || strings.TrimSpace(v.Path) == "" {
+			return schema.FileRef{}, false
+		}
+		return *v, true
+	case string:
+		path := strings.TrimSpace(v)
+		if path == "" || !strings.HasPrefix(path, "_files/") {
+			return adminMediaRefFromAPIURL(path)
+		}
+		return schema.FileRef{
+			Path: path,
+			Name: filepath.Base(path),
+			URL:  "/api/files/" + strings.TrimPrefix(path, "_files/"),
+			Mime: storage.MimeFromExtension(path),
+		}, true
+	default:
+		return schema.FileRef{}, false
+	}
+}
+
+func adminMediaRefFromAPIURL(raw string) (schema.FileRef, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return schema.FileRef{}, false
+	}
+	idx := strings.Index(raw, "/api/files/")
+	if idx < 0 {
+		return schema.FileRef{}, false
+	}
+	rel := raw[idx+len("/api/files/"):]
+	if cut := strings.IndexAny(rel, "?#"); cut >= 0 {
+		rel = rel[:cut]
+	}
+	rel = strings.TrimPrefix(rel, "/")
+	parts := strings.Split(rel, "/")
+	if len(parts) < 4 {
+		return schema.FileRef{}, false
+	}
+	path := "_files/" + strings.Join(parts[:4], "/")
+	if strings.Contains(path, "..") {
+		return schema.FileRef{}, false
+	}
+	return schema.FileRef{
+		Path: path,
+		Name: filepath.Base(path),
+		URL:  "/api/files/" + strings.TrimPrefix(path, "_files/"),
+		Mime: storage.MimeFromExtension(path),
+	}, true
+}
+
+func adminFieldCanContainMedia(kind schema.FieldKind, value any) bool {
+	switch kind {
+	case schema.KindFileSingle, schema.KindFileMulti, schema.KindJson:
+		return value != nil
+	case schema.KindString:
+		s, ok := value.(string)
+		return ok && strings.Contains(s, "/api/files/")
+	default:
+		return false
+	}
+}
+
+func adminStringValue(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func adminInt64Value(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return 0
+	}
+}
+
+func adminLooksLikeImagePath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return true
+	default:
+		return false
+	}
 }
 
 type statusRecorder struct {
