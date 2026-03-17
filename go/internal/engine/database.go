@@ -34,6 +34,7 @@ type Database struct {
 	dataDir               string
 	meta                  *schema.StoredMeta
 	pubsub                *PubSub
+	lock                  storage.DirLock
 	opened                bool
 	syncMode              string
 	asyncSecondaryIndexes bool
@@ -61,6 +62,8 @@ type walBufEntry struct {
 	pending []string
 }
 
+var testEnqueueCommitHook func() error
+
 func NewDatabase(config DatabaseConfig) *Database {
 	if config.DataDir == "" {
 		config.DataDir = "./data"
@@ -86,18 +89,31 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	if db.opened {
 		return nil
 	}
-	db.opened = true
 
 	if err := os.MkdirAll(db.dataDir, 0755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
+	lock, err := storage.AcquireDirLock(db.dataDir)
+	if err != nil {
+		return fmt.Errorf("lock data dir: %w", err)
+	}
+	db.lock = lock
+	db.opened = true
+	defer func() {
+		if !db.opened && db.lock != nil {
+			_ = db.lock.Close()
+			db.lock = nil
+		}
+	}()
 	if err := os.MkdirAll(filepath.Join(db.dataDir, "_files"), 0755); err != nil {
+		db.opened = false
 		return fmt.Errorf("create files dir: %w", err)
 	}
 
 	metaPath := filepath.Join(db.dataDir, "_meta.flop")
 	meta, err := storage.ReadMetaFile(metaPath)
 	if err != nil {
+		db.opened = false
 		return fmt.Errorf("read meta: %w", err)
 	}
 	db.meta = meta
@@ -105,9 +121,11 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	for name, def := range tableDefs {
 		instance, err := newTableInstance(name, def, db)
 		if err != nil {
+			db.opened = false
 			return fmt.Errorf("init table %q: %w", name, err)
 		}
 		if err := instance.open(db.dataDir, db.meta, db.pubsub, db.maxCachePages); err != nil {
+			db.opened = false
 			return fmt.Errorf("open table %q: %w", name, err)
 		}
 		db.Tables[name] = instance
@@ -115,6 +133,7 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 
 	// Save meta (may have new schema versions)
 	if err := storage.WriteMetaFile(metaPath, db.meta); err != nil {
+		db.opened = false
 		return fmt.Errorf("write meta: %w", err)
 	}
 
@@ -152,6 +171,11 @@ func (db *Database) GetAuthTable() *TableInstance {
 // In "normal" syncMode, flushes WAL records directly (no fsync needed).
 // The locksHeld parameter indicates the caller already holds table locks (non-tx single-op mode).
 func (db *Database) EnqueueCommit(walBuffers map[string]*walBufEntry) error {
+	if testEnqueueCommitHook != nil {
+		if err := testEnqueueCommitHook(); err != nil {
+			return err
+		}
+	}
 	if db.syncMode != "full" {
 		return db.directFlush(walBuffers, false)
 	}
@@ -161,6 +185,11 @@ func (db *Database) EnqueueCommit(walBuffers map[string]*walBufEntry) error {
 // EnqueueCommitLocked is like EnqueueCommit but the caller already holds the table lock.
 // Used by Insert/Update/Delete for non-transaction single-table operations.
 func (db *Database) EnqueueCommitLocked(walBuffers map[string]*walBufEntry) error {
+	if testEnqueueCommitHook != nil {
+		if err := testEnqueueCommitHook(); err != nil {
+			return err
+		}
+	}
 	if db.syncMode != "full" {
 		return db.directFlush(walBuffers, true)
 	}
@@ -360,6 +389,12 @@ func (db *Database) Close() error {
 	}
 	if db.pubsub != nil {
 		db.pubsub.Close()
+	}
+	if db.lock != nil {
+		if err := db.lock.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		db.lock = nil
 	}
 	return firstErr
 }
@@ -1323,6 +1358,9 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 		}
 		failpoint.Hit("insert_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			if pendingKey != "" {
+				_ = ti.RollbackInsert(pendingKey)
+			}
 			return nil, err
 		}
 		pendingAdded = false
@@ -1352,6 +1390,11 @@ func (ti *TableInstance) BulkInsert(rows []map[string]interface{}, flushEvery in
 			return nil
 		}
 		if err := ti.db.EnqueueCommit(txBuf); err != nil {
+			if entry := txBuf[ti.Name]; entry != nil {
+				for _, pk := range entry.pending {
+					_ = ti.RollbackInsert(pk)
+				}
+			}
 			return err
 		}
 		txBuf = make(map[string]*walBufEntry)
@@ -1381,6 +1424,9 @@ func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
 	defer rowLock.Unlock()
+	if ti.isPendingKey(key) {
+		return nil, nil
+	}
 
 	return ti.getUnlocked(key)
 }
@@ -1389,6 +1435,9 @@ func (ti *TableInstance) GetRaw(key string) ([]byte, error) {
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
 	defer rowLock.Unlock()
+	if ti.isPendingKey(key) {
+		return nil, nil
+	}
 	_, raw, ok, err := ti.getRawUnlocked(key)
 	if err != nil || !ok {
 		return nil, err
@@ -1542,6 +1591,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		pageLock.Unlock()
 		return nil, err
 	}
+	oldRaw := page.ReadRow(int(pointer.SlotIndex))
 	_, oldLen := page.GetSlot(int(pointer.SlotIndex))
 	if oldLen == 0 || uint16(len(serialized)) > oldLen {
 		pageLock.Unlock()
@@ -1592,6 +1642,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		}
 		failpoint.Hit("update_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			_ = ti.RollbackRawRow(oldRaw)
 			return nil, err
 		}
 		pendingAdded = false
@@ -1689,6 +1740,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	if err != nil {
 		return nil, err
 	}
+	oldRaw := page.ReadRow(int(pointer.SlotIndex))
 	updated := page.UpdateRow(int(pointer.SlotIndex), serialized)
 
 	if !updated {
@@ -1750,6 +1802,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		}
 		failpoint.Hit("update_slow_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			_ = ti.RollbackRawRow(oldRaw)
 			return nil, err
 		}
 		pendingAdded = false
@@ -1985,21 +2038,17 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 		}
 	}()
 
-	existing, err := ti.getUnlocked(key)
+	pointer, rawData, ok, err := ti.getRawUnlocked(key)
 	if err != nil {
 		return false, err
 	}
-	if existing == nil {
-		return false, nil
-	}
-
-	pointer, ok := ti.primaryIndex.Get(key)
 	if !ok {
 		return false, nil
 	}
-
-	// File cleanup
-	storage.DeleteRowFiles(ti.dataDir, ti.Name, key)
+	existing, err := ti.deserializeCurrentRow(rawData)
+	if err != nil {
+		return false, err
+	}
 
 	txID := ti.wal.BeginTransaction()
 	isTx := txBuf != nil
@@ -2074,6 +2123,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 		}
 		failpoint.Hit("delete_before_commit")
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			_ = ti.applyWALInsert(rawData, 0)
 			return false, err
 		}
 		pendingAdded = false
@@ -2188,12 +2238,6 @@ func (ti *TableInstance) Archive(key string, opts ArchiveOptions, txBuf map[stri
 		}
 	}
 
-	if err := storage.ArchiveRowFiles(ti.dataDir, ti.Name, key, archiveID); err != nil {
-		_ = ti.applyWALInsert(rawData, 0)
-		_ = ti.applyWALArchiveDelete(archiveID)
-		return nil, err
-	}
-
 	if isTx {
 		entry := txBuf[ti.Name]
 		if entry == nil {
@@ -2209,9 +2253,7 @@ func (ti *TableInstance) Archive(key string, opts ArchiveOptions, txBuf map[stri
 			ti.Name: {records: [][]byte{beginRecord, archiveRecord, deleteRecord}, txIDs: []uint32{txID}, pending: []string{key}},
 		}
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
-			_ = storage.RestoreArchivedRowFiles(ti.dataDir, ti.Name, archiveID, key)
-			_ = ti.applyWALInsert(rawData, 0)
-			_ = ti.applyWALArchiveDelete(archiveID)
+			_ = ti.RollbackArchive(archived)
 			return nil, err
 		}
 		pendingAdded = false
@@ -2253,12 +2295,6 @@ func (ti *TableInstance) RestoreArchived(archiveID string, txBuf map[string]*wal
 		_ = ti.applyWALDelete(pk, 0)
 		return nil, nil, err
 	}
-	if err := storage.RestoreArchivedRowFiles(ti.dataDir, ti.Name, archiveID, pk); err != nil {
-		_ = ti.applyWALArchiveInsert(mustArchiveBytes(archived))
-		_ = ti.applyWALDelete(pk, 0)
-		return nil, nil, err
-	}
-
 	txID := ti.wal.BeginTransaction()
 	beginRecord := ti.wal.BuildBeginRecord(txID)
 	insertRecord, _ := ti.wal.BuildRecordWithLSN(txID, storage.WALOpInsert, archived.RowData)
@@ -2276,6 +2312,7 @@ func (ti *TableInstance) RestoreArchived(archiveID string, txBuf map[string]*wal
 			ti.Name: {records: [][]byte{beginRecord, insertRecord, archiveDeleteRecord}, txIDs: []uint32{txID}},
 		}
 		if err := ti.db.EnqueueCommitLocked(walBuf); err != nil {
+			_ = ti.RollbackRestore(archived)
 			return nil, nil, err
 		}
 	}
@@ -2299,11 +2336,6 @@ func (ti *TableInstance) DeleteArchived(archiveID string, txBuf map[string]*walB
 	if err := ti.applyWALArchiveDelete(archiveID); err != nil {
 		return nil, err
 	}
-	if err := storage.DeleteArchivedRowFiles(ti.dataDir, ti.Name, archiveID); err != nil {
-		_ = ti.applyWALArchiveInsert(mustArchiveBytes(archived))
-		return nil, err
-	}
-
 	txID := ti.wal.BeginTransaction()
 	beginRecord := ti.wal.BuildBeginRecord(txID)
 	archiveDeleteRecord, _ := ti.wal.BuildRecordWithLSN(txID, storage.WALOpArchiveDelete, []byte(archiveID))
@@ -2460,6 +2492,14 @@ func (ti *TableInstance) clearPendingKeys(keys []string) {
 			}
 		}
 	}
+}
+
+func (ti *TableInstance) isPendingKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	_, pending := ti.pendingRows.Load(key)
+	return pending
 }
 
 func (ti *TableInstance) rowVisibleToScans(row map[string]interface{}) bool {

@@ -73,8 +73,11 @@ type archiveTxn struct {
 	txBuf  map[string]*engine.WalBufEntry
 	undo   []func()
 	media  []mediaIndexOp
+	after  []func() error
 	closed bool
 }
+
+var testArchiveCommitHook func() error
 
 // TableInstance wraps internal engine table and provides CRUD operations.
 type TableInstance struct {
@@ -367,12 +370,7 @@ func (d *Database) Close() error {
 	if d.cronRunner != nil {
 		d.cronRunner.Stop()
 	}
-	for _, t := range d.db.Tables {
-		if err := t.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return d.db.Close()
 }
 
 // GetDataDir returns the data directory path for this database.
@@ -497,7 +495,7 @@ func (ti *TableInstance) Insert(data map[string]any) (map[string]any, error) {
 	return ti.insertWithTx(data, nil)
 }
 
-func (ti *TableInstance) insertWithTx(data map[string]any, txBuf map[string]*engine.WalBufEntry) (map[string]any, error) {
+func (ti *TableInstance) insertWithTx(data map[string]any, tx *archiveTxn) (map[string]any, error) {
 	ti.markWrite()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
@@ -512,11 +510,15 @@ func (ti *TableInstance) insertWithTx(data map[string]any, txBuf map[string]*eng
 			}
 		}
 	}
+	var txBuf map[string]*engine.WalBufEntry
+	if tx != nil {
+		txBuf = tx.txBuf
+	}
 	row, err := ti.ti.Insert(data, txBuf)
 	if err != nil {
 		return nil, err
 	}
-	if txBuf == nil {
+	if txBuf == nil && tableDefCanContainMedia(ti.ti.GetDef()) {
 		_ = ti.db.applyMediaIndexOps(mediaIndexSyncRowOp(ti.name, row))
 	}
 	if ti.enforcePolicy && ti.requiresReadFiltering() {
@@ -578,7 +580,7 @@ func (ti *TableInstance) Update(pk string, fields map[string]any) (map[string]an
 	return ti.updateWithTx(pk, fields, nil)
 }
 
-func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, txBuf map[string]*engine.WalBufEntry) (map[string]any, error) {
+func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, tx *archiveTxn) (map[string]any, error) {
 	ti.markWrite()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
@@ -606,11 +608,15 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, txBuf ma
 			}
 		}
 	}
+	var txBuf map[string]*engine.WalBufEntry
+	if tx != nil {
+		txBuf = tx.txBuf
+	}
 	row, err := ti.ti.Update(pk, fields, txBuf)
 	if err != nil {
 		return nil, err
 	}
-	if txBuf == nil {
+	if txBuf == nil && tableDefCanContainMedia(ti.ti.GetDef()) {
 		_ = ti.db.applyMediaIndexOps(mediaIndexSyncRowOp(ti.name, row))
 	}
 	if ti.enforcePolicy && ti.requiresReadFiltering() {
@@ -628,7 +634,7 @@ func (ti *TableInstance) Delete(pk string) (bool, error) {
 	return ti.deleteWithTx(pk, nil)
 }
 
-func (ti *TableInstance) deleteWithTx(pk string, txBuf map[string]*engine.WalBufEntry) (bool, error) {
+func (ti *TableInstance) deleteWithTx(pk string, tx *archiveTxn) (bool, error) {
 	ti.markWrite()
 	if ti.isNil() {
 		return false, fmt.Errorf("table is nil")
@@ -645,11 +651,27 @@ func (ti *TableInstance) deleteWithTx(pk string, txBuf map[string]*engine.WalBuf
 			return false, ErrAccessDenied
 		}
 	}
+	var txBuf map[string]*engine.WalBufEntry
+	if tx != nil {
+		txBuf = tx.txBuf
+	}
 	ok, err := ti.ti.Delete(pk, txBuf)
 	if err != nil {
 		return false, err
 	}
-	if ok && txBuf == nil {
+	if ok {
+		fileCleanup := func() error {
+			return storage.DeleteRowFiles(ti.db.GetDataDir(), ti.name, pk)
+		}
+		if tx != nil {
+			tx.addAfter(fileCleanup)
+		} else {
+			if err := fileCleanup(); err != nil {
+				return true, err
+			}
+		}
+	}
+	if ok && tx == nil && tableDefCanContainMedia(ti.ti.GetDef()) {
 		_ = ti.db.applyMediaIndexOps(mediaIndexRemoveRowOp(ti.name, pk))
 	}
 	return ok, nil
@@ -716,7 +738,7 @@ func (ti *TableInstance) DeleteArchive(archiveID string) error {
 	if record == nil {
 		return fmt.Errorf("archived row not found: %s", archiveID)
 	}
-	return nil
+	return storage.DeleteArchivedRowFiles(ti.db.GetDataDir(), ti.name, archiveID)
 }
 
 func (ti *TableInstance) RestoreArchive(archiveID string) error {
@@ -786,6 +808,9 @@ func (ti *TableInstance) ReplaceAll(rows []map[string]any) error {
 		}
 	}
 	if len(desired) == 0 {
+		if !tableDefCanContainMedia(ti.ti.GetDef()) {
+			return nil
+		}
 		return ti.db.applyMediaIndexOps(mediaIndexSyncTableOp(ti.name, rows))
 	}
 	toInsert := make([]map[string]any, 0, len(desired))
@@ -795,6 +820,9 @@ func (ti *TableInstance) ReplaceAll(rows []map[string]any) error {
 	_, err := ti.ti.BulkInsert(toInsert, 1000)
 	if err != nil {
 		return err
+	}
+	if !tableDefCanContainMedia(ti.ti.GetDef()) {
+		return nil
 	}
 	return ti.db.applyMediaIndexOps(mediaIndexSyncTableOp(ti.name, rows))
 }
@@ -1243,7 +1271,12 @@ func (ti *TableInstance) archiveCascade(tx *archiveTxn, pk, cascadeGroupID, root
 		return record, err
 	}
 	tx.addUndo(func() { _ = ti.ti.RollbackArchive(record) })
-	tx.addMedia(mediaIndexRemoveRowOp(ti.name, pk))
+	tx.addAfter(func() error {
+		return storage.ArchiveRowFiles(ti.db.GetDataDir(), ti.name, pk, record.ArchiveID)
+	})
+	if tableDefCanContainMedia(ti.ti.GetDef()) {
+		tx.addMedia(mediaIndexRemoveRowOp(ti.name, pk))
+	}
 
 	for _, ref := range ti.db.cascadeRefs[ti.name] {
 		child := ti.db.Table(ref.tableName)
@@ -1288,7 +1321,14 @@ func (ti *TableInstance) restoreCascade(tx *archiveTxn, archiveID, groupID strin
 		return err
 	}
 	tx.addUndo(func() { _ = ti.ti.RollbackRestore(restoredRecord) })
-	if restoredRow != nil {
+	tx.addAfter(func() error {
+		pk := restoredRecord.OriginalPK
+		if pk == "" && restoredRow != nil {
+			pk = toString(restoredRow[ti.primaryKeyField()])
+		}
+		return storage.RestoreArchivedRowFiles(ti.db.GetDataDir(), ti.name, archiveID, pk)
+	})
+	if restoredRow != nil && tableDefCanContainMedia(ti.ti.GetDef()) {
 		tx.addMedia(mediaIndexSyncRowOp(ti.name, restoredRow))
 	}
 
@@ -1312,7 +1352,14 @@ func (ti *TableInstance) restoreCascade(tx *archiveTxn, archiveID, groupID strin
 		}
 		table := item.table
 		tx.addUndo(func() { _ = table.ti.RollbackRestore(restoredChild) })
-		if restoredChildRow != nil {
+		tx.addAfter(func() error {
+			pk := restoredChild.OriginalPK
+			if pk == "" && restoredChildRow != nil {
+				pk = toString(restoredChildRow[table.primaryKeyField()])
+			}
+			return storage.RestoreArchivedRowFiles(table.db.GetDataDir(), table.name, restoredChild.ArchiveID, pk)
+		})
+		if restoredChildRow != nil && tableDefCanContainMedia(table.ti.GetDef()) {
 			tx.addMedia(mediaIndexSyncRowOp(table.name, restoredChildRow))
 		}
 	}
@@ -1499,6 +1546,13 @@ func (tx *archiveTxn) addMedia(op mediaIndexOp) {
 	tx.media = append(tx.media, op)
 }
 
+func (tx *archiveTxn) addAfter(fn func() error) {
+	if tx == nil || fn == nil {
+		return
+	}
+	tx.after = append(tx.after, fn)
+}
+
 func (tx *archiveTxn) rollback() {
 	if tx == nil || tx.closed {
 		return
@@ -1513,9 +1567,19 @@ func (tx *archiveTxn) commit() error {
 	if tx == nil || tx.closed {
 		return nil
 	}
-	tx.closed = true
+	if testArchiveCommitHook != nil {
+		if err := testArchiveCommitHook(); err != nil {
+			return err
+		}
+	}
 	if len(tx.txBuf) > 0 {
 		if err := tx.db.db.EnqueueCommit(tx.txBuf); err != nil {
+			return err
+		}
+	}
+	tx.closed = true
+	for _, fn := range tx.after {
+		if err := fn(); err != nil {
 			return err
 		}
 	}

@@ -202,6 +202,19 @@ func (d *Database) applyMediaIndexOps(ops ...mediaIndexOp) error {
 	return saveMediaIndex(d.db.GetDataDir(), idx)
 }
 
+func tableDefCanContainMedia(def *schema.TableDef) bool {
+	if def == nil {
+		return false
+	}
+	for _, field := range def.CompiledSchema.Fields {
+		switch field.Kind {
+		case schema.KindFileSingle, schema.KindFileMulti:
+			return true
+		}
+	}
+	return false
+}
+
 func mediaIndexSyncRowOp(tableName string, row map[string]any) mediaIndexOp {
 	rowCopy := cloneRow(row)
 	return func(idx *mediaIndex, d *Database) error {
