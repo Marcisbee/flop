@@ -418,6 +418,7 @@ type TableInstance struct {
 	indexDefsByKey   map[string]schema.IndexDef
 	indexStateMu     sync.RWMutex
 	indexesReady     bool
+	indexesFresh     bool
 	indexBuildDone   chan struct{}
 	indexesToRebuild map[string]bool
 	migChains        map[int]*schema.MigrationChain
@@ -654,14 +655,17 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		return nil
 	}
 	if len(ti.indexesToRebuild) == 0 {
+		ti.setIndexesFresh(false)
 		ti.setIndexesReady(true)
 		return nil
 	}
 	if !ti.db.asyncSecondaryIndexes {
+		rebuiltAllIndexes := len(ti.indexesToRebuild) == len(ti.def.Indexes)
 		if err := ti.rebuildSecondaryIndexesByKeys(ti.indexesToRebuild); err != nil {
 			return err
 		}
 		ti.indexesToRebuild = make(map[string]bool)
+		ti.setIndexesFresh(rebuiltAllIndexes)
 		ti.setIndexesReady(true)
 		return nil
 	}
@@ -992,7 +996,11 @@ func (ti *TableInstance) ForceRebuildSecondaryIndexes() error {
 	if err := ti.rebuildSecondaryIndexesByKeys(nil); err != nil {
 		return err
 	}
+	if err := ti.persistSecondaryIndexesLocked(); err != nil {
+		return err
+	}
 	ti.indexesToRebuild = make(map[string]bool)
+	ti.setIndexesFresh(true)
 	ti.setIndexesReady(true)
 	return nil
 }
@@ -1068,16 +1076,45 @@ func (ti *TableInstance) rebuildSecondaryIndexesByKeys(keys map[string]bool) err
 func (ti *TableInstance) rebuildSecondaryIndexesAsync() {
 	start := time.Now()
 	defer close(ti.indexBuildDone)
+	rebuiltAllIndexes := len(ti.indexesToRebuild) == len(ti.def.Indexes)
 	ti.mu.Lock()
 	defer ti.mu.Unlock()
 	if err := ti.rebuildSecondaryIndexesByKeys(ti.indexesToRebuild); err != nil {
 		fmt.Fprintf(os.Stderr, "flop: %s: secondary index build failed in %s: %v\n", ti.Name, time.Since(start).Round(time.Millisecond), err)
+		ti.setIndexesFresh(false)
+		ti.setIndexesReady(false)
+		return
+	}
+	if err := ti.persistSecondaryIndexesLocked(); err != nil {
+		fmt.Fprintf(os.Stderr, "flop: %s: secondary index persist failed in %s: %v\n", ti.Name, time.Since(start).Round(time.Millisecond), err)
+		ti.setIndexesFresh(false)
 		ti.setIndexesReady(false)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "flop: %s: secondary indexes ready in %s\n", ti.Name, time.Since(start).Round(time.Millisecond))
 	ti.indexesToRebuild = make(map[string]bool)
+	ti.setIndexesFresh(rebuiltAllIndexes)
 	ti.setIndexesReady(true)
+}
+
+func (ti *TableInstance) persistSecondaryIndexesLocked() error {
+	for indexKey, indexDef := range ti.indexDefsByKey {
+		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+			continue
+		}
+		path := secondaryIndexDiskPath(ti.dataDir, ti.Name, indexKey, true)
+		switch idx := ti.secondaryIdxs[indexKey].(type) {
+		case *storage.HashIndex:
+			if err := storage.WriteMappedIndexFile(path, idx); err != nil {
+				return err
+			}
+		case *storage.MultiIndex:
+			if err := storage.WriteMappedMultiIndexFile(path, idx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (ti *TableInstance) setIndexesReady(ready bool) {
@@ -1086,11 +1123,24 @@ func (ti *TableInstance) setIndexesReady(ready bool) {
 	ti.indexStateMu.Unlock()
 }
 
+func (ti *TableInstance) setIndexesFresh(fresh bool) {
+	ti.indexStateMu.Lock()
+	ti.indexesFresh = fresh
+	ti.indexStateMu.Unlock()
+}
+
 func (ti *TableInstance) secondaryIndexesReady() bool {
 	ti.indexStateMu.RLock()
 	ready := ti.indexesReady
 	ti.indexStateMu.RUnlock()
 	return ready
+}
+
+func (ti *TableInstance) secondaryIndexesFresh() bool {
+	ti.indexStateMu.RLock()
+	fresh := ti.indexesFresh
+	ti.indexStateMu.RUnlock()
+	return fresh
 }
 
 func (ti *TableInstance) waitForSecondaryIndexBuild() {
@@ -2851,6 +2901,10 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 			return out
 		}
 		if len(out) == 0 {
+			if ti.secondaryIndexesFresh() {
+				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index empty", start)
+				return nil
+			}
 			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
 			if err != nil {
 				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index fallback scan error", start)

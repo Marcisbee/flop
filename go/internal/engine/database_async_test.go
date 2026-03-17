@@ -2,12 +2,15 @@ package engine
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/marcisbee/flop/internal/reqtrace"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/storage"
 )
@@ -122,6 +125,94 @@ func TestSecondaryIndexFallbackFindAndSearch(t *testing.T) {
 	}
 	if len(rows) == 0 {
 		t.Fatal("expected full-text fallback matches")
+	}
+}
+
+func TestForceRebuildSecondaryIndexesPersistsMultiIndexFiles(t *testing.T) {
+	dataDir := t.TempDir()
+	db := openTestDB(t, dataDir, false, true)
+	ti := mustTable(t, db)
+	seedMovies(t, ti, 20)
+	if err := db.Checkpoint(); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	_ = db.Close()
+
+	stale := storage.NewMultiIndex()
+	stale.Add("action", schema.RowPointer{PageNumber: 1, SlotIndex: 0})
+	indexPath := secondaryIndexDiskPath(dataDir, "movies", "genre", true)
+	if err := storage.WriteMappedMultiIndexFile(indexPath, stale); err != nil {
+		t.Fatalf("write stale index: %v", err)
+	}
+
+	db = openTestDB(t, dataDir, false, true)
+	defer db.Close()
+	ti = mustTable(t, db)
+
+	before, err := storage.ReadMappedMultiIndexFile(indexPath)
+	if err != nil {
+		t.Fatalf("read stale index: %v", err)
+	}
+	if got := len(before.GetAll("drama")); got != 0 {
+		t.Fatalf("expected stale on-disk drama postings to be empty, got %d", got)
+	}
+
+	if err := ti.ForceRebuildSecondaryIndexes(); err != nil {
+		t.Fatalf("force rebuild secondary indexes: %v", err)
+	}
+
+	after, err := storage.ReadMappedMultiIndexFile(indexPath)
+	if err != nil {
+		t.Fatalf("read rebuilt index: %v", err)
+	}
+	if got := len(after.GetAll("drama")); got == 0 {
+		t.Fatalf("expected rebuilt index file to contain drama postings")
+	}
+
+	if _, err := os.Stat(filepath.Join(dataDir, "movies.67656e7265.smidx")); err != nil {
+		t.Fatalf("expected persisted mapped secondary index file: %v", err)
+	}
+}
+
+func TestFreshMultiIndexEmptyLookupSkipsFallbackScan(t *testing.T) {
+	dir := t.TempDir()
+	db := NewDatabase(DatabaseConfig{DataDir: dir, AsyncSecondaryIndexes: false})
+	def := testMovieTableDef(true)
+	if err := db.Open(map[string]*schema.TableDef{"movies": def}); err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	ti := db.GetTable("movies")
+	if ti == nil {
+		t.Fatal("missing movies table")
+	}
+	if _, err := ti.Insert(map[string]interface{}{
+		"id":    "1",
+		"slug":  "movie-1",
+		"title": "Movie One",
+		"genre": "action",
+	}, nil); err != nil {
+		t.Fatalf("insert row: %v", err)
+	}
+	if err := ti.ForceRebuildSecondaryIndexes(); err != nil {
+		t.Fatalf("force rebuild secondary indexes: %v", err)
+	}
+
+	tc := reqtrace.Start()
+	rows := ti.FindAllByIndex([]string{"genre"}, "strategy")
+	tc.End()
+	if len(rows) != 0 {
+		t.Fatalf("expected zero rows, got %d", len(rows))
+	}
+	spans := tc.Spans()
+	if len(spans) == 0 {
+		t.Fatal("expected trace spans")
+	}
+	last := spans[len(spans)-1]
+	if note, _ := last["note"].(string); strings.Contains(note, "fallback scan") {
+		t.Fatalf("expected no fallback scan, got note %q", note)
+	}
+	if note, _ := last["note"].(string); note != "multi-index empty" {
+		t.Fatalf("expected multi-index empty note, got %q", note)
 	}
 }
 
