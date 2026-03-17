@@ -1,6 +1,8 @@
 package flop
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -125,5 +127,77 @@ func TestMediaIndexIgnoresStringReferences(t *testing.T) {
 	}
 	if !rows[0].Orphaned {
 		t.Fatalf("expected string-only reference to be ignored, got %#v", rows[0])
+	}
+}
+
+func TestReplacingFileSingleRemovesOldFileAndBlocksOldURL(t *testing.T) {
+	tmp := t.TempDir()
+	app := New(Config{DataDir: tmp, SyncMode: "normal"})
+	Define(app, "users", func(s *SchemaBuilder) {
+		s.String("id").Primary()
+		s.FileSingle("avatar", "image/png").
+			ImageMax("180x180").
+			ImageFitCover().
+			Thumbs("90x90", "180x180").
+			DiscardOriginal()
+	})
+
+	db, err := app.Open()
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Table("users").Insert(map[string]any{"id": "u1"}); err != nil {
+		t.Fatalf("insert row: %v", err)
+	}
+
+	firstRef, err := db.StoreFileForField("users", "u1", "avatar", "avatar.png", makeSolidPNG(t, 400, 300), "image/png")
+	if err != nil {
+		t.Fatalf("store first file: %v", err)
+	}
+	if _, err := db.Table("users").Update("u1", map[string]any{"avatar": *firstRef}); err != nil {
+		t.Fatalf("set first avatar: %v", err)
+	}
+
+	secondRef, err := db.StoreFileForField("users", "u1", "avatar", "avatar.png", makeSolidPNGColor(t, 400, 300, 240, 80, 80), "image/png")
+	if err != nil {
+		t.Fatalf("store second file: %v", err)
+	}
+	if _, err := db.Table("users").Update("u1", map[string]any{"avatar": *secondRef}); err != nil {
+		t.Fatalf("replace avatar: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, firstRef.Path)); !os.IsNotExist(err) {
+		t.Fatalf("expected old file to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, secondRef.Path)); err != nil {
+		t.Fatalf("expected new file on disk: %v", err)
+	}
+
+	provider := &EngineAdminProvider{DB: db}
+	rows, total, err := provider.AdminMediaRows(50, 0, "", false)
+	if err != nil {
+		t.Fatalf("admin media rows: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("expected one media row after replacement, got total=%d len=%d", total, len(rows))
+	}
+	if rows[0].Path != secondRef.Path {
+		t.Fatalf("expected only new file in media rows, got %#v", rows[0])
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, firstRef.URL, nil)
+	db.FileHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected old file URL to 404, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, secondRef.URL, nil)
+	db.FileHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected new file URL to serve, got %d", rec.Code)
 	}
 }

@@ -87,11 +87,15 @@ func TestStoreFileForFieldMaxUploadBytes(t *testing.T) {
 }
 
 func makeSolidPNG(t *testing.T, width, height int) []byte {
+	return makeSolidPNGColor(t, width, height, 100, 160, 220)
+}
+
+func makeSolidPNGColor(t *testing.T, width, height int, r, g, b uint8) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
-			img.Set(x, y, color.RGBA{R: 100, G: 160, B: 220, A: 255})
+			img.Set(x, y, color.RGBA{R: r, G: g, B: b, A: 255})
 		}
 	}
 	var buf bytes.Buffer

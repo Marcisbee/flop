@@ -383,6 +383,10 @@ func (d *Database) GetDataDir() string {
 func (d *Database) FileHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, "/api/files/")
+		if rel == "" || !d.filePathIsCurrentlyReferenced(rel) {
+			http.NotFound(w, r)
+			return
+		}
 		parts := strings.SplitN(rel, "/", 4)
 		thumbParam := r.URL.Query().Get("thumb")
 		if thumbParam == "" || len(parts) < 4 {
@@ -425,6 +429,40 @@ func (d *Database) FileHandler() http.Handler {
 		}
 		http.ServeFile(w, r, thumbPath)
 	})
+}
+
+func (d *Database) filePathIsCurrentlyReferenced(rel string) bool {
+	if d == nil || d.db == nil {
+		return false
+	}
+	rel = strings.TrimSpace(rel)
+	if rel == "" || strings.Contains(rel, "..") {
+		return false
+	}
+	parts := strings.Split(rel, "/")
+	if len(parts) < 4 {
+		return false
+	}
+	tableName, rowID, fieldName := parts[0], parts[1], parts[2]
+	ti := d.db.GetTable(tableName)
+	if ti == nil {
+		return false
+	}
+	field := ti.GetDef().CompiledSchema.FieldMap[fieldName]
+	if field == nil {
+		return false
+	}
+	row, err := ti.Get(rowID)
+	if err != nil || row == nil {
+		return false
+	}
+	targetPath := "_files/" + strings.Join(parts[:4], "/")
+	for _, ref := range adminCollectMediaRefs(row[fieldName], field.Kind) {
+		if strings.TrimSpace(ref.Path) == targetPath {
+			return true
+		}
+	}
+	return false
 }
 
 // RequestAnalytics returns the process-local analytics collector for this DB.
@@ -620,6 +658,21 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, tx *arch
 			}
 		}
 	}
+	var removedRefs []schema.FileRef
+	oldRowForCleanup, err := ti.ti.Get(pk)
+	if err != nil {
+		return nil, err
+	}
+	if oldRowForCleanup == nil {
+		return nil, fmt.Errorf("row not found")
+	}
+	if tableDefCanContainMedia(ti.ti.GetDef()) {
+		nextRow := cloneRow(oldRowForCleanup)
+		for k, v := range fields {
+			nextRow[k] = v
+		}
+		removedRefs = removedMediaRefsForUpdate(ti.ti.GetDef(), oldRowForCleanup, nextRow, fields)
+	}
 	var txBuf map[string]*engine.WalBufEntry
 	if tx != nil {
 		txBuf = tx.txBuf
@@ -627,6 +680,24 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, tx *arch
 	row, err := ti.ti.Update(pk, fields, txBuf)
 	if err != nil {
 		return nil, err
+	}
+	cleanupRemovedFiles := func() error {
+		for _, ref := range removedRefs {
+			refCopy := ref
+			if err := storage.DeleteFileRef(ti.db.GetDataDir(), &refCopy); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if len(removedRefs) > 0 {
+		if tx != nil {
+			tx.addAfter(cleanupRemovedFiles)
+		} else {
+			if err := cleanupRemovedFiles(); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if txBuf == nil && tableDefCanContainMedia(ti.ti.GetDef()) {
 		_ = ti.db.applyMediaIndexOps(mediaIndexSyncRowOp(ti.name, row))
@@ -639,6 +710,41 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, tx *arch
 		return row, nil
 	}
 	return row, nil
+}
+
+func removedMediaRefsForUpdate(def *schema.TableDef, oldRow, newRow, updates map[string]any) []schema.FileRef {
+	if def == nil || oldRow == nil || newRow == nil || len(updates) == 0 {
+		return nil
+	}
+	var removed []schema.FileRef
+	for _, field := range def.CompiledSchema.Fields {
+		if field.Kind != schema.KindFileSingle && field.Kind != schema.KindFileMulti {
+			continue
+		}
+		if _, touched := updates[field.Name]; !touched {
+			continue
+		}
+		oldRefs := adminCollectMediaRefs(oldRow[field.Name], field.Kind)
+		if len(oldRefs) == 0 {
+			continue
+		}
+		newRefs := adminCollectMediaRefs(newRow[field.Name], field.Kind)
+		newPaths := map[string]bool{}
+		for _, ref := range newRefs {
+			path := strings.TrimSpace(ref.Path)
+			if path != "" {
+				newPaths[path] = true
+			}
+		}
+		for _, ref := range oldRefs {
+			path := strings.TrimSpace(ref.Path)
+			if path == "" || newPaths[path] {
+				continue
+			}
+			removed = append(removed, ref)
+		}
+	}
+	return removed
 }
 
 // Delete deletes a row by primary key. Returns true if the row existed.
