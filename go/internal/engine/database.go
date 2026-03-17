@@ -980,6 +980,23 @@ func (ti *TableInstance) RepairIndexesIfNeeded() error {
 	return ti.repairIndexesIfNeeded()
 }
 
+// ForceRebuildSecondaryIndexes rebuilds all secondary indexes for the table
+// from the current table rows, regardless of persisted index health.
+func (ti *TableInstance) ForceRebuildSecondaryIndexes() error {
+	if ti == nil {
+		return fmt.Errorf("table instance is nil")
+	}
+	ti.waitForSecondaryIndexBuild()
+	ti.mu.Lock()
+	defer ti.mu.Unlock()
+	if err := ti.rebuildSecondaryIndexesByKeys(nil); err != nil {
+		return err
+	}
+	ti.indexesToRebuild = make(map[string]bool)
+	ti.setIndexesReady(true)
+	return nil
+}
+
 func (ti *TableInstance) rebuildSecondaryIndexesByKeys(keys map[string]bool) error {
 	for indexKey, idx := range ti.secondaryIdxs {
 		if keys != nil && !keys[indexKey] {

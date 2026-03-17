@@ -476,6 +476,18 @@ func (d *Database) repairTableIndexes(name string) error {
 	return ti.RepairIndexesIfNeeded()
 }
 
+// RebuildSecondaryIndexes forces a full secondary-index rebuild for one table.
+func (d *Database) RebuildSecondaryIndexes(name string) error {
+	if d == nil || d.db == nil {
+		return fmt.Errorf("flop: database is nil")
+	}
+	ti, ok := d.db.Tables[name]
+	if !ok || ti == nil {
+		return fmt.Errorf("flop: unknown table: %s", name)
+	}
+	return ti.ForceRebuildSecondaryIndexes()
+}
+
 func (d *Database) materializedStatus(name string) (bool, time.Time, string) {
 	if d == nil {
 		return false, time.Time{}, ""
@@ -937,6 +949,15 @@ func (ti *TableInstance) SecondaryIndexesReady() bool {
 		return false
 	}
 	return ti.ti.SecondaryIndexesReady()
+}
+
+// RebuildSecondaryIndexes forces a full rebuild of this table's secondary indexes.
+func (ti *TableInstance) RebuildSecondaryIndexes() error {
+	ti.markRead()
+	if ti.isNil() {
+		return fmt.Errorf("table is nil")
+	}
+	return ti.ti.ForceRebuildSecondaryIndexes()
 }
 
 // FindByEmail finds a row by the "email" unique index.
