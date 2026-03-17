@@ -2441,7 +2441,63 @@ func (d *Database) adminMediaRows(limit, offset int, search string, orphansOnly 
 	if pageRows == nil {
 		pageRows = []AdminMediaRow{}
 	}
+	if len(pageRows) > 0 {
+		if err := d.enrichAdminMediaRows(pageRows); err != nil {
+			return nil, 0, err
+		}
+	}
 	return pageRows, total, nil
+}
+
+func (d *Database) enrichAdminMediaRows(rows []AdminMediaRow) error {
+	if d == nil || d.db == nil || len(rows) == 0 {
+		return nil
+	}
+	d.mediaIndexMu.Lock()
+	defer d.mediaIndexMu.Unlock()
+
+	idx, err := loadMediaIndex(d.db.GetDataDir())
+	if err != nil {
+		return nil
+	}
+
+	changed := false
+	seen := map[string]*mediaIndexRecord{}
+	for i := range rows {
+		path := strings.TrimSpace(rows[i].Path)
+		if path == "" {
+			continue
+		}
+		record := seen[path]
+		if record == nil {
+			record = idx.Files[path]
+			if record == nil {
+				continue
+			}
+			if _, err := ensureMediaIndexRecord(idx, d, schema.FileRef{
+				Path: path,
+				Name: record.Name,
+				URL:  record.URL,
+				Mime: record.Mime,
+				Size: record.RefSize,
+			}, true); err == nil {
+				record = idx.Files[path]
+				changed = true
+			}
+			seen[path] = record
+		}
+		if record == nil {
+			continue
+		}
+		rows[i].ThumbCount = record.ThumbCount
+		rows[i].ThumbBytes = record.ThumbBytes
+		rows[i].Width = record.Width
+		rows[i].Height = record.Height
+	}
+	if changed {
+		return saveMediaIndex(d.db.GetDataDir(), idx)
+	}
+	return nil
 }
 
 func scanAdminMediaFilesOnDisk(dataDir string, itemsByPath map[string]*AdminMediaRow, existingPaths map[string]bool) {

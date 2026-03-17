@@ -165,12 +165,15 @@ func (d *Database) rebuildMediaIndexLocked() error {
 			continue
 		}
 		def := table.GetDef()
+		if !tableDefCanContainMedia(def) {
+			continue
+		}
 		rows, err := table.Scan(1_000_000, 0)
 		if err != nil {
 			return fmt.Errorf("scan media rows for %s: %w", tableName, err)
 		}
 		for _, row := range rows {
-			if err := mediaIndexSyncRow(idx, d, tableName, def, row); err != nil {
+			if err := mediaIndexSyncRow(idx, d, tableName, def, row, false); err != nil {
 				return err
 			}
 		}
@@ -222,7 +225,7 @@ func mediaIndexSyncRowOp(tableName string, row map[string]any) mediaIndexOp {
 		if table == nil {
 			return fmt.Errorf("table not found: %s", tableName)
 		}
-		return mediaIndexSyncRow(idx, d, tableName, table.GetDef(), rowCopy)
+		return mediaIndexSyncRow(idx, d, tableName, table.GetDef(), rowCopy, true)
 	}
 }
 
@@ -248,7 +251,7 @@ func mediaIndexSyncTableOp(tableName string, rows []map[string]any) mediaIndexOp
 		removeMediaFilesWithPrefix(idx, "_files/"+tableName+"/")
 		scanTableDiskFilesIntoIndex(idx, d, tableName)
 		for _, row := range rowsCopy {
-			if err := mediaIndexSyncRow(idx, d, tableName, table.GetDef(), row); err != nil {
+			if err := mediaIndexSyncRow(idx, d, tableName, table.GetDef(), row, false); err != nil {
 				return err
 			}
 		}
@@ -262,7 +265,7 @@ func mediaIndexUpsertFileOp(ref schema.FileRef) mediaIndexOp {
 		if !ok {
 			return nil
 		}
-		_, err := ensureMediaIndexRecord(idx, d, ref)
+		_, err := ensureMediaIndexRecord(idx, d, ref, true)
 		return err
 	}
 }
@@ -271,7 +274,7 @@ func mediaIndexRowPathPrefix(tableName, rowID string) string {
 	return "_files/" + tableName + "/" + rowID + "/"
 }
 
-func mediaIndexSyncRow(idx *mediaIndex, d *Database, tableName string, def *schema.TableDef, row map[string]any) error {
+func mediaIndexSyncRow(idx *mediaIndex, d *Database, tableName string, def *schema.TableDef, row map[string]any, syncDisk bool) error {
 	if idx == nil || d == nil || def == nil || len(def.CompiledSchema.Fields) == 0 || row == nil {
 		return nil
 	}
@@ -282,8 +285,10 @@ func mediaIndexSyncRow(idx *mediaIndex, d *Database, tableName string, def *sche
 	}
 
 	removeMediaUsagesForRow(idx, tableName, rowID)
-	if err := syncRowDiskFilesIntoIndex(idx, d, tableName, rowID); err != nil {
-		return err
+	if syncDisk {
+		if err := syncRowDiskFilesIntoIndex(idx, d, tableName, rowID); err != nil {
+			return err
+		}
 	}
 
 	for _, field := range def.CompiledSchema.Fields {
@@ -292,7 +297,7 @@ func mediaIndexSyncRow(idx *mediaIndex, d *Database, tableName string, def *sche
 		}
 		refs := adminCollectMediaRefs(row[field.Name], field.Kind)
 		for _, ref := range refs {
-			record, err := ensureMediaIndexRecord(idx, d, ref)
+			record, err := ensureMediaIndexRecord(idx, d, ref, false)
 			if err != nil || record == nil {
 				continue
 			}
@@ -325,7 +330,7 @@ func scanMediaIndexFilesOnDisk(dataDir string, idx *mediaIndex, d *Database) {
 			Size: info.Size(),
 			Mime: storage.MimeFromExtension(path),
 		}
-		_, _ = ensureMediaIndexRecord(idx, d, ref)
+		_, _ = ensureMediaIndexRecord(idx, d, ref, false)
 		return nil
 	})
 }
@@ -354,7 +359,7 @@ func syncRowDiskFilesIntoIndex(idx *mediaIndex, d *Database, tableName, rowID st
 			Size: info.Size(),
 			Mime: storage.MimeFromExtension(path),
 		}
-		_, _ = ensureMediaIndexRecord(idx, d, ref)
+		_, _ = ensureMediaIndexRecord(idx, d, ref, false)
 		return nil
 	})
 	for path := range idx.Files {
@@ -382,12 +387,12 @@ func scanTableDiskFilesIntoIndex(idx *mediaIndex, d *Database, tableName string)
 			Size: info.Size(),
 			Mime: storage.MimeFromExtension(path),
 		}
-		_, _ = ensureMediaIndexRecord(idx, d, ref)
+		_, _ = ensureMediaIndexRecord(idx, d, ref, false)
 		return nil
 	})
 }
 
-func ensureMediaIndexRecord(idx *mediaIndex, d *Database, ref schema.FileRef) (*mediaIndexRecord, error) {
+func ensureMediaIndexRecord(idx *mediaIndex, d *Database, ref schema.FileRef, includeDerived bool) (*mediaIndexRecord, error) {
 	ref.Path = strings.TrimSpace(ref.Path)
 	if ref.Path == "" || !strings.HasPrefix(ref.Path, "_files/") {
 		return nil, nil
@@ -421,6 +426,24 @@ func ensureMediaIndexRecord(idx *mediaIndex, d *Database, ref schema.FileRef) (*
 	}
 	record.RefSize = ref.Size
 	record.DiskSize = stat.Size()
+	tableName, rowID, fieldName, filename, ok := mediaIndexPathParts(ref.Path)
+	if ok {
+		if field := d.mediaFieldSpec(tableName, fieldName); field != nil {
+			record.Thumbs = append([]string(nil), field.ThumbSizes...)
+		}
+		if includeDerived {
+			populateMediaIndexRecordDerived(record, d, fullPath, tableName, rowID, fieldName, filename)
+		}
+	} else if includeDerived {
+		populateMediaIndexRecordDerived(record, d, fullPath, "", "", "", "")
+	}
+	return record, nil
+}
+
+func populateMediaIndexRecordDerived(record *mediaIndexRecord, d *Database, fullPath, tableName, rowID, fieldName, filename string) {
+	if record == nil {
+		return
+	}
 	record.Width = 0
 	record.Height = 0
 	if strings.HasPrefix(record.Mime, "image/") || adminLooksLikeImagePath(record.Path) {
@@ -431,23 +454,19 @@ func ensureMediaIndexRecord(idx *mediaIndex, d *Database, ref schema.FileRef) (*
 	}
 	record.ThumbCount = 0
 	record.ThumbBytes = 0
-	tableName, rowID, fieldName, filename, ok := mediaIndexPathParts(ref.Path)
-	if ok {
-		if field := d.mediaFieldSpec(tableName, fieldName); field != nil {
-			record.Thumbs = append([]string(nil), field.ThumbSizes...)
-		}
-		thumbDir := filepath.Join(d.db.GetDataDir(), "_thumbs", tableName, rowID, fieldName)
-		matches, err := filepath.Glob(filepath.Join(thumbDir, "*_"+filename))
-		if err == nil {
-			record.ThumbCount = len(matches)
-			for _, match := range matches {
-				if thumbStat, err := os.Stat(match); err == nil {
-					record.ThumbBytes += thumbStat.Size()
-				}
+	if tableName == "" || rowID == "" || fieldName == "" || filename == "" {
+		return
+	}
+	thumbDir := filepath.Join(d.db.GetDataDir(), "_thumbs", tableName, rowID, fieldName)
+	matches, err := filepath.Glob(filepath.Join(thumbDir, "*_"+filename))
+	if err == nil {
+		record.ThumbCount = len(matches)
+		for _, match := range matches {
+			if thumbStat, err := os.Stat(match); err == nil {
+				record.ThumbBytes += thumbStat.Size()
 			}
 		}
 	}
-	return record, nil
 }
 
 func (d *Database) mediaFieldSpec(tableName, fieldName string) *schema.CompiledField {
