@@ -303,7 +303,7 @@ func NewAuthService(authTable, sessionTable *engine.TableInstance, secret, insta
 		secret:          secret,
 		instanceID:      instanceID,
 		accessTokenTTL:  900,    // 15 min
-		refreshTokenTTL: 604800, // 7 days
+		refreshTokenTTL: 2592000, // 30 days
 	}
 }
 
