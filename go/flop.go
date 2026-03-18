@@ -1222,9 +1222,12 @@ func Roles(roles ...string) AccessPolicy {
 }
 
 type AuthContext struct {
-	ID    string
-	Email string
-	Roles []string
+	ID            string
+	Email         string
+	Roles         []string
+	PrincipalType string
+	SessionID     string
+	InstanceID    string
 }
 
 func (a *AuthContext) HasRole(role string) bool {

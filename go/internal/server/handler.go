@@ -44,6 +44,7 @@ type Handler struct {
 	routes      []RouteInfo
 	pageRoutes  []FlatRoute
 	authService *AuthService
+	superadminService *SuperadminService
 	mailer      *Mailer
 	config      ServerConfig
 	setupToken  string
@@ -73,6 +74,7 @@ func NewHandler(
 	routes []RouteInfo,
 	pageRoutes []FlatRoute,
 	authService *AuthService,
+	superadminService *SuperadminService,
 	mailer *Mailer,
 	config ServerConfig,
 	setupToken string,
@@ -89,6 +91,7 @@ func NewHandler(
 		routes:      routes,
 		pageRoutes:  pageRoutes,
 		authService: authService,
+		superadminService: superadminService,
 		mailer:      mailer,
 		config:      config,
 		setupToken:  setupToken,
@@ -412,12 +415,21 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 			jsonError(w, "Email and password required", 400)
 			return
 		}
-		token, user, err := h.authService.Register(email, password, name)
+		extraFields := map[string]interface{}{}
+		for key, value := range body {
+			switch key {
+			case "email", "password", "name":
+				continue
+			default:
+				extraFields[key] = value
+			}
+		}
+		token, refreshToken, user, err := h.authService.Register(email, password, name, extraFields)
 		if err != nil {
 			jsonError(w, err.Error(), 400)
 			return
 		}
-		jsonResponse(w, map[string]interface{}{"token": token, "user": user})
+		jsonResponse(w, map[string]interface{}{"token": token, "refreshToken": refreshToken, "user": user})
 
 	case "/api/auth/password":
 		email, _ := body["email"].(string)
@@ -439,12 +451,12 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 			jsonError(w, "Refresh token required", 400)
 			return
 		}
-		token, err := h.authService.Refresh(refreshToken)
+		token, nextRefreshToken, err := h.authService.Refresh(refreshToken)
 		if err != nil {
 			jsonError(w, err.Error(), 401)
 			return
 		}
-		jsonResponse(w, map[string]interface{}{"token": token})
+		jsonResponse(w, map[string]interface{}{"token": token, "refreshToken": nextRefreshToken})
 
 	case "/api/auth/change-password":
 		token := ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
@@ -698,9 +710,15 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 	token := ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
 	var auth *schema.AuthContext
 	if token != "" {
-		payload := VerifyJWT(token, h.config.JWTSecret)
-		if payload != nil {
-			auth = JWTToAuthContext(payload)
+		if h.authService != nil {
+			if resolved, err := h.authService.ValidateAccessToken(token); err == nil {
+				auth = resolved
+			}
+		} else {
+			payload := VerifyJWT(token, h.config.JWTSecret)
+			if payload != nil {
+				auth = JWTToAuthContext(payload)
+			}
 		}
 	}
 
@@ -982,12 +1000,12 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			jsonError(w, "Refresh token required", 400)
 			return
 		}
-		token, err := h.authService.Refresh(refreshToken)
+		token, nextRefreshToken, err := h.authService.Refresh(refreshToken)
 		if err != nil {
 			jsonError(w, err.Error(), 401)
 			return
 		}
-		jsonResponse(w, map[string]interface{}{"token": token})
+		jsonResponse(w, map[string]interface{}{"token": token, "refreshToken": nextRefreshToken})
 		return
 	}
 
@@ -1005,13 +1023,17 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 		jsonError(w, "Authentication required", 401)
 		return
 	}
-	payload := VerifyJWT(token, h.config.JWTSecret)
-	if payload == nil {
+	if h.authService == nil {
+		jsonError(w, "Auth not configured", 400)
+		return
+	}
+	auth, err := h.authService.ValidateAccessToken(token)
+	if err != nil {
 		jsonError(w, "Invalid token", 401)
 		return
 	}
 	hasSuperadmin := false
-	for _, r := range payload.Roles {
+	for _, r := range auth.Roles {
 		if r == "superadmin" {
 			hasSuperadmin = true
 			break
@@ -2050,9 +2072,15 @@ func (h *Handler) enforceAccess(w http.ResponseWriter, r *http.Request, route *R
 
 	if policy.Type == "public" {
 		if token != "" {
-			payload := VerifyJWT(token, h.config.JWTSecret)
-			if payload != nil {
-				return JWTToAuthContext(payload), false
+			if h.authService != nil {
+				if auth, err := h.authService.ValidateAccessToken(token); err == nil {
+					return auth, false
+				}
+			} else {
+				payload := VerifyJWT(token, h.config.JWTSecret)
+				if payload != nil {
+					return JWTToAuthContext(payload), false
+				}
 			}
 		}
 		return nil, false
@@ -2063,13 +2091,39 @@ func (h *Handler) enforceAccess(w http.ResponseWriter, r *http.Request, route *R
 		return nil, true
 	}
 
-	payload := VerifyJWT(token, h.config.JWTSecret)
-	if payload == nil {
+	if h.authService == nil {
+		payload := VerifyJWT(token, h.config.JWTSecret)
+		if payload == nil {
+			jsonError(w, "Invalid or expired token", 401)
+			return nil, true
+		}
+		auth := JWTToAuthContext(payload)
+		if policy.Type == "roles" {
+			hasAccess := false
+			for _, r := range auth.Roles {
+				if r == "superadmin" {
+					hasAccess = true
+					break
+				}
+				for _, required := range policy.Roles {
+					if r == required {
+						hasAccess = true
+						break
+					}
+				}
+			}
+			if !hasAccess {
+				jsonError(w, "Forbidden", 403)
+				return auth, true
+			}
+		}
+		return auth, false
+	}
+	auth, err := h.authService.ValidateAccessToken(token)
+	if err != nil {
 		jsonError(w, "Invalid or expired token", 401)
 		return nil, true
 	}
-
-	auth := JWTToAuthContext(payload)
 
 	if policy.Type == "roles" {
 		hasAccess := false

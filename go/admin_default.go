@@ -94,7 +94,7 @@ type AdminArchiveProvider interface {
 
 type AdminAuthProvider interface {
 	AdminLogin(email, password string) (token, refreshToken string, err error)
-	AdminRefresh(refreshToken string) (token string, err error)
+	AdminRefresh(refreshToken string) (token, nextRefreshToken string, err error)
 	AdminIsAuthorized(token string) bool
 }
 
@@ -271,12 +271,12 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				adminJSONError(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			token, err := authProvider.AdminRefresh(body.RefreshToken)
+			token, nextRefreshToken, err := authProvider.AdminRefresh(body.RefreshToken)
 			if err != nil {
 				adminJSONError(w, err.Error(), http.StatusUnauthorized)
 				return
 			}
-			adminJSONResp(w, http.StatusOK, map[string]any{"token": token})
+			adminJSONResp(w, http.StatusOK, map[string]any{"token": token, "refreshToken": nextRefreshToken})
 			return
 		}
 

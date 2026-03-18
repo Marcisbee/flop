@@ -593,26 +593,35 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		var in struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-			Name     string `json:"name"`
-		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
+		var body map[string]any
+		if err := decodeStrictJSONBody(r, &body); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if strings.TrimSpace(in.Email) == "" || in.Password == "" {
+		email, _ := body["email"].(string)
+		password, _ := body["password"].(string)
+		name, _ := body["name"].(string)
+		if strings.TrimSpace(email) == "" || password == "" {
 			jsonError(w, "email and password required", http.StatusBadRequest)
 			return
 		}
-		token, auth, err := h.db.authService.Register(in.Email, in.Password, in.Name)
+		extraFields := map[string]any{}
+		for key, value := range body {
+			switch key {
+			case "email", "password", "name":
+				continue
+			default:
+				extraFields[key] = value
+			}
+		}
+		token, refreshToken, auth, err := h.db.authService.Register(email, password, name, extraFields)
 		if err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		jsonResponse(w, http.StatusOK, map[string]any{
-			"token": token,
+			"token":        token,
+			"refreshToken": refreshToken,
 			"user": map[string]any{
 				"id":    auth.ID,
 				"email": auth.Email,
@@ -666,12 +675,12 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "refresh token required", http.StatusBadRequest)
 			return
 		}
-		token, err := h.db.authService.Refresh(in.RefreshToken)
+		token, nextRefreshToken, err := h.db.authService.Refresh(in.RefreshToken)
 		if err != nil {
 			jsonError(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
-		jsonResponse(w, http.StatusOK, map[string]any{"token": token})
+		jsonResponse(w, http.StatusOK, map[string]any{"token": token, "refreshToken": nextRefreshToken})
 	default:
 		jsonError(w, "unknown auth endpoint", http.StatusNotFound)
 	}
@@ -1071,14 +1080,41 @@ func (h *APIHandler) authFromRequest(r *http.Request) *AuthContext {
 	if token == "" {
 		return nil
 	}
+	if h.db.authService != nil {
+		if auth, err := h.db.authService.ValidateAccessToken(token); err == nil && auth != nil {
+			return &AuthContext{
+				ID:            auth.ID,
+				Email:         auth.Email,
+				Roles:         append([]string(nil), auth.Roles...),
+				PrincipalType: auth.PrincipalType,
+				SessionID:     auth.SessionID,
+				InstanceID:    auth.InstanceID,
+			}
+		}
+	}
+	if h.db.superadminService != nil {
+		if auth, err := h.db.superadminService.ValidateAccessToken(token); err == nil && auth != nil {
+			return &AuthContext{
+				ID:            auth.ID,
+				Email:         auth.Email,
+				Roles:         append([]string(nil), auth.Roles...),
+				PrincipalType: auth.PrincipalType,
+				SessionID:     auth.SessionID,
+				InstanceID:    auth.InstanceID,
+			}
+		}
+	}
 	payload := server.VerifyJWT(token, h.db.jwtSecret)
 	if payload == nil {
 		return nil
 	}
 	return &AuthContext{
-		ID:    payload.Sub,
-		Email: payload.Email,
-		Roles: append([]string(nil), payload.Roles...),
+		ID:            payload.Sub,
+		Email:         payload.Email,
+		Roles:         append([]string(nil), payload.Roles...),
+		PrincipalType: payload.PrincipalType,
+		SessionID:     payload.SessionID,
+		InstanceID:    payload.InstanceID,
 	}
 }
 

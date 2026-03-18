@@ -38,6 +38,7 @@ type Database struct {
 	superadminService   *server.SuperadminService
 	mailer              *server.Mailer
 	jwtSecret           string
+	authInstanceID      string
 	requestLogRetention time.Duration
 	enablePprof         bool
 	analyticsMu         sync.Mutex
@@ -54,6 +55,7 @@ type Database struct {
 }
 
 const systemSuperadminTableName = "_superadmin"
+const systemAuthSessionTableName = "_auth_sessions"
 
 type materializedRuntime struct {
 	spec        *materializedSpec
@@ -153,6 +155,7 @@ func (a *App) Open() (*Database, error) {
 		materialized:        make(map[string]*materializedRuntime),
 		cascadeRefs:         make(map[string][]cascadeArchiveRef),
 	}
+	d.authInstanceID = strings.TrimSpace(db.GetMeta().AuthInstanceID)
 	for name, spec := range a.tables {
 		d.tableSpecs[name] = spec
 		d.tablePolicy[name] = buildTablePolicyMeta(spec)
@@ -181,13 +184,14 @@ func (a *App) Open() (*Database, error) {
 		d.tableNameToID[name] = i
 	}
 
-	secret := "flop-dev-secret"
+	secret := "flop-" + d.authInstanceID
 	d.jwtSecret = secret
+	sessionTable := db.GetTable(systemAuthSessionTableName)
 	if authTable := db.GetAuthTable(); authTable != nil {
-		d.authService = server.NewAuthService(authTable, secret)
+		d.authService = server.NewAuthService(authTable, sessionTable, secret, d.authInstanceID)
 	}
 	if superadminTable := db.GetTable(systemSuperadminTableName); superadminTable != nil {
-		d.superadminService = server.NewSuperadminService(superadminTable, secret)
+		d.superadminService = server.NewSuperadminService(superadminTable, sessionTable, secret, d.authInstanceID)
 	}
 
 	// Set up mailer if SMTP configured
@@ -323,11 +327,57 @@ func (a *App) wireCachedFields(d *Database) {
 func (d *Database) SetJWTSecret(secret string) {
 	d.jwtSecret = secret
 	if d.authService != nil {
-		d.authService = server.NewAuthService(d.db.GetAuthTable(), secret)
+		d.authService = server.NewAuthService(d.db.GetAuthTable(), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
 	}
 	if d.superadminService != nil {
-		d.superadminService = server.NewSuperadminService(d.db.GetTable(systemSuperadminTableName), secret)
+		d.superadminService = server.NewSuperadminService(d.db.GetTable(systemSuperadminTableName), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
 	}
+}
+
+// ValidateAccessToken resolves the current authenticated principal for the given access token.
+func (d *Database) ValidateAccessToken(token string) (*AuthContext, error) {
+	if d == nil || token == "" {
+		return nil, fmt.Errorf("authentication required")
+	}
+	if d.authService != nil {
+		auth, err := d.authService.ValidateAccessToken(token)
+		if err == nil && auth != nil {
+			return &AuthContext{
+				ID:            auth.ID,
+				Email:         auth.Email,
+				Roles:         append([]string(nil), auth.Roles...),
+				PrincipalType: auth.PrincipalType,
+				SessionID:     auth.SessionID,
+				InstanceID:    auth.InstanceID,
+			}, nil
+		}
+	}
+	if d.superadminService != nil {
+		auth, err := d.superadminService.ValidateAccessToken(token)
+		if err == nil && auth != nil {
+			return &AuthContext{
+				ID:            auth.ID,
+				Email:         auth.Email,
+				Roles:         append([]string(nil), auth.Roles...),
+				PrincipalType: auth.PrincipalType,
+				SessionID:     auth.SessionID,
+				InstanceID:    auth.InstanceID,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid or expired token")
+}
+
+// AuthenticateRequest resolves the authenticated principal from an HTTP request bearer token.
+func (d *Database) AuthenticateRequest(r *http.Request) (*AuthContext, error) {
+	if r == nil {
+		return nil, fmt.Errorf("authentication required")
+	}
+	token := extractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
+	if token == "" {
+		return nil, fmt.Errorf("authentication required")
+	}
+	return d.ValidateAccessToken(token)
 }
 
 // Table returns a table instance by name.
@@ -1747,7 +1797,10 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	if _, exists := a.tables[systemSuperadminTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemSuperadminTableName)
 	}
-	defs := make(map[string]*schema.TableDef, len(a.tables)+1)
+	if _, exists := a.tables[systemAuthSessionTableName]; exists {
+		panic("flop: table name reserved for system use: " + systemAuthSessionTableName)
+	}
+	defs := make(map[string]*schema.TableDef, len(a.tables)+2)
 
 	for name, ts := range a.tables {
 		fields := make([]schema.CompiledField, 0, len(ts.Fields))
@@ -1853,6 +1906,7 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	}
 
 	defs[systemSuperadminTableName] = systemSuperadminTableDef()
+	defs[systemAuthSessionTableName] = systemAuthSessionTableDef()
 
 	return defs
 }
@@ -1900,6 +1954,38 @@ func systemSuperadminTableDef() *schema.TableDef {
 				Unique: true,
 				Type:   schema.IndexTypeHash,
 			},
+		},
+	}
+}
+
+func systemAuthSessionTableDef() *schema.TableDef {
+	fields := []schema.CompiledField{
+		{
+			Name:           "id",
+			Kind:           schema.KindString,
+			Required:       true,
+			Unique:         true,
+			AutoGenPattern: "[a-z0-9]{24}",
+			AutoIDStrategy: "random",
+		},
+		{Name: "principal_type", Kind: schema.KindString, Required: true},
+		{Name: "principal_id", Kind: schema.KindString, Required: true},
+		{Name: "instance_id", Kind: schema.KindString, Required: true},
+		{Name: "created_at", Kind: schema.KindTimestamp, Required: true, DefaultValue: "now"},
+		{Name: "last_used_at", Kind: schema.KindTimestamp, Required: true, DefaultValue: "now"},
+		{Name: "expires_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "revoked_at", Kind: schema.KindTimestamp, Required: false},
+		{Name: "replaced_by_session_id", Kind: schema.KindString, Required: false},
+		{Name: "user_agent", Kind: schema.KindString, Required: false},
+		{Name: "ip", Kind: schema.KindString, Required: false},
+		{Name: "reason", Kind: schema.KindString, Required: false},
+	}
+	return &schema.TableDef{
+		Name:           systemAuthSessionTableName,
+		CompiledSchema: schema.NewCompiledSchema(fields),
+		Indexes: []schema.IndexDef{
+			{Fields: []string{"principal_id"}, Unique: false, Type: schema.IndexTypeHash},
+			{Fields: []string{"instance_id"}, Unique: false, Type: schema.IndexTypeHash},
 		},
 	}
 }
@@ -3005,20 +3091,23 @@ func (p *EngineAdminProvider) AdminLogin(email, password string) (string, string
 	return tok, refresh, nil
 }
 
-func (p *EngineAdminProvider) AdminRefresh(refreshToken string) (string, error) {
+func (p *EngineAdminProvider) AdminRefresh(refreshToken string) (string, string, error) {
 	if p.DB.superadminService == nil {
-		return "", fmt.Errorf("superadmin auth not configured")
+		return "", "", fmt.Errorf("superadmin auth not configured")
 	}
 	return p.DB.superadminService.Refresh(refreshToken)
 }
 
 func (p *EngineAdminProvider) AdminIsAuthorized(token string) bool {
-	payload := server.VerifyJWT(token, p.secret())
-	if payload == nil {
+	if p.DB.superadminService == nil {
 		return false
 	}
-	for _, r := range payload.Roles {
-		if r == "superadmin" {
+	auth, err := p.DB.superadminService.ValidateAccessToken(token)
+	if err != nil || auth == nil {
+		return false
+	}
+	for _, role := range auth.Roles {
+		if role == "superadmin" {
 			return true
 		}
 	}

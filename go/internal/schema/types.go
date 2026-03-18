@@ -133,9 +133,10 @@ type StoredTableMeta struct {
 
 // StoredMeta is the top-level JSON payload of _meta.flop.
 type StoredMeta struct {
-	Version int                         `json:"version"`
-	Created string                      `json:"created"`
-	Tables  map[string]*StoredTableMeta `json:"tables"`
+	Version        int                         `json:"version"`
+	Created        string                      `json:"created"`
+	AuthInstanceID string                      `json:"authInstanceId,omitempty"`
+	Tables         map[string]*StoredTableMeta `json:"tables"`
 }
 
 // RowPointer locates a row within a table file.
@@ -182,9 +183,12 @@ type AccessPolicy struct {
 
 // AuthContext holds authenticated user info extracted from JWT.
 type AuthContext struct {
-	ID    string   `json:"id"`
-	Email string   `json:"email"`
-	Roles []string `json:"roles"`
+	ID            string   `json:"id"`
+	Email         string   `json:"email"`
+	Roles         []string `json:"roles"`
+	PrincipalType string   `json:"principalType,omitempty"`
+	SessionID     string   `json:"sessionId,omitempty"`
+	InstanceID    string   `json:"instanceId,omitempty"`
 }
 
 // FileRef references a stored file asset.

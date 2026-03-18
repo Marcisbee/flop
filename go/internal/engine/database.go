@@ -117,6 +117,9 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 		return fmt.Errorf("read meta: %w", err)
 	}
 	db.meta = meta
+	if strings.TrimSpace(db.meta.AuthInstanceID) == "" {
+		db.meta.AuthInstanceID = randomHex(16)
+	}
 
 	for name, def := range tableDefs {
 		instance, err := newTableInstance(name, def, db)
@@ -138,6 +141,14 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	}
 
 	return nil
+}
+
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 func (db *Database) GetTable(name string) *TableInstance {

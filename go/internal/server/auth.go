@@ -20,12 +20,15 @@ import (
 
 // JWTPayload is the JWT claims structure.
 type JWTPayload struct {
-	Sub   string   `json:"sub"`
-	Email string   `json:"email"`
-	Name  string   `json:"name"`
-	Roles []string `json:"roles"`
-	Iat   int64    `json:"iat"`
-	Exp   int64    `json:"exp"`
+	Sub           string   `json:"sub"`
+	Email         string   `json:"email"`
+	Name          string   `json:"name"`
+	Roles         []string `json:"roles"`
+	PrincipalType string   `json:"principalType,omitempty"`
+	SessionID     string   `json:"sessionId,omitempty"`
+	InstanceID    string   `json:"instanceId,omitempty"`
+	Iat           int64    `json:"iat"`
+	Exp           int64    `json:"exp"`
 }
 
 // --- JWT ---
@@ -129,9 +132,12 @@ func VerifyJWT(token, secret string) *JWTPayload {
 // JWTToAuthContext converts a JWT payload to an AuthContext.
 func JWTToAuthContext(payload *JWTPayload) *schema.AuthContext {
 	return &schema.AuthContext{
-		ID:    payload.Sub,
-		Email: payload.Email,
-		Roles: payload.Roles,
+		ID:            payload.Sub,
+		Email:         payload.Email,
+		Roles:         payload.Roles,
+		PrincipalType: payload.PrincipalType,
+		SessionID:     payload.SessionID,
+		InstanceID:    payload.InstanceID,
 	}
 }
 
@@ -282,48 +288,91 @@ func VerifyPurposeJWT(token, secret string) *PurposePayload {
 // AuthService handles user registration, login, and token management.
 type AuthService struct {
 	authTable       *engine.TableInstance
+	sessionTable    *engine.TableInstance
 	secret          string
+	instanceID      string
 	accessTokenTTL  int64 // seconds
 	refreshTokenTTL int64 // seconds
 }
 
 // NewAuthService creates a new AuthService.
-func NewAuthService(authTable *engine.TableInstance, secret string) *AuthService {
+func NewAuthService(authTable, sessionTable *engine.TableInstance, secret, instanceID string) *AuthService {
 	return &AuthService{
 		authTable:       authTable,
+		sessionTable:    sessionTable,
 		secret:          secret,
+		instanceID:      instanceID,
 		accessTokenTTL:  900,    // 15 min
 		refreshTokenTTL: 604800, // 7 days
 	}
 }
 
 // Register creates a new user account.
-func (as *AuthService) Register(email, password, name string) (token string, auth *schema.AuthContext, err error) {
+func (as *AuthService) Register(email, password, name string, extraFields map[string]interface{}) (token, refreshToken string, auth *schema.AuthContext, err error) {
 	existing := as.findByEmail(email)
 	if existing != nil {
-		return "", nil, fmt.Errorf("email already registered")
+		return "", "", nil, fmt.Errorf("email already registered")
 	}
 
 	hashedPassword, err := HashPassword(password)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 
-	row, err := as.authTable.Insert(map[string]interface{}{
+	data := map[string]interface{}{
 		"email":    email,
 		"password": hashedPassword,
-		"name":     name,
-		"roles":    []interface{}{"user"},
-		"verified": false,
-	}, nil)
+	}
+	if as.authFieldExists("name") && strings.TrimSpace(name) != "" {
+		data["name"] = name
+	}
+	if as.authFieldExists("display_name") && strings.TrimSpace(name) != "" {
+		if extraFields == nil {
+			extraFields = map[string]interface{}{}
+		}
+		if _, ok := extraFields["display_name"]; !ok {
+			extraFields["display_name"] = name
+		}
+	}
+	defaultRole := "user"
+	if value, ok := as.authFieldDefaultString("default_role"); ok && strings.TrimSpace(value) != "" {
+		defaultRole = strings.TrimSpace(value)
+	}
+	if as.authFieldExists("default_role") {
+		data["default_role"] = defaultRole
+	}
+	if as.authFieldExists("roles") {
+		data["roles"] = []interface{}{defaultRole}
+	}
+	if as.authFieldExists("verified") {
+		data["verified"] = false
+	}
+	for key, value := range sanitizeRegisterExtraFields(extraFields) {
+		if as.authFieldExists(key) {
+			data[key] = value
+		}
+	}
+	row, err := as.authTable.Insert(data, nil)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 
 	pk := as.getPK(row)
 	roles := toStringSlice(row["roles"])
-	tok := as.issueToken(pk, email, name, roles)
-	return tok, &schema.AuthContext{ID: pk, Email: email, Roles: roles}, nil
+	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, "register")
+	if err != nil {
+		return "", "", nil, err
+	}
+	tok := as.issueAccessToken(pk, email, name, roles, sessionID)
+	refresh := as.issueRefreshToken(pk, sessionID)
+	return tok, refresh, &schema.AuthContext{
+		ID:            pk,
+		Email:         email,
+		Roles:         roles,
+		PrincipalType: principalTypeUser,
+		SessionID:     sessionID,
+		InstanceID:    as.instanceID,
+	}, nil
 }
 
 // Login authenticates a user.
@@ -338,31 +387,85 @@ func (as *AuthService) Login(email, password string) (token, refreshToken string
 	}
 
 	pk := as.getPK(user)
+	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
+		return "", "", nil, err
+	}
 	roles := toStringSlice(user["roles"])
-	tok := as.issueToken(pk, toString(user["email"]), toString(user["name"]), roles)
-	refresh := as.issueRefreshToken(pk)
+	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, "login")
+	if err != nil {
+		return "", "", nil, err
+	}
+	tok := as.issueAccessToken(pk, toString(user["email"]), toString(user["name"]), roles, sessionID)
+	refresh := as.issueRefreshToken(pk, sessionID)
 
 	return tok, refresh, &schema.AuthContext{
-		ID:    pk,
-		Email: toString(user["email"]),
-		Roles: roles,
+		ID:            pk,
+		Email:         toString(user["email"]),
+		Roles:         roles,
+		PrincipalType: principalTypeUser,
+		SessionID:     sessionID,
+		InstanceID:    as.instanceID,
 	}, nil
 }
 
 // Refresh issues a new access token from a refresh token.
-func (as *AuthService) Refresh(refreshToken string) (string, error) {
+func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 	payload := VerifyJWT(refreshToken, as.secret)
 	if payload == nil {
-		return "", fmt.Errorf("invalid refresh token")
+		return "", "", fmt.Errorf("invalid refresh token")
 	}
-
+	if payload.InstanceID != as.instanceID || payload.PrincipalType != principalTypeUser || payload.SessionID == "" {
+		return "", "", fmt.Errorf("invalid refresh token")
+	}
+	session, err := as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
+	if err != nil {
+		return "", "", err
+	}
 	user, err := as.authTable.Get(payload.Sub)
 	if err != nil || user == nil {
-		return "", fmt.Errorf("user not found")
+		_ = as.revokeSession(payload.SessionID, "principal_missing")
+		return "", "", fmt.Errorf("user not found")
 	}
-
+	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
+		_ = as.revokeSession(payload.SessionID, "principal_blocked")
+		return "", "", err
+	}
+	newSessionID, err := as.rotateSession(session, principalTypeUser, payload.Sub)
+	if err != nil {
+		return "", "", err
+	}
 	roles := toStringSlice(user["roles"])
-	return as.issueToken(payload.Sub, toString(user["email"]), toString(user["name"]), roles), nil
+	return as.issueAccessToken(payload.Sub, toString(user["email"]), toString(user["name"]), roles, newSessionID), as.issueRefreshToken(payload.Sub, newSessionID), nil
+}
+
+func (as *AuthService) ValidateAccessToken(token string) (*schema.AuthContext, error) {
+	payload := VerifyJWT(token, as.secret)
+	if payload == nil {
+		return nil, fmt.Errorf("invalid or expired token")
+	}
+	if payload.InstanceID != as.instanceID || payload.PrincipalType != principalTypeUser || payload.SessionID == "" {
+		return nil, fmt.Errorf("invalid or expired token")
+	}
+	if _, err := as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub); err != nil {
+		return nil, err
+	}
+	user, err := as.authTable.Get(payload.Sub)
+	if err != nil || user == nil {
+		_ = as.revokeSession(payload.SessionID, "principal_missing")
+		return nil, fmt.Errorf("user not found")
+	}
+	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
+		_ = as.revokeSession(payload.SessionID, "principal_blocked")
+		return nil, err
+	}
+	return &schema.AuthContext{
+		ID:            payload.Sub,
+		Email:         toString(user["email"]),
+		Roles:         toStringSlice(user["roles"]),
+		PrincipalType: principalTypeUser,
+		SessionID:     payload.SessionID,
+		InstanceID:    as.instanceID,
+	}, nil
 }
 
 // HasSuperadmin checks if any user has the superadmin role.
@@ -413,7 +516,7 @@ func (as *AuthService) RegisterSuperadmin(email, password string, extraFields ma
 	pk := as.getPK(row)
 	name := toString(row["name"])
 	roles := toStringSlice(row["roles"])
-	tok := as.issueToken(pk, email, name, roles)
+	tok := as.issueAccessToken(pk, email, name, roles, "")
 	return tok, &schema.AuthContext{ID: pk, Email: email, Roles: roles}, nil
 }
 
@@ -495,7 +598,7 @@ func (as *AuthService) ConfirmEmailChange(token string) (string, error) {
 	}
 	user, _ := as.authTable.Get(payload.Sub)
 	roles := toStringSlice(user["roles"])
-	newToken := as.issueToken(payload.Sub, payload.NewEmail, toString(user["name"]), roles)
+	newToken := as.issueAccessToken(payload.Sub, payload.NewEmail, toString(user["name"]), roles, "")
 	return newToken, nil
 }
 
@@ -573,6 +676,51 @@ func (as *AuthService) findByEmail(email string) map[string]interface{} {
 	return row
 }
 
+func (as *AuthService) authFieldExists(name string) bool {
+	_, ok := as.authField(name)
+	return ok
+}
+
+func (as *AuthService) authField(name string) (*schema.CompiledField, bool) {
+	if as == nil || as.authTable == nil {
+		return nil, false
+	}
+	for i, field := range as.authTable.GetDef().CompiledSchema.Fields {
+		if field.Name == name {
+			return &as.authTable.GetDef().CompiledSchema.Fields[i], true
+		}
+	}
+	return nil, false
+}
+
+func (as *AuthService) authFieldDefaultString(name string) (string, bool) {
+	field, ok := as.authField(name)
+	if !ok || field == nil {
+		return "", false
+	}
+	value, ok := field.DefaultValue.(string)
+	if !ok {
+		return "", false
+	}
+	return value, true
+}
+
+func sanitizeRegisterExtraFields(extraFields map[string]interface{}) map[string]interface{} {
+	if len(extraFields) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(extraFields))
+	for key, value := range extraFields {
+		switch key {
+		case "", "id", "email", "password", "roles", "verified", "default_role", "createdAt", "updatedAt":
+			continue
+		default:
+			out[key] = value
+		}
+	}
+	return out
+}
+
 func (as *AuthService) getPK(row map[string]interface{}) string {
 	def := as.authTable.GetDef()
 	for _, f := range def.CompiledSchema.Fields {
@@ -586,28 +734,164 @@ func (as *AuthService) getPK(row map[string]interface{}) string {
 	return ""
 }
 
-func (as *AuthService) issueToken(id, email, name string, roles []string) string {
+func (as *AuthService) issueAccessToken(id, email, name string, roles []string, sessionID string) string {
 	now := time.Now().Unix()
 	return CreateJWT(&JWTPayload{
-		Sub:   id,
-		Email: email,
-		Name:  name,
-		Roles: roles,
-		Iat:   now,
-		Exp:   now + as.accessTokenTTL,
+		Sub:           id,
+		Email:         email,
+		Name:          name,
+		Roles:         roles,
+		PrincipalType: principalTypeUser,
+		SessionID:     sessionID,
+		InstanceID:    as.instanceID,
+		Iat:           now,
+		Exp:           now + as.accessTokenTTL,
 	}, as.secret)
 }
 
-func (as *AuthService) issueRefreshToken(id string) string {
+func (as *AuthService) issueRefreshToken(id, sessionID string) string {
 	now := time.Now().Unix()
 	return CreateJWT(&JWTPayload{
-		Sub:   id,
-		Email: "",
-		Name:  "",
-		Roles: nil,
-		Iat:   now,
-		Exp:   now + as.refreshTokenTTL,
+		Sub:           id,
+		Email:         "",
+		Name:          "",
+		Roles:         nil,
+		PrincipalType: principalTypeUser,
+		SessionID:     sessionID,
+		InstanceID:    as.instanceID,
+		Iat:           now,
+		Exp:           now + as.refreshTokenTTL,
 	}, as.secret)
+}
+
+const (
+	principalTypeUser       = "user"
+	principalTypeSuperadmin = "superadmin"
+)
+
+func (as *AuthService) createSession(principalType, principalID string, ttl int64, reason string) (string, error) {
+	if as.sessionTable == nil {
+		return "", fmt.Errorf("auth sessions not configured")
+	}
+	now := time.Now().Unix()
+	row, err := as.sessionTable.Insert(map[string]interface{}{
+		"principal_type": principalType,
+		"principal_id":   principalID,
+		"instance_id":    as.instanceID,
+		"created_at":     now,
+		"last_used_at":   now,
+		"expires_at":     now + ttl,
+		"reason":         reason,
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	return toString(row["id"]), nil
+}
+
+func (as *AuthService) requireActiveSession(sessionID, principalType, principalID string) (map[string]interface{}, error) {
+	if as.sessionTable == nil {
+		return nil, fmt.Errorf("auth sessions not configured")
+	}
+	row, err := as.sessionTable.Get(sessionID)
+	if err != nil || row == nil {
+		return nil, fmt.Errorf("session not found")
+	}
+	if toString(row["principal_type"]) != principalType || toString(row["principal_id"]) != principalID || toString(row["instance_id"]) != as.instanceID {
+		return nil, fmt.Errorf("invalid session")
+	}
+	if ts := int64(authNumber(row["revoked_at"])); ts > 0 {
+		return nil, fmt.Errorf("session revoked")
+	}
+	now := time.Now().Unix()
+	if exp := int64(authNumber(row["expires_at"])); exp > 0 && exp < now {
+		return nil, fmt.Errorf("session expired")
+	}
+	return row, nil
+}
+
+func (as *AuthService) rotateSession(session map[string]interface{}, principalType, principalID string) (string, error) {
+	newID, err := as.createSession(principalType, principalID, as.refreshTokenTTL, "refresh")
+	if err != nil {
+		return "", err
+	}
+	_, err = as.sessionTable.Update(toString(session["id"]), map[string]interface{}{
+		"revoked_at":             time.Now().Unix(),
+		"replaced_by_session_id": newID,
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	return newID, nil
+}
+
+func (as *AuthService) revokeSession(sessionID, reason string) error {
+	if as.sessionTable == nil || sessionID == "" {
+		return nil
+	}
+	_, err := as.sessionTable.Update(sessionID, map[string]interface{}{
+		"revoked_at": time.Now().Unix(),
+		"reason":     reason,
+	}, nil)
+	return err
+}
+
+func validatePrincipalRow(row map[string]interface{}, principalType string) error {
+	if row == nil {
+		return fmt.Errorf("%s not found", principalType)
+	}
+	if isTruthy(row["banned"]) {
+		return fmt.Errorf("%s is banned", principalType)
+	}
+	if isTruthy(row["deleted"]) || isTruthy(row["archived"]) || isTruthy(row["disabled"]) || isTruthy(row["suspended"]) {
+		return fmt.Errorf("%s is unavailable", principalType)
+	}
+	if status := strings.ToLower(strings.TrimSpace(toString(row["status"]))); status != "" {
+		switch status {
+		case "banned", "archived", "deleted", "disabled", "inactive", "suspended":
+			return fmt.Errorf("%s is unavailable", principalType)
+		}
+	}
+	if value, ok := row["active"].(bool); ok && !value {
+		return fmt.Errorf("%s is inactive", principalType)
+	}
+	if authNumber(row["deleted_at"]) > 0 || authNumber(row["archived_at"]) > 0 || authNumber(row["disabled_at"]) > 0 || authNumber(row["banned_at"]) > 0 {
+		return fmt.Errorf("%s is unavailable", principalType)
+	}
+	return nil
+}
+
+func isTruthy(v interface{}) bool {
+	switch value := v.(type) {
+	case bool:
+		return value
+	case string:
+		value = strings.TrimSpace(strings.ToLower(value))
+		return value == "1" || value == "true" || value == "yes"
+	case int:
+		return value != 0
+	case int64:
+		return value != 0
+	case float64:
+		return value != 0
+	default:
+		return false
+	}
+}
+
+func authNumber(v interface{}) float64 {
+	switch value := v.(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	default:
+		return 0
+	}
 }
 
 func toString(v interface{}) string {

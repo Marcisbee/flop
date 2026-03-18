@@ -12,6 +12,8 @@ export interface AuthResult {
   };
 }
 
+export type RegisterExtraFields = Record<string, unknown>;
+
 export class AuthClient {
   private host: string;
   private tokenStore: TokenStore;
@@ -43,11 +45,20 @@ export class AuthClient {
     return result;
   }
 
-  async register(email: string, password: string, name?: string): Promise<AuthResult> {
+  async register(email: string, password: string, nameOrExtra?: string | RegisterExtraFields, extraFields?: RegisterExtraFields): Promise<AuthResult> {
+    const payload: Record<string, unknown> = { email, password };
+    if (typeof nameOrExtra === "string") {
+      payload.name = nameOrExtra;
+      if (extraFields && typeof extraFields === "object") {
+        Object.assign(payload, extraFields);
+      }
+    } else if (nameOrExtra && typeof nameOrExtra === "object") {
+      Object.assign(payload, nameOrExtra);
+    }
     const res = await fetch(`${this.host}/api/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, name }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
@@ -57,6 +68,9 @@ export class AuthClient {
 
     const result = await res.json() as AuthResult;
     this.tokenStore.set(result.token);
+    if (result.refreshToken) {
+      this.refreshTokenStore.set(result.refreshToken);
+    }
     return result;
   }
 
@@ -170,8 +184,11 @@ export class AuthClient {
       throw new Error(data.error ?? "Token refresh failed");
     }
 
-    const { token } = await res.json();
+    const { token, refreshToken: nextRefreshToken } = await res.json();
     this.tokenStore.set(token);
+    if (nextRefreshToken) {
+      this.refreshTokenStore.set(nextRefreshToken);
+    }
     return token;
   }
 
