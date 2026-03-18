@@ -16,6 +16,7 @@ import (
 
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/reqtrace"
+	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/server"
 )
 
@@ -32,6 +33,14 @@ type reducerRuntime struct {
 	access     AccessPolicy
 	decodeJSON func([]byte) (any, error)
 	run        func(*ReducerCtx, any) (any, error)
+}
+
+type builtinViewRuntime struct {
+	name        string
+	access      AccessPolicy
+	decodeJSON  func([]byte) (any, error)
+	decodeQuery func(url.Values) (any, error)
+	run         func(*AuthContext) (any, []string, error)
 }
 
 func buildViewRuntime[In, Out any](
@@ -568,6 +577,11 @@ func (h *APIHandler) handleSchema(w http.ResponseWriter) {
 			Name: v.Name, Method: http.MethodGet, Path: "/api/view/" + v.Name, Type: "view", Access: v.Access,
 		})
 	}
+	if h.hasBuiltinAuthMeView() {
+		out = append(out, endpoint{
+			Name: "auth_me", Method: http.MethodGet, Path: "/api/view/auth_me", Type: "view", Access: Authenticated(),
+		})
+	}
 	for _, rd := range h.app.reducers {
 		out = append(out, endpoint{
 			Name: rd.Name, Method: http.MethodPost, Path: "/api/reduce/" + rd.Name, Type: "reducer", Access: rd.Access,
@@ -580,6 +594,52 @@ func (h *APIHandler) handleSchema(w http.ResponseWriter) {
 		return out[i].Type < out[j].Type
 	})
 	jsonResponse(w, http.StatusOK, map[string]any{"endpoints": out})
+}
+
+func (h *APIHandler) hasBuiltinAuthMeView() bool {
+	return h.db != nil && h.db.authService != nil
+}
+
+func (h *APIHandler) builtinView(name string) (builtinViewRuntime, bool) {
+	if name != "auth_me" || !h.hasBuiltinAuthMeView() {
+		return builtinViewRuntime{}, false
+	}
+	return builtinViewRuntime{
+		name:   "auth_me",
+		access: Authenticated(),
+		decodeJSON: func(raw []byte) (any, error) {
+			var in struct{}
+			if err := decodeStrictJSON(raw, &in); err != nil {
+				return nil, err
+			}
+			return in, nil
+		},
+		decodeQuery: func(values url.Values) (any, error) {
+			var in struct{}
+			if err := decodeQueryValues(values, &in); err != nil {
+				return nil, err
+			}
+			return in, nil
+		},
+		run: func(auth *AuthContext) (any, []string, error) {
+			payload, err := h.db.BuildAuthMePayload(auth)
+			if err != nil {
+				return nil, nil, err
+			}
+			return payload, h.db.BuildAuthMeReads(auth), nil
+		},
+	}, true
+}
+
+func (h *APIHandler) execBuiltinView(def builtinViewRuntime, auth *AuthContext) (any, []string, int, error) {
+	out, reads, err := def.run(auth)
+	if err != nil {
+		if errors.Is(err, ErrAccessDenied) {
+			return nil, nil, http.StatusForbidden, err
+		}
+		return nil, nil, http.StatusBadRequest, err
+	}
+	return out, reads, http.StatusOK, nil
 }
 
 func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
@@ -619,14 +679,22 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		appAuth := authContextFromSchema(auth)
+		userPayload, err := h.db.BuildAuthUserPayload(appAuth)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mePayload, err := h.db.BuildAuthMePayload(appAuth)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		jsonResponse(w, http.StatusOK, map[string]any{
 			"token":        token,
 			"refreshToken": refreshToken,
-			"user": map[string]any{
-				"id":    auth.ID,
-				"email": auth.Email,
-				"roles": auth.Roles,
-			},
+			"user":         userPayload,
+			"me":           mePayload,
 		})
 	case "/api/auth/password":
 		if r.Method != http.MethodPost {
@@ -650,14 +718,22 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
+		appAuth := authContextFromSchema(auth)
+		userPayload, err := h.db.BuildAuthUserPayload(appAuth)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mePayload, err := h.db.BuildAuthMePayload(appAuth)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		jsonResponse(w, http.StatusOK, map[string]any{
 			"token":        token,
 			"refreshToken": refresh,
-			"user": map[string]any{
-				"id":    auth.ID,
-				"email": auth.Email,
-				"roles": auth.Roles,
-			},
+			"user":         userPayload,
+			"me":           mePayload,
 		})
 	case "/api/auth/refresh":
 		if r.Method != http.MethodPost {
@@ -681,6 +757,22 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, http.StatusOK, map[string]any{"token": token, "refreshToken": nextRefreshToken})
+	case "/api/auth/me":
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth := h.authFromRequest(r)
+		if auth == nil {
+			jsonError(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		mePayload, err := h.db.BuildAuthMePayload(auth)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		jsonResponse(w, http.StatusOK, mePayload)
 	default:
 		jsonError(w, "unknown auth endpoint", http.StatusNotFound)
 	}
@@ -723,6 +815,35 @@ func (h *APIHandler) handleView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/api/view/")
+	if builtin, ok := h.builtinView(name); ok {
+		auth, status, err := h.enforceAccess(r, builtin.access)
+		hasAuth = auth != nil
+		if err != nil {
+			statusCode = status
+			errMessage = err.Error()
+			jsonError(w, err.Error(), status)
+			return
+		}
+		paramBytes = len(r.URL.RawQuery)
+		if _, err := builtin.decodeQuery(r.URL.Query()); err != nil {
+			statusCode = http.StatusBadRequest
+			errMessage = err.Error()
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		result, reads, status, err := h.execBuiltinView(builtin, auth)
+		if err != nil {
+			statusCode = status
+			errMessage = err.Error()
+			jsonError(w, err.Error(), status)
+			return
+		}
+		if len(reads) > 0 {
+			w.Header().Set("X-Flop-Reads", strings.Join(reads, ","))
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "data": result})
+		return
+	}
 	def, ok := h.app.viewDefs[name]
 	if !ok {
 		statusCode = http.StatusNotFound
@@ -804,6 +925,90 @@ func (h *APIHandler) handleViewBatch(w http.ResponseWriter, r *http.Request) {
 			"batchSize":  len(in.Calls),
 		}
 
+		if builtin, ok := h.builtinView(c.Name); ok {
+			if _, status, err := h.enforceAccessFromAuth(builtin.access, auth); err != nil {
+				if status == http.StatusUnauthorized {
+					statusCode = status
+					errMessage = "authentication required"
+					out = append(out, result{ID: c.ID, Error: "authentication required"})
+				} else {
+					statusCode = status
+					errMessage = err.Error()
+					out = append(out, result{ID: c.ID, Error: err.Error()})
+				}
+				traceCollector.End()
+				h.recordAnalyticsEvent(analyticsEventInput{
+					start:          start,
+					traceCollector: traceCollector,
+					routeType:      "view",
+					routeName:      c.Name,
+					method:         http.MethodPost,
+					path:           "/api/view/" + c.Name,
+					transport:      "http",
+					statusCode:     statusCode,
+					errMessage:     errMessage,
+					userID:         ternaryUserID(auth),
+					details:        details,
+				})
+				continue
+			}
+			if _, err := builtin.decodeJSON(c.Params); err != nil {
+				statusCode = http.StatusBadRequest
+				errMessage = err.Error()
+				out = append(out, result{ID: c.ID, Error: err.Error()})
+				traceCollector.End()
+				h.recordAnalyticsEvent(analyticsEventInput{
+					start:          start,
+					traceCollector: traceCollector,
+					routeType:      "view",
+					routeName:      c.Name,
+					method:         http.MethodPost,
+					path:           "/api/view/" + c.Name,
+					transport:      "http",
+					statusCode:     statusCode,
+					errMessage:     errMessage,
+					userID:         ternaryUserID(auth),
+					details:        details,
+				})
+				continue
+			}
+			data, reads, _, err := h.execBuiltinView(builtin, auth)
+			if err != nil {
+				statusCode = http.StatusBadRequest
+				errMessage = err.Error()
+				out = append(out, result{ID: c.ID, Error: err.Error()})
+				traceCollector.End()
+				h.recordAnalyticsEvent(analyticsEventInput{
+					start:          start,
+					traceCollector: traceCollector,
+					routeType:      "view",
+					routeName:      c.Name,
+					method:         http.MethodPost,
+					path:           "/api/view/" + c.Name,
+					transport:      "http",
+					statusCode:     statusCode,
+					errMessage:     errMessage,
+					userID:         ternaryUserID(auth),
+					details:        details,
+				})
+				continue
+			}
+			out = append(out, result{ID: c.ID, Data: data, Reads: reads})
+			traceCollector.End()
+			h.recordAnalyticsEvent(analyticsEventInput{
+				start:          start,
+				traceCollector: traceCollector,
+				routeType:      "view",
+				routeName:      c.Name,
+				method:         http.MethodPost,
+				path:           "/api/view/" + c.Name,
+				transport:      "http",
+				statusCode:     statusCode,
+				userID:         ternaryUserID(auth),
+				details:        details,
+			})
+			continue
+		}
 		def, ok := h.app.viewDefs[c.Name]
 		if !ok {
 			statusCode = http.StatusNotFound
@@ -1150,6 +1355,20 @@ func (h *APIHandler) enforceAccessFromAuth(policy AccessPolicy, auth *AuthContex
 		return nil, http.StatusForbidden, fmt.Errorf("insufficient role")
 	default:
 		return nil, http.StatusForbidden, fmt.Errorf("invalid access policy")
+	}
+}
+
+func authContextFromSchema(auth *schema.AuthContext) *AuthContext {
+	if auth == nil {
+		return nil
+	}
+	return &AuthContext{
+		ID:            auth.ID,
+		Email:         auth.Email,
+		Roles:         append([]string(nil), auth.Roles...),
+		PrincipalType: auth.PrincipalType,
+		SessionID:     auth.SessionID,
+		InstanceID:    auth.InstanceID,
 	}
 }
 

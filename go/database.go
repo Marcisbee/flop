@@ -46,6 +46,9 @@ type Database struct {
 	mediaIndexMu        sync.Mutex
 	mediaIndexRebuild   bool
 	cronRunner          *cron.Runner
+	buildAuthUser       func(*Database, *AuthContext) (map[string]any, error)
+	buildAuthMe         func(*Database, *AuthContext) (map[string]any, error)
+	readAuthMe          func(*Database, *AuthContext) []string
 	tableNames          []string
 	tableNameToID       map[string]int
 	tableSpecs          map[string]*tableSpec
@@ -154,6 +157,11 @@ func (a *App) Open() (*Database, error) {
 		tablePolicy:         make(map[string]tablePolicyMeta),
 		materialized:        make(map[string]*materializedRuntime),
 		cascadeRefs:         make(map[string][]cascadeArchiveRef),
+	}
+	if a.config.AuthPayloads != nil {
+		d.buildAuthUser = a.config.AuthPayloads.BuildUser
+		d.buildAuthMe = a.config.AuthPayloads.BuildMe
+		d.readAuthMe = a.config.AuthPayloads.ReadMe
 	}
 	d.authInstanceID = strings.TrimSpace(db.GetMeta().AuthInstanceID)
 	for name, spec := range a.tables {
@@ -378,6 +386,72 @@ func (d *Database) AuthenticateRequest(r *http.Request) (*AuthContext, error) {
 		return nil, fmt.Errorf("authentication required")
 	}
 	return d.ValidateAccessToken(token)
+}
+
+func (d *Database) BuildAuthUserPayload(auth *AuthContext) (map[string]any, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("authentication required")
+	}
+	if d != nil && d.buildAuthUser != nil {
+		payload, err := d.buildAuthUser(d, auth)
+		if err != nil {
+			return nil, err
+		}
+		if payload != nil {
+			return payload, nil
+		}
+	}
+	return map[string]any{
+		"id":    auth.ID,
+		"email": auth.Email,
+		"roles": append([]string(nil), auth.Roles...),
+	}, nil
+}
+
+func (d *Database) BuildAuthMePayload(auth *AuthContext) (map[string]any, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("authentication required")
+	}
+	if d != nil && d.buildAuthMe != nil {
+		payload, err := d.buildAuthMe(d, auth)
+		if err != nil {
+			return nil, err
+		}
+		if payload != nil {
+			if _, ok := payload["user"]; !ok {
+				user, userErr := d.BuildAuthUserPayload(auth)
+				if userErr == nil {
+					payload["user"] = user
+				}
+			}
+			if _, ok := payload["ok"]; !ok {
+				payload["ok"] = true
+			}
+			return payload, nil
+		}
+	}
+	user, err := d.BuildAuthUserPayload(auth)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"ok":   true,
+		"user": user,
+	}, nil
+}
+
+func (d *Database) BuildAuthMeReads(auth *AuthContext) []string {
+	if auth == nil {
+		return nil
+	}
+	if d != nil && d.readAuthMe != nil {
+		reads := d.readAuthMe(d, auth)
+		if len(reads) == 0 {
+			return nil
+		}
+		return append([]string(nil), reads...)
+	}
+	return nil
 }
 
 // Table returns a table instance by name.

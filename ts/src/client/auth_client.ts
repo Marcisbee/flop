@@ -5,6 +5,7 @@ import type { TokenStore } from "./token_store.ts";
 export interface AuthResult {
   token: string;
   refreshToken?: string;
+  me?: unknown;
   user: {
     id: string;
     email: string;
@@ -190,6 +191,18 @@ export class AuthClient {
       this.refreshTokenStore.set(nextRefreshToken);
     }
     return token;
+  }
+
+  async me<T = unknown>(): Promise<T> {
+    const res = await fetch(`${this.host}/api/auth/me`, {
+      method: "GET",
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error ?? "Auth me failed");
+    }
+    return await res.json() as T;
   }
 
   logout(): void {

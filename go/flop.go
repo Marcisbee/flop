@@ -24,12 +24,19 @@ var ErrNotImplemented = errors.New("flop: not implemented")
 var ErrAccessDenied = errors.New("flop: access denied")
 
 type Config struct {
-	DataDir               string        `json:"dataDir,omitempty"`
-	SyncMode              string        `json:"syncMode,omitempty"`
-	AsyncSecondaryIndexes bool          `json:"asyncSecondaryIndexes,omitempty"`
-	RequestLogRetention   time.Duration `json:"-"`
-	EnablePprof           bool          `json:"-"`
-	SMTP                  *SMTPConfig   `json:"-"`
+	DataDir               string             `json:"dataDir,omitempty"`
+	SyncMode              string             `json:"syncMode,omitempty"`
+	AsyncSecondaryIndexes bool               `json:"asyncSecondaryIndexes,omitempty"`
+	RequestLogRetention   time.Duration      `json:"-"`
+	EnablePprof           bool               `json:"-"`
+	SMTP                  *SMTPConfig        `json:"-"`
+	AuthPayloads          *AuthPayloadConfig `json:"-"`
+}
+
+type AuthPayloadConfig struct {
+	BuildUser func(*Database, *AuthContext) (map[string]any, error)
+	BuildMe   func(*Database, *AuthContext) (map[string]any, error)
+	ReadMe    func(*Database, *AuthContext) []string
 }
 
 // CachedTypeHint identifies the storage type for a cached field.
