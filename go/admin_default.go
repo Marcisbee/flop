@@ -442,6 +442,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 						"enabled":        true,
 						"retentionHours": analytics.Retention().Hours(),
 						"droppedEvents":  analytics.DroppedEvents(),
+						"routeTypes":     analytics.RouteTypes(),
 					})
 					return
 				}
@@ -455,7 +456,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				}
 				page := parseIntOr(r.URL.Query().Get("page"), 1)
 				limit := clampInt(parseIntOr(r.URL.Query().Get("limit"), 50), 1, 500)
-				rows, total, err := analytics.QueryLogs(page, limit, r.URL.Query().Get("search"), r.URL.Query().Get("filter"))
+				rows, total, err := analytics.QueryLogs(page, limit, r.URL.Query().Get("search"), r.URL.Query().Get("filter"), r.URL.Query().Get("routeType"))
 				if err != nil {
 					adminJSONError(w, "Invalid filter: "+err.Error(), http.StatusBadRequest)
 					return

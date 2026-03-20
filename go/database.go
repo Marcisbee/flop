@@ -57,6 +57,23 @@ type Database struct {
 	cascadeRefs         map[string][]cascadeArchiveRef
 }
 
+// AnalyticsEvent records one retained observability entry in the admin analytics store.
+// RouteType can be a custom category such as "igdb" in addition to built-in request/view/reducer.
+type AnalyticsEvent struct {
+	Timestamp    time.Time
+	RouteType    string
+	RouteName    string
+	Method       string
+	Path         string
+	Transport    string
+	Duration     time.Duration
+	OK           bool
+	StatusCode   int
+	ErrorMessage string
+	UserID       string
+	Details      map[string]any
+}
+
 const systemSuperadminTableName = "_superadmin"
 const systemAuthSessionTableName = "_auth_sessions"
 
@@ -604,6 +621,31 @@ func (d *Database) RequestAnalytics() *server.RequestAnalytics {
 	return d.analytics
 }
 
+// RecordAnalyticsEvent appends a structured analytics event to the retained admin analytics log.
+func (d *Database) RecordAnalyticsEvent(event AnalyticsEvent) {
+	if d == nil {
+		return
+	}
+	analytics := d.RequestAnalytics()
+	if analytics == nil {
+		return
+	}
+	analytics.Record(server.AnalyticsEvent{
+		Timestamp:    event.Timestamp,
+		RouteType:    event.RouteType,
+		RouteName:    event.RouteName,
+		Method:       event.Method,
+		Path:         event.Path,
+		Transport:    event.Transport,
+		Duration:     event.Duration,
+		OK:           event.OK,
+		StatusCode:   event.StatusCode,
+		ErrorMessage: event.ErrorMessage,
+		UserID:       event.UserID,
+		Details:      event.Details,
+	})
+}
+
 func (d *Database) RefreshMaterialized(name string) error {
 	if d == nil {
 		return fmt.Errorf("flop: database is nil")
@@ -636,6 +678,12 @@ func (d *Database) repairTableIndexes(name string) error {
 		return fmt.Errorf("flop: unknown table: %s", name)
 	}
 	return ti.RepairIndexesIfNeeded()
+}
+
+// RepairTableIndexes rebuilds in-memory indexes when persisted index health
+// diverges from the table file row state.
+func (d *Database) RepairTableIndexes(name string) error {
+	return d.repairTableIndexes(name)
 }
 
 // RebuildSecondaryIndexes forces a full secondary-index rebuild for one table.

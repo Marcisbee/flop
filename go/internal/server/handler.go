@@ -39,15 +39,15 @@ type HandlerCaller interface {
 
 // Handler manages all HTTP request routing.
 type Handler struct {
-	db          *engine.Database
-	caller      HandlerCaller
-	routes      []RouteInfo
-	pageRoutes  []FlatRoute
-	authService *AuthService
+	db                *engine.Database
+	caller            HandlerCaller
+	routes            []RouteInfo
+	pageRoutes        []FlatRoute
+	authService       *AuthService
 	superadminService *SuperadminService
-	mailer      *Mailer
-	config      ServerConfig
-	setupToken  string
+	mailer            *Mailer
+	config            ServerConfig
+	setupToken        string
 
 	clientJS  []byte
 	clientCSS []byte
@@ -86,18 +86,18 @@ func NewHandler(
 	}
 	analyticsPath := filepath.Join(db.GetDataDir(), "_system", "request_logs.ndjson")
 	return &Handler{
-		db:          db,
-		caller:      caller,
-		routes:      routes,
-		pageRoutes:  pageRoutes,
-		authService: authService,
+		db:                db,
+		caller:            caller,
+		routes:            routes,
+		pageRoutes:        pageRoutes,
+		authService:       authService,
 		superadminService: superadminService,
-		mailer:      mailer,
-		config:      config,
-		setupToken:  setupToken,
-		clientJS:    clientJS,
-		clientCSS:   clientCSS,
-		analytics:   NewRequestAnalyticsWithStorage(retention, analyticsPath),
+		mailer:            mailer,
+		config:            config,
+		setupToken:        setupToken,
+		clientJS:          clientJS,
+		clientCSS:         clientCSS,
+		analytics:         NewRequestAnalyticsWithStorage(retention, analyticsPath),
 	}
 }
 
@@ -1984,6 +1984,7 @@ func (h *Handler) handleAnalyticsConfig(w http.ResponseWriter) {
 		"enabled":        true,
 		"retentionHours": retention.Hours(),
 		"droppedEvents":  h.analytics.DroppedEvents(),
+		"routeTypes":     h.analytics.RouteTypes(),
 	})
 }
 
@@ -2003,7 +2004,7 @@ func (h *Handler) handleAnalyticsLogs(w http.ResponseWriter, r *http.Request) {
 		limit = 500
 	}
 
-	rows, total, err := h.analytics.QueryLogs(page, limit, q.Get("search"), q.Get("filter"))
+	rows, total, err := h.analytics.QueryLogs(page, limit, q.Get("search"), q.Get("filter"), q.Get("routeType"))
 	if err != nil {
 		jsonError(w, "Invalid filter: "+err.Error(), 400)
 		return

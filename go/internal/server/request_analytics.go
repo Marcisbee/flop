@@ -252,7 +252,7 @@ func (ra *RequestAnalytics) DroppedEvents() uint64 {
 	return ra.dropped.Load()
 }
 
-func (ra *RequestAnalytics) QueryLogs(page, limit int, search, filterExpr string) ([]map[string]interface{}, int, error) {
+func (ra *RequestAnalytics) QueryLogs(page, limit int, search, filterExpr, routeType string) ([]map[string]interface{}, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -272,6 +272,7 @@ func (ra *RequestAnalytics) QueryLogs(page, limit int, search, filterExpr string
 		}
 	}
 	search = strings.ToLower(strings.TrimSpace(search))
+	routeType = strings.TrimSpace(routeType)
 	offset := (page - 1) * limit
 
 	ra.mu.RLock()
@@ -283,6 +284,9 @@ func (ra *RequestAnalytics) QueryLogs(page, limit int, search, filterExpr string
 	rows := make([]map[string]interface{}, 0, limit)
 	for i := len(logs) - 1; i >= 0; i-- {
 		rec := logs[i]
+		if routeType != "" && analyticsRouteType(rec.RouteType) != routeType {
+			continue
+		}
 		if search != "" && !matchesSearchRecord(rec, search) {
 			continue
 		}
@@ -303,6 +307,32 @@ func (ra *RequestAnalytics) QueryLogs(page, limit int, search, filterExpr string
 		rows = append(rows, row)
 	}
 	return rows, total, nil
+}
+
+func (ra *RequestAnalytics) RouteTypes() []string {
+	ra.mu.RLock()
+	logs := make([]requestLogRecord, len(ra.logs))
+	copy(logs, ra.logs)
+	ra.mu.RUnlock()
+
+	seen := map[string]bool{}
+	for _, rec := range logs {
+		seen[analyticsRouteType(rec.RouteType)] = true
+	}
+	if len(seen) == 0 {
+		return []string{"request"}
+	}
+
+	routeTypes := make([]string, 0, len(seen))
+	if seen["request"] {
+		routeTypes = append(routeTypes, "request")
+		delete(seen, "request")
+	}
+	for routeType := range seen {
+		routeTypes = append(routeTypes, routeType)
+	}
+	sort.Strings(routeTypes[boolToInt(len(routeTypes) > 0 && routeTypes[0] == "request"):])
+	return routeTypes
 }
 
 func (ra *RequestAnalytics) QuerySeries(window time.Duration, routeType, routeName string) AnalyticsSeries {
@@ -513,10 +543,7 @@ func addBucket(agg *requestAgg, bucket *requestMinuteBucket) {
 
 func (ra *RequestAnalytics) addMetricsFromRecordLocked(rec requestLogRecord) {
 	minuteTs := floorMinuteUnixMilli(rec.Ts)
-	routeType := rec.RouteType
-	if routeType == "" {
-		routeType = "request"
-	}
+	routeType := analyticsRouteType(rec.RouteType)
 	routeName := rec.RouteName
 	key := fmt.Sprintf("%d|%s|%s", minuteTs, routeType, routeName)
 
@@ -636,6 +663,21 @@ func routeValue(v interface{}) string {
 		return ""
 	}
 	return fmt.Sprint(v)
+}
+
+func analyticsRouteType(routeType string) string {
+	routeType = strings.TrimSpace(routeType)
+	if routeType == "" {
+		return "request"
+	}
+	return routeType
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func recordFromRow(ts int64, row map[string]interface{}) requestLogRecord {

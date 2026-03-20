@@ -410,6 +410,23 @@ function truncate(s, n = 60) {
   return str.length > n ? str.slice(0, n) + '...' : str;
 }
 
+function titleCaseToken(token) {
+  return String(token || '')
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function routeTypeLabel(routeType, plural = true) {
+  const normalized = String(routeType || 'request');
+  if (normalized === 'request') return plural ? 'Requests' : 'Request';
+  if (normalized === 'view') return plural ? 'Views' : 'View';
+  if (normalized === 'reducer') return plural ? 'Reducers' : 'Reducer';
+  const label = titleCaseToken(normalized);
+  return plural ? label + ' Events' : label + ' Event';
+}
+
 // ── Toast ──
 let _toastSet = null;
 let _toastId = 0;
@@ -1443,7 +1460,7 @@ function AnalyticsPanel({ page = 'volume' }) {
   const [config, setConfig] = useState(null);
   const [series, setSeries] = useState({ points: [], summary: { count: 0, errorCount: 0, errorRate: 0, avgMs: 0, p95Ms: 0 }, routes: [], droppedEvents: 0, retentionHours: 168 });
   const [runtimeStats, setRuntimeStats] = useState(null);
-  const [routeType, setRouteType] = useState('');
+  const [selectedType, setSelectedType] = useState('request');
   const [routeName, setRouteName] = useState('');
   const [logs, setLogs] = useState([]);
   const [logPage, setLogPage] = useState(1);
@@ -1463,6 +1480,8 @@ function AnalyticsPanel({ page = 'volume' }) {
       }
       setSupported(true);
       setConfig(data);
+      const routeTypes = Array.isArray(data.routeTypes) && data.routeTypes.length > 0 ? data.routeTypes : ['request'];
+      setSelectedType(prev => routeTypes.includes(prev) ? prev : routeTypes[0]);
     } catch {
       setSupported(false);
     }
@@ -1471,7 +1490,7 @@ function AnalyticsPanel({ page = 'volume' }) {
   const loadSeries = useCallback(async () => {
     if (!supported) return;
     const params = new URLSearchParams({ window: windowSize });
-    if (routeType) params.set('routeType', routeType);
+    if (selectedType) params.set('routeType', selectedType);
     if (routeName) params.set('routeName', routeName);
     try {
       const data = await api('/analytics/timeseries?' + params.toString());
@@ -1481,13 +1500,14 @@ function AnalyticsPanel({ page = 'volume' }) {
     } catch (err) {
       showToast(err.message || 'Failed to load metrics', 'error');
     }
-  }, [supported, windowSize, routeType, routeName]);
+  }, [supported, windowSize, selectedType, routeName]);
 
   const loadLogs = useCallback(async (pageArg, queryArg) => {
     if (!supported) return;
     const pg = pageArg || logPage;
     const q = queryArg !== undefined ? queryArg : logSearchQuery;
     const params = new URLSearchParams({ page: String(pg), limit: '50' });
+    if (selectedType) params.set('routeType', selectedType);
     if (q) {
       const isFilter = /[=<>~]|!=|!~/.test(q);
       params.set(isFilter ? 'filter' : 'search', q);
@@ -1502,7 +1522,7 @@ function AnalyticsPanel({ page = 'volume' }) {
     } catch (err) {
       showToast(err.message || 'Failed to load request logs', 'error');
     }
-  }, [supported, logPage, logSearchQuery]);
+  }, [supported, logPage, logSearchQuery, selectedType]);
 
   const loadRuntime = useCallback(async () => {
     if (!supported) return;
@@ -1525,6 +1545,12 @@ function AnalyticsPanel({ page = 'volume' }) {
   }, [supported, loadSeries]);
 
   useEffect(() => {
+    setRouteName('');
+    setLogPage(1);
+    setSelectedLog(null);
+  }, [selectedType]);
+
+  useEffect(() => {
     if (!supported) return;
     loadLogs(logPage, logSearchQuery);
   }, [supported, logPage, logSearchQuery, loadLogs]);
@@ -1539,12 +1565,13 @@ function AnalyticsPanel({ page = 'volume' }) {
   useEffect(() => {
     if (!supported) return;
     const id = setInterval(() => {
+      loadConfig();
       loadSeries();
       loadLogs(logPage, logSearchQuery);
       loadRuntime();
     }, 10000);
     return () => clearInterval(id);
-  }, [supported, loadSeries, loadLogs, loadRuntime, logPage, logSearchQuery]);
+  }, [supported, loadConfig, loadSeries, loadLogs, loadRuntime, logPage, logSearchQuery]);
 
   const applyLogFilter = useCallback(() => {
     setLogSearchQuery(logSearch.trim());
@@ -1568,11 +1595,14 @@ function AnalyticsPanel({ page = 'volume' }) {
   const selectedDetails = parseDetailsObject(selectedLog && selectedLog.details);
   const traceEvents = extractTraceEvents(selectedDetails);
   const traceTimeline = buildTraceTimeline(traceEvents);
+  const routeTypes = Array.isArray(config?.routeTypes) && config.routeTypes.length > 0 ? config.routeTypes : ['request'];
+  const typeLabelPlural = routeTypeLabel(selectedType, true);
+  const typeLabelSingle = routeTypeLabel(selectedType, false);
 
   return html`
     <div class="analytics-panel">
       <div class="analytics-toolbar">
-        <div class="analytics-title">${icons.chart} ${isPerformance ? 'Request Performance' : 'Request Volume'}</div>
+        <div class="analytics-title">${icons.chart} ${typeLabelPlural} ${isPerformance ? 'Performance' : 'Volume'}</div>
         <div class="analytics-actions">
           <select class="analytics-select" value=${windowSize} onChange=${e => { setWindowSize(e.target.value); setLogPage(1); }}>
             <option value="1h">Last 1 hour</option>
@@ -1584,10 +1614,23 @@ function AnalyticsPanel({ page = 'volume' }) {
       </div>
 
       <div class="analytics-body">
+        ${routeTypes.length > 1 && html`
+          <div class="analytics-route-list">
+            ${routeTypes.map(type => html`
+              <button
+                key=${type}
+                class=${"analytics-route-chip" + (selectedType === type ? " active" : "")}
+                onClick=${() => setSelectedType(type)}
+              >
+                ${routeTypeLabel(type, true)}
+              </button>
+            `)}
+          </div>
+        `}
         <div class="analytics-layout">
           <div class="analytics-main">
             <div class="analytics-cards">
-              <div class="analytics-card"><div class="analytics-card-label">Requests</div><div class="analytics-card-value">${fmtCount(summary.count)}</div></div>
+              <div class="analytics-card"><div class="analytics-card-label">${typeLabelPlural}</div><div class="analytics-card-value">${fmtCount(summary.count)}</div></div>
               <div class="analytics-card"><div class="analytics-card-label">Errors</div><div class="analytics-card-value">${fmtCount(summary.errorCount)}</div></div>
               <div class="analytics-card"><div class="analytics-card-label">Error Rate</div><div class="analytics-card-value">${fmtPct(summary.errorRate)}</div></div>
               <div class="analytics-card"><div class="analytics-card-label">Avg Duration</div><div class="analytics-card-value">${fmtMs(summary.avgMs)}</div></div>
@@ -1599,7 +1642,7 @@ function AnalyticsPanel({ page = 'volume' }) {
 
             <div class="analytics-chart-wrap">
               <div class="analytics-chart-title">
-                <span>${isPerformance ? 'Request duration and volume over time' : 'Request volume over time'}</span>
+                <span>${isPerformance ? `${typeLabelPlural} duration and volume over time` : `${typeLabelPlural} volume over time`}</span>
                 <span>Retention: ${Number(series.retentionHours || (config && config.retentionHours) || 168).toFixed(0)}h</span>
               </div>
               ${isPerformance
@@ -1609,14 +1652,14 @@ function AnalyticsPanel({ page = 'volume' }) {
 
             ${isPerformance && html`
               <div class="analytics-route-list">
-                <button class=${"analytics-route-chip" + (!routeName && !routeType ? " active" : "")} onClick=${() => { setRouteType(''); setRouteName(''); }}>All routes</button>
+                <button class=${"analytics-route-chip" + (!routeName ? " active" : "")} onClick=${() => { setRouteName(''); }}>All routes</button>
                 ${routeChips.map(rt => html`
                   <button
                     key=${rt.routeType + ':' + rt.routeName}
-                    class=${"analytics-route-chip" + (routeType === rt.routeType && routeName === rt.routeName ? " active" : "")}
-                    onClick=${() => { setRouteType(rt.routeType); setRouteName(rt.routeName); setLogPage(1); }}
+                    class=${"analytics-route-chip" + (routeName === rt.routeName ? " active" : "")}
+                    onClick=${() => { setRouteName(rt.routeName); setLogPage(1); }}
                   >
-                    ${rt.routeType}/${rt.routeName} · ${fmtCount(rt.count)}
+                    ${rt.routeName || '(unnamed)'} · ${fmtCount(rt.count)}
                   </button>
                 `)}
               </div>
@@ -1626,7 +1669,7 @@ function AnalyticsPanel({ page = 'volume' }) {
               <div class="panel-toolbar">
                 <div class="panel-title">
                   <span class="panel-title-icon">${icons.table}</span>
-                  ${isPerformance ? 'Request Performance' : 'Request Events'}
+                  ${isPerformance ? `${typeLabelSingle} Performance` : `${typeLabelSingle} Events`}
                   <span class="panel-meta">${fmtCount(logTotal)} rows</span>
                 </div>
                 <div class="panel-actions">
@@ -1691,7 +1734,7 @@ function AnalyticsPanel({ page = 'volume' }) {
             <aside class="analytics-detail">
               <div class="analytics-detail-header">
                 <div>
-                  <div class="analytics-detail-title">Request Detail</div>
+                  <div class="analytics-detail-title">${typeLabelSingle} Detail</div>
                   <div class="panel-meta">${selectedLog.routeType}/${selectedLog.routeName}</div>
                 </div>
                 <button class="btn-icon" onClick=${() => setSelectedLog(null)}>&times;</button>
