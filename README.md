@@ -1,10 +1,10 @@
 # flop
 
-Production release surface is now Go-first.
+Production release surface is Go-only.
 
 The active engine, tests, generators, and CI entrypoints live in `go/`. Legacy
-`go2` and Deno/TypeScript runtime implementations have been removed so this
-repository reflects the code we still support.
+runtime implementations have been removed so this repository reflects the code
+we still support in production.
 
 ## What Ships
 
