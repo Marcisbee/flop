@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -223,29 +224,46 @@ func (m *backupManager) CreateAuto(ctx context.Context) (string, error) {
 func (m *backupManager) Upload(ctx context.Context, filename string, file io.Reader) (string, error) {
 	var created string
 	err := m.withBusy(func() error {
+		startedAt := time.Now()
+		log.Printf("flop backup upload: start filename=%q", filename)
+
 		storage, err := m.storage()
 		if err != nil {
+			log.Printf("flop backup upload: storage init failed filename=%q err=%v", filename, err)
 			return err
 		}
+		log.Printf("flop backup upload: storage=%T filename=%q", storage, filename)
 
+		materializeStarted := time.Now()
 		tmpPath, cleanup, err := materializeUploadedBackup(file)
 		if err != nil {
+			log.Printf("flop backup upload: materialize failed filename=%q dur=%s err=%v", filename, time.Since(materializeStarted), err)
 			return err
 		}
 		if cleanup != nil {
 			defer cleanup()
 		}
+		logUploadFileInfo("flop backup upload: materialized", tmpPath, filename, time.Since(materializeStarted))
+
+		validateStarted := time.Now()
 		zipReader, err := zip.OpenReader(tmpPath)
 		if err != nil {
+			log.Printf("flop backup upload: zip validation failed filename=%q path=%q dur=%s err=%v", filename, tmpPath, time.Since(validateStarted), err)
 			return fmt.Errorf("uploaded file must be a valid zip backup")
 		}
 		_ = zipReader.Close()
+		log.Printf("flop backup upload: zip validation ok filename=%q path=%q dur=%s", filename, tmpPath, time.Since(validateStarted))
 
 		key := generateUploadedBackupName(filename)
+		saveStarted := time.Now()
+		log.Printf("flop backup upload: storage save start filename=%q key=%q path=%q", filename, key, tmpPath)
 		if err := storage.Save(ctx, key, tmpPath); err != nil {
+			log.Printf("flop backup upload: storage save failed filename=%q key=%q dur=%s err=%v", filename, key, time.Since(saveStarted), err)
 			return err
 		}
+		log.Printf("flop backup upload: storage save complete filename=%q key=%q dur=%s", filename, key, time.Since(saveStarted))
 		created = key
+		log.Printf("flop backup upload: done filename=%q key=%q total=%s", filename, key, time.Since(startedAt))
 		return nil
 	})
 	return created, err
@@ -273,6 +291,15 @@ func materializeUploadedBackup(file io.Reader) (string, func(), error) {
 		return "", nil, err
 	}
 	return tmpPath, cleanup, nil
+}
+
+func logUploadFileInfo(prefix, path, filename string, dur time.Duration) {
+	info, err := os.Stat(path)
+	if err != nil {
+		log.Printf("%s filename=%q path=%q dur=%s stat_err=%v", prefix, filename, path, dur, err)
+		return
+	}
+	log.Printf("%s filename=%q path=%q size=%d dur=%s", prefix, filename, path, info.Size(), dur)
 }
 
 func (m *backupManager) create(ctx context.Context, auto bool) (string, error) {
@@ -874,24 +901,35 @@ func (s *localBackupStorage) List(_ context.Context) ([]AdminBackupFile, error) 
 }
 
 func (s *localBackupStorage) Save(_ context.Context, key, localPath string) error {
+	startedAt := time.Now()
+	log.Printf("flop backup upload: local save start key=%q path=%q", key, localPath)
 	if err := s.ensureDir(); err != nil {
+		log.Printf("flop backup upload: local save ensure dir failed key=%q err=%v", key, err)
 		return err
 	}
 	src, err := os.Open(localPath)
 	if err != nil {
+		log.Printf("flop backup upload: local save open src failed key=%q err=%v", key, err)
 		return err
 	}
 	defer src.Close()
 	dstPath := filepath.Join(s.dir, key)
 	dst, err := os.Create(dstPath)
 	if err != nil {
+		log.Printf("flop backup upload: local save create dst failed key=%q dst=%q err=%v", key, dstPath, err)
 		return err
 	}
 	if _, err := io.Copy(dst, src); err != nil {
 		_ = dst.Close()
+		log.Printf("flop backup upload: local save copy failed key=%q dst=%q dur=%s err=%v", key, dstPath, time.Since(startedAt), err)
 		return err
 	}
-	return dst.Close()
+	if err := dst.Close(); err != nil {
+		log.Printf("flop backup upload: local save close failed key=%q dst=%q dur=%s err=%v", key, dstPath, time.Since(startedAt), err)
+		return err
+	}
+	log.Printf("flop backup upload: local save complete key=%q dst=%q dur=%s", key, dstPath, time.Since(startedAt))
+	return nil
 }
 
 func (s *localBackupStorage) Open(_ context.Context, key string) (io.ReadCloser, error) {
@@ -1004,8 +1042,12 @@ func (s *s3BackupStorage) listWithClient(ctx context.Context, client *awss3.Clie
 }
 
 func (s *s3BackupStorage) Save(ctx context.Context, key, localPath string) error {
+	startedAt := time.Now()
+	logUploadFileInfo("flop backup upload: s3 save source", localPath, key, 0)
+	log.Printf("flop backup upload: s3 save start key=%q bucket=%q endpoint=%q pathStyle=%t", key, s.bucket, s.endpoint, s.forcePathStyle)
 	file, err := os.Open(localPath)
 	if err != nil {
+		log.Printf("flop backup upload: s3 save open src failed key=%q err=%v", key, err)
 		return err
 	}
 	defer file.Close()
@@ -1016,6 +1058,7 @@ func (s *s3BackupStorage) Save(ctx context.Context, key, localPath string) error
 		ContentType: aws.String("application/zip"),
 	})
 	if err != nil && s.shouldRetryPathStyle(err) {
+		log.Printf("flop backup upload: s3 save retry with path-style key=%q err=%v", key, err)
 		if _, retryErr := file.Seek(0, io.SeekStart); retryErr == nil {
 			_, err = s.pathClient.PutObject(ctx, &awss3.PutObjectInput{
 				Bucket:      aws.String(s.bucket),
@@ -1023,8 +1066,15 @@ func (s *s3BackupStorage) Save(ctx context.Context, key, localPath string) error
 				Body:        file,
 				ContentType: aws.String("application/zip"),
 			})
+		} else {
+			log.Printf("flop backup upload: s3 save seek retry failed key=%q err=%v", key, retryErr)
 		}
 	}
+	if err != nil {
+		log.Printf("flop backup upload: s3 save failed key=%q dur=%s err=%v", key, time.Since(startedAt), err)
+		return err
+	}
+	log.Printf("flop backup upload: s3 save complete key=%q dur=%s", key, time.Since(startedAt))
 	return err
 }
 
