@@ -29,9 +29,15 @@ import (
 
 const (
 	backupSettingsRelPath = "_system/backups.json"
+	emailSettingsBackupRelPath = "_system/email.json"
 	localBackupsDirName   = "backups"
 	backupSecretMask      = "******"
 )
+
+var protectedBackupRestorePaths = []string{
+	backupSettingsRelPath,
+	emailSettingsBackupRelPath,
+}
 
 type BackupS3Config struct {
 	Enabled        bool   `json:"enabled"`
@@ -409,6 +415,13 @@ func (m *backupManager) restoreExtractedDir(extractDir, restoreTmp string) error
 		}
 	}
 
+	if err := restoreProtectedBackupPaths(dataDir, rollbackDir); err != nil {
+		_ = moveRestoredToFailed(dataDir, failedDir)
+		_ = rollbackDataDir(dataDir, rollbackDir)
+		_, reopenErr := m.db.reopen()
+		return errors.Join(err, reopenErr)
+	}
+
 	reopened, err := m.db.reopen()
 	if err != nil {
 		_ = moveRestoredToFailed(dataDir, failedDir)
@@ -561,12 +574,12 @@ func (m *backupManager) writeSnapshotZip() (string, error) {
 		rel = filepath.ToSlash(rel)
 
 		if entry.IsDir() {
-			if shouldSkipBackupDir(rel) {
+			if shouldSkipBackupEntry(rel) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if shouldSkipBackupDir(rel) {
+		if shouldSkipBackupEntry(rel) {
 			return nil
 		}
 		info, err := entry.Info()
@@ -615,7 +628,7 @@ func (m *backupManager) writeSnapshotZip() (string, error) {
 	return tmpPath, nil
 }
 
-func shouldSkipBackupDir(rel string) bool {
+func shouldSkipBackupEntry(rel string) bool {
 	rel = strings.Trim(filepath.ToSlash(rel), "/")
 	if rel == "" {
 		return false
@@ -624,7 +637,13 @@ func shouldSkipBackupDir(rel string) bool {
 	if head == localBackupsDirName || head == "lost+found" {
 		return true
 	}
+	if isProtectedSuperadminEntry(head) {
+		return true
+	}
 	if strings.HasPrefix(rel, "_system/backup-") && strings.HasSuffix(rel, ".zip") {
+		return true
+	}
+	if rel == backupSettingsRelPath || rel == emailSettingsBackupRelPath {
 		return true
 	}
 	return strings.HasPrefix(head, ".flop_restore_tmp_")
@@ -692,12 +711,97 @@ func restorableEntries(dataDir string) ([]string, error) {
 	}
 	out := entries[:0]
 	for _, name := range entries {
-		if shouldSkipBackupDir(name) {
+		if shouldSkipBackupEntry(name) {
 			continue
 		}
 		out = append(out, name)
 	}
 	return out, nil
+}
+
+func restoreProtectedBackupPaths(dataDir, rollbackDir string) error {
+	rollbackEntries, err := directoryEntries(rollbackDir)
+	if err != nil {
+		return err
+	}
+	for _, name := range rollbackEntries {
+		if !isProtectedSuperadminEntry(name) {
+			continue
+		}
+		src := filepath.Join(rollbackDir, name)
+		dst := filepath.Join(dataDir, name)
+		if err := os.RemoveAll(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if err := copyPathRecursive(src, dst); err != nil {
+			return err
+		}
+	}
+	for _, rel := range protectedBackupRestorePaths {
+		src := filepath.Join(rollbackDir, filepath.FromSlash(rel))
+		dst := filepath.Join(dataDir, filepath.FromSlash(rel))
+		if _, err := os.Stat(src); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				if removeErr := os.RemoveAll(dst); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+					return removeErr
+				}
+				continue
+			}
+			return err
+		}
+		if err := os.RemoveAll(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if err := copyPathRecursive(src, dst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isProtectedSuperadminEntry(name string) bool {
+	name = strings.TrimSpace(filepath.ToSlash(name))
+	return name == systemSuperadminTableName || strings.HasPrefix(name, systemSuperadminTableName+".")
+}
+
+func copyPathRecursive(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := copyPathRecursive(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func directoryEntries(dir string) ([]string, error) {
