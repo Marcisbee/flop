@@ -29,4 +29,4 @@ require (
 	golang.org/x/text v0.34.0 // indirect
 )
 
-replace github.com/marcisbee/flop => ../../go
+replace github.com/marcisbee/flop => ../..

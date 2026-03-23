@@ -29,4 +29,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/marcisbee/flop => ../../go
+replace github.com/marcisbee/flop => ../..

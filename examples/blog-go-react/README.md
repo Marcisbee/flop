@@ -4,7 +4,7 @@ Minimal Go-first Flop scaffold with generated TypeScript artifacts and a launcha
 
 ## Run
 
-From `go/` directory:
+From the repository root:
 
 ```sh
 make -C examples/blog-go-react dev

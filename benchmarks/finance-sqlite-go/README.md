@@ -9,7 +9,6 @@ It exposes the same API contract as `benchmarks/finance`, so the same seed/dashb
 1. Start the SQLite Go benchmark server:
 
 ```bash
-cd go
 GOCACHE=/tmp/go-build-cache go run ./cmd/sqlite-finance --port=1995
 ```
 

@@ -3,7 +3,7 @@
 This repository is the Flop engine itself.
 
 Primary Go module location:
-- `go/`
+- repository root
 
 ## Core Values
 - Preserve behavior and public API shape unless the user explicitly asks for a change.

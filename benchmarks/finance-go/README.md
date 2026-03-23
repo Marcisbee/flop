@@ -9,7 +9,6 @@ It exposes the same API contract as `benchmarks/finance`, so the same seed/dashb
 1. Start the Go benchmark server:
 
 ```bash
-cd go
 GOCACHE=/tmp/go-build-cache go run ./cmd/go-finance --port=1985
 ```
 

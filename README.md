@@ -2,13 +2,13 @@
 
 Production release surface is Go-only.
 
-The active engine, tests, generators, and CI entrypoints live in `go/`. Legacy
-runtime implementations have been removed so this repository reflects the code
-we still support in production.
+The active engine, tests, generators, and CI entrypoints live at the repository
+root. Legacy runtime implementations have been removed so this repository
+reflects the code we still support in production.
 
 ## What Ships
 
-- `go/`: active Flop engine and test suite
+- repository root: active Flop engine and test suite
 - `examples/blog-go-react`: minimal Go-first scaffold
 - `examples/movies-go-react`: large-catalog demo
 - `examples/twitter-go-react`: richer React demo backed by the Go engine
@@ -28,14 +28,12 @@ we still support in production.
 Run the Go test suite:
 
 ```sh
-cd go
 make test
 ```
 
 Run the benchmark gate used by CI:
 
 ```sh
-cd go
 make pillar-gate
 ```
 
@@ -51,4 +49,4 @@ make -C examples/twitter-go-react dev
 
 - [deno.json](/Users/marcisbee/Documents/GitHub/flop/deno.json) remains only for benchmark helper tasks.
 - Some React demos ship checked-in browser assets so they can run without a root TypeScript runtime.
-- Generated admin HTML under `go/internal/server/` is refreshed via `go generate`.
+- Generated admin HTML under `internal/server/` is refreshed via `go generate`.

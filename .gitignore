@@ -54,3 +54,5 @@ examples/movies-go-react/movies-server
 /examples/*/web/assets/*.map
 /.agents
 /test_io
+/.pillarbench/results
+/.quickbench/results

@@ -1,6 +1,6 @@
 {
   "entry": [
-    "go/flop.go"
+    "flop.go"
   ],
   "lsp": {
     "deno": {
@@ -34,7 +34,7 @@
   },
   "setup": {
     "commands": [
-      "cd go && go test ./..."
+      "go test ./..."
     ]
   },
   "dev": {

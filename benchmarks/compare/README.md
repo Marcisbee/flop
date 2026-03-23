@@ -31,8 +31,8 @@ and `benchmarks/finance-mongodb-go/data`.
 If Go engines are included and dependencies are missing, bootstrap once:
 
 ```bash
-cd go && go get modernc.org/sqlite@v1.39.1 && go mod tidy
-cd ../benchmarks/finance-mongodb-go && go mod tidy
+go get modernc.org/sqlite@v1.39.1 && go mod tidy
+cd benchmarks/finance-mongodb-go && go mod tidy
 ```
 
 If MongoDB engines are included, make sure `mongod` is installed and available
