@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -861,12 +862,16 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
+			log.Printf("flop backup upload request: start method=%s path=%s content_length=%d content_type=%q remote=%q", r.Method, r.URL.Path, r.ContentLength, r.Header.Get("Content-Type"), r.RemoteAddr)
+			formStarted := time.Now()
 			file, header, err := r.FormFile("file")
 			if err != nil {
+				log.Printf("flop backup upload request: form file failed dur=%s err=%v", time.Since(formStarted), err)
 				adminJSONError(w, "backup file is required", http.StatusBadRequest)
 				return
 			}
 			defer file.Close()
+			log.Printf("flop backup upload request: form file ready filename=%q dur=%s", header.Filename, time.Since(formStarted))
 			key, err := backupProvider.AdminUploadBackup(header.Filename, file)
 			if err != nil {
 				adminJSONError(w, err.Error(), http.StatusBadRequest)
