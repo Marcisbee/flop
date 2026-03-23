@@ -32,6 +32,7 @@ type SMTPConfig struct {
 // EmailTemplateData is passed to email templates when rendering.
 type EmailTemplateData struct {
 	AppName string
+	AppURL  string
 	URL     string
 	Token   string
 	Email   string

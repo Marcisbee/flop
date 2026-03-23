@@ -507,12 +507,13 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 			jsonError(w, "Token required", 400)
 			return
 		}
-		newAuthToken, err := h.authService.ConfirmEmailChange(changeToken)
+		newAuthToken, refreshToken, auth, err := h.authService.ConfirmEmailChange(changeToken)
 		if err != nil {
 			jsonError(w, err.Error(), 400)
 			return
 		}
-		jsonResponse(w, map[string]interface{}{"ok": true, "token": newAuthToken})
+		_ = auth
+		jsonResponse(w, map[string]interface{}{"ok": true, "token": newAuthToken, "refreshToken": refreshToken})
 
 	case "/api/auth/request-verification":
 		token := ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
@@ -538,11 +539,13 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 			jsonError(w, "Token required", 400)
 			return
 		}
-		if err := h.authService.ConfirmVerification(verifyToken); err != nil {
+		newAuthToken, refreshToken, auth, err := h.authService.ConfirmVerification(verifyToken)
+		if err != nil {
 			jsonError(w, err.Error(), 400)
 			return
 		}
-		jsonResponse(w, map[string]interface{}{"ok": true})
+		_ = auth
+		jsonResponse(w, map[string]interface{}{"ok": true, "token": newAuthToken, "refreshToken": refreshToken})
 
 	case "/api/auth/request-password-reset":
 		email, _ := body["email"].(string)

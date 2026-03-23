@@ -685,7 +685,14 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		mePayload, err := h.db.BuildAuthMePayload(appAuth)
+		mePayload, err := h.db.BuildAuthMePayload(&AuthContext{
+			ID:            appAuth.ID,
+			Email:         appAuth.Email,
+			Roles:         append([]string(nil), appAuth.Roles...),
+			PrincipalType: appAuth.PrincipalType,
+			SessionID:     appAuth.SessionID,
+			InstanceID:    appAuth.InstanceID,
+		})
 		if err != nil {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -724,7 +731,14 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		mePayload, err := h.db.BuildAuthMePayload(appAuth)
+		mePayload, err := h.db.BuildAuthMePayload(&AuthContext{
+			ID:            appAuth.ID,
+			Email:         appAuth.Email,
+			Roles:         append([]string(nil), appAuth.Roles...),
+			PrincipalType: appAuth.PrincipalType,
+			SessionID:     appAuth.SessionID,
+			InstanceID:    appAuth.InstanceID,
+		})
 		if err != nil {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -735,6 +749,198 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			"user":         userPayload,
 			"me":           mePayload,
 		})
+	case "/api/auth/request-email-change":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth := h.authFromRequest(r)
+		if auth == nil {
+			jsonError(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		var in struct {
+			NewEmail string `json:"newEmail"`
+			Password string `json:"password"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(in.NewEmail) == "" || in.Password == "" {
+			jsonError(w, "new email and password required", http.StatusBadRequest)
+			return
+		}
+		changeToken, err := h.db.authService.RequestEmailChange(auth.ID, in.NewEmail, in.Password)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := h.db.sendAuthTemplateEmail("email-change", in.NewEmail, in.NewEmail, changeToken); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "token": changeToken})
+	case "/api/auth/confirm-email-change":
+		var token string
+		switch r.Method {
+		case http.MethodPost:
+			var in struct {
+				Token string `json:"token"`
+			}
+			if err := decodeStrictJSONBody(r, &in); err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			token = in.Token
+		case http.MethodGet:
+			token = r.URL.Query().Get("token")
+		default:
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(token) == "" {
+			jsonError(w, "token required", http.StatusBadRequest)
+			return
+		}
+		newAuthToken, refreshToken, appAuth, err := h.db.authService.ConfirmEmailChange(token)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mePayload, err := h.db.BuildAuthMePayload(&AuthContext{
+			ID:            appAuth.ID,
+			Email:         appAuth.Email,
+			Roles:         append([]string(nil), appAuth.Roles...),
+			PrincipalType: appAuth.PrincipalType,
+			SessionID:     appAuth.SessionID,
+			InstanceID:    appAuth.InstanceID,
+		})
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"ok":           true,
+			"token":        newAuthToken,
+			"refreshToken": refreshToken,
+			"me":           mePayload,
+		})
+	case "/api/auth/request-verification":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth := h.authFromRequest(r)
+		if auth == nil {
+			jsonError(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		verifyToken, err := h.db.authService.RequestVerification(auth.ID)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := h.db.sendAuthTemplateEmail("verification", auth.Email, auth.Email, verifyToken); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "token": verifyToken})
+	case "/api/auth/confirm-verification":
+		var token string
+		switch r.Method {
+		case http.MethodPost:
+			var in struct {
+				Token string `json:"token"`
+			}
+			if err := decodeStrictJSONBody(r, &in); err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			token = in.Token
+		case http.MethodGet:
+			token = r.URL.Query().Get("token")
+		default:
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(token) == "" {
+			jsonError(w, "token required", http.StatusBadRequest)
+			return
+		}
+		newAuthToken, refreshToken, appAuth, err := h.db.authService.ConfirmVerification(token)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mePayload, err := h.db.BuildAuthMePayload(&AuthContext{
+			ID:            appAuth.ID,
+			Email:         appAuth.Email,
+			Roles:         append([]string(nil), appAuth.Roles...),
+			PrincipalType: appAuth.PrincipalType,
+			SessionID:     appAuth.SessionID,
+			InstanceID:    appAuth.InstanceID,
+		})
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"ok":           true,
+			"token":        newAuthToken,
+			"refreshToken": refreshToken,
+			"me":           mePayload,
+		})
+	case "/api/auth/request-password-reset":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var in struct {
+			Email string `json:"email"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(in.Email) == "" {
+			jsonError(w, "email required", http.StatusBadRequest)
+			return
+		}
+		resetToken, _ := h.db.authService.RequestPasswordReset(in.Email)
+		if resetToken != "" {
+			if err := h.db.sendAuthTemplateEmail("password-reset", in.Email, in.Email, resetToken); err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		resp := map[string]any{"ok": true}
+		if resetToken != "" {
+			resp["token"] = resetToken
+		}
+		jsonResponse(w, http.StatusOK, resp)
+	case "/api/auth/confirm-password-reset":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var in struct {
+			Token    string `json:"token"`
+			Password string `json:"password"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(in.Token) == "" || in.Password == "" {
+			jsonError(w, "token and password required", http.StatusBadRequest)
+			return
+		}
+		if err := h.db.authService.ConfirmPasswordReset(in.Token, in.Password); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 	case "/api/auth/refresh":
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)

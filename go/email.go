@@ -360,12 +360,7 @@ func (d *Database) testEmailTemplate(settings EmailSettings, to, templateName st
 	if mailer == nil {
 		return fmt.Errorf("smtp mail server is disabled")
 	}
-	return mailer.SendTemplate(to, "", templateName, server.EmailTemplateData{
-		AppName: firstNonEmpty(settings.AppName, settings.SenderName),
-		Email:   to,
-		Token:   "test-token-123",
-		URL:     buildEmailActionURL(settings.AppURL, templateName, "test-token-123"),
-	})
+	return mailer.SendTemplate(to, "", templateName, buildEmailTemplateData(settings, templateName, to, "test-token-123"))
 }
 
 func buildEmailActionURL(baseURL, templateName, token string) string {
@@ -375,9 +370,9 @@ func buildEmailActionURL(baseURL, templateName, token string) string {
 	}
 	switch templateName {
 	case "verification":
-		return baseURL + "/api/auth/confirm-verification?token=" + token
+		return baseURL + "/verify?token=" + token
 	case "email-change":
-		return baseURL + "/api/auth/confirm-email-change?token=" + token
+		return baseURL + "/confirm-email-change?token=" + token
 	case "password-reset":
 		return baseURL + "/reset-password?token=" + token
 	default:
@@ -393,4 +388,29 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func buildEmailTemplateData(settings EmailSettings, templateName, email, token string) server.EmailTemplateData {
+	appURL := strings.TrimRight(strings.TrimSpace(settings.AppURL), "/")
+	return server.EmailTemplateData{
+		AppName: firstNonEmpty(settings.AppName, settings.SenderName),
+		AppURL:  appURL,
+		URL:     buildEmailActionURL(appURL, templateName, token),
+		Token:   token,
+		Email:   strings.TrimSpace(email),
+	}
+}
+
+func (d *Database) sendAuthTemplateEmail(templateName, to, email, token string) error {
+	if d == nil {
+		return fmt.Errorf("database not available")
+	}
+	d.emailMu.RLock()
+	mailer := d.mailer
+	settings := cloneEmailSettings(d.emailSettings, false)
+	d.emailMu.RUnlock()
+	if mailer == nil {
+		return nil
+	}
+	return mailer.SendTemplate(strings.TrimSpace(to), "", templateName, buildEmailTemplateData(settings, templateName, email, token))
 }

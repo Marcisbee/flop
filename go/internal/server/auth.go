@@ -302,7 +302,7 @@ func NewAuthService(authTable, sessionTable *engine.TableInstance, secret, insta
 		sessionTable:    sessionTable,
 		secret:          secret,
 		instanceID:      instanceID,
-		accessTokenTTL:  900,    // 15 min
+		accessTokenTTL:  900,     // 15 min
 		refreshTokenTTL: 2592000, // 30 days
 	}
 }
@@ -580,26 +580,27 @@ func (as *AuthService) RequestEmailChange(userID, newEmail, password string) (st
 }
 
 // ConfirmEmailChange verifies the token and updates the user's email.
-// Returns a new auth token with the updated email.
-func (as *AuthService) ConfirmEmailChange(token string) (string, error) {
+// Returns a new authenticated session with the updated email.
+func (as *AuthService) ConfirmEmailChange(token string) (string, string, *schema.AuthContext, error) {
 	payload := VerifyPurposeJWT(token, as.secret)
 	if payload == nil || payload.Purpose != "email-change" {
-		return "", fmt.Errorf("invalid or expired token")
+		return "", "", nil, fmt.Errorf("invalid or expired token")
 	}
 	existing := as.findByEmail(payload.NewEmail)
 	if existing != nil {
-		return "", fmt.Errorf("email already in use")
+		return "", "", nil, fmt.Errorf("email already in use")
 	}
 	_, err := as.authTable.Update(payload.Sub, map[string]interface{}{
 		"email": payload.NewEmail,
 	}, nil)
 	if err != nil {
-		return "", err
+		return "", "", nil, err
 	}
-	user, _ := as.authTable.Get(payload.Sub)
-	roles := toStringSlice(user["roles"])
-	newToken := as.issueAccessToken(payload.Sub, payload.NewEmail, toString(user["name"]), roles, "")
-	return newToken, nil
+	user, err := as.authTable.Get(payload.Sub)
+	if err != nil || user == nil {
+		return "", "", nil, fmt.Errorf("user not found")
+	}
+	return as.createUserSession(user, "email_change_confirm")
 }
 
 // RequestVerification generates a token to confirm a user's email address.
@@ -618,16 +619,44 @@ func (as *AuthService) RequestVerification(userID string) (string, error) {
 	return token, nil
 }
 
-// ConfirmVerification verifies the token and marks the user as verified.
-func (as *AuthService) ConfirmVerification(token string) error {
+// ConfirmVerification verifies the token, promotes the user if needed,
+// and returns a fresh authenticated session.
+func (as *AuthService) ConfirmVerification(token string) (string, string, *schema.AuthContext, error) {
 	payload := VerifyPurposeJWT(token, as.secret)
 	if payload == nil || payload.Purpose != "verification" {
-		return fmt.Errorf("invalid or expired token")
+		return "", "", nil, fmt.Errorf("invalid or expired token")
 	}
-	_, err := as.authTable.Update(payload.Sub, map[string]interface{}{
+	user, err := as.authTable.Get(payload.Sub)
+	if err != nil || user == nil {
+		return "", "", nil, fmt.Errorf("user not found")
+	}
+
+	updates := map[string]interface{}{
 		"verified": true,
-	}, nil)
-	return err
+	}
+
+	if as.authFieldExists("default_role") && strings.EqualFold(strings.TrimSpace(toString(user["default_role"])), "unverified") {
+		updates["default_role"] = "user"
+	}
+
+	if as.authFieldExists("roles") {
+		roles := promoteVerifiedRoles(toStringSlice(user["roles"]))
+		iRoles := make([]interface{}, len(roles))
+		for i, role := range roles {
+			iRoles[i] = role
+		}
+		updates["roles"] = iRoles
+	}
+
+	if _, err := as.authTable.Update(payload.Sub, updates, nil); err != nil {
+		return "", "", nil, err
+	}
+
+	user, err = as.authTable.Get(payload.Sub)
+	if err != nil || user == nil {
+		return "", "", nil, fmt.Errorf("user not found")
+	}
+	return as.createUserSession(user, "verification_confirm")
 }
 
 // RequestPasswordReset generates a token for resetting a user's password.
@@ -762,6 +791,59 @@ func (as *AuthService) issueRefreshToken(id, sessionID string) string {
 		Iat:           now,
 		Exp:           now + as.refreshTokenTTL,
 	}, as.secret)
+}
+
+func (as *AuthService) createUserSession(user map[string]interface{}, reason string) (string, string, *schema.AuthContext, error) {
+	pk := as.getPK(user)
+	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
+		return "", "", nil, err
+	}
+	roles := toStringSlice(user["roles"])
+	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, reason)
+	if err != nil {
+		return "", "", nil, err
+	}
+	token := as.issueAccessToken(pk, toString(user["email"]), toString(user["name"]), roles, sessionID)
+	refreshToken := as.issueRefreshToken(pk, sessionID)
+	return token, refreshToken, &schema.AuthContext{
+		ID:            pk,
+		Email:         toString(user["email"]),
+		Roles:         roles,
+		PrincipalType: principalTypeUser,
+		SessionID:     sessionID,
+		InstanceID:    as.instanceID,
+	}, nil
+}
+
+func promoteVerifiedRoles(roles []string) []string {
+	if len(roles) == 0 {
+		return []string{"user"}
+	}
+
+	out := make([]string, 0, len(roles)+1)
+	hadUnverified := false
+	hadUser := false
+	for _, role := range roles {
+		role = strings.TrimSpace(role)
+		if role == "" {
+			continue
+		}
+		if role == "unverified" {
+			hadUnverified = true
+			continue
+		}
+		if role == "user" {
+			hadUser = true
+		}
+		out = append(out, role)
+	}
+	if hadUnverified && !hadUser {
+		out = append([]string{"user"}, out...)
+	}
+	if len(out) == 0 {
+		return []string{"user"}
+	}
+	return out
 }
 
 const (
