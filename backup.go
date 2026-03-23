@@ -228,19 +228,12 @@ func (m *backupManager) Upload(ctx context.Context, filename string, file io.Rea
 			return err
 		}
 
-		tmpFile, err := os.CreateTemp("", "flop-upload-backup-*.zip")
+		tmpPath, cleanup, err := materializeUploadedBackup(file)
 		if err != nil {
 			return err
 		}
-		tmpPath := tmpFile.Name()
-		defer os.Remove(tmpPath)
-
-		if _, err := io.Copy(tmpFile, file); err != nil {
-			_ = tmpFile.Close()
-			return err
-		}
-		if err := tmpFile.Close(); err != nil {
-			return err
+		if cleanup != nil {
+			defer cleanup()
 		}
 		zipReader, err := zip.OpenReader(tmpPath)
 		if err != nil {
@@ -256,6 +249,30 @@ func (m *backupManager) Upload(ctx context.Context, filename string, file io.Rea
 		return nil
 	})
 	return created, err
+}
+
+func materializeUploadedBackup(file io.Reader) (string, func(), error) {
+	if osFile, ok := file.(*os.File); ok {
+		return osFile.Name(), nil, nil
+	}
+
+	tmpFile, err := os.CreateTemp("", "flop-upload-backup-*.zip")
+	if err != nil {
+		return "", nil, err
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		_ = tmpFile.Close()
+		cleanup()
+		return "", nil, err
+	}
+	if err := tmpFile.Close(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return tmpPath, cleanup, nil
 }
 
 func (m *backupManager) create(ctx context.Context, auto bool) (string, error) {
