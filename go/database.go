@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,28 +34,32 @@ import (
 
 // Database wraps the internal engine and exposes table operations.
 type Database struct {
-	db                  *engine.Database
-	authService         *server.AuthService
-	superadminService   *server.SuperadminService
-	mailer              *server.Mailer
-	jwtSecret           string
-	authInstanceID      string
-	requestLogRetention time.Duration
-	enablePprof         bool
-	analyticsMu         sync.Mutex
-	analytics           *server.RequestAnalytics
-	mediaIndexMu        sync.Mutex
-	mediaIndexRebuild   bool
-	cronRunner          *cron.Runner
-	buildAuthUser       func(*Database, *AuthContext) (map[string]any, error)
-	buildAuthMe         func(*Database, *AuthContext) (map[string]any, error)
-	readAuthMe          func(*Database, *AuthContext) []string
-	tableNames          []string
-	tableNameToID       map[string]int
-	tableSpecs          map[string]*tableSpec
-	tablePolicy         map[string]tablePolicyMeta
-	materialized        map[string]*materializedRuntime
-	cascadeRefs         map[string][]cascadeArchiveRef
+	db                   *engine.Database
+	authService          *server.AuthService
+	superadminService    *server.SuperadminService
+	mailer               *server.Mailer
+	jwtSecret            string
+	authInstanceID       string
+	requestLogRetention  time.Duration
+	authSessionRetention time.Duration
+	authSessionCleanup   time.Duration
+	enablePprof          bool
+	analyticsMu          sync.Mutex
+	analytics            *server.RequestAnalytics
+	mediaIndexMu         sync.Mutex
+	mediaIndexRebuild    bool
+	cronRunner           *cron.Runner
+	backgroundStop       chan struct{}
+	backgroundWG         sync.WaitGroup
+	buildAuthUser        func(*Database, *AuthContext) (map[string]any, error)
+	buildAuthMe          func(*Database, *AuthContext) (map[string]any, error)
+	readAuthMe           func(*Database, *AuthContext) []string
+	tableNames           []string
+	tableNameToID        map[string]int
+	tableSpecs           map[string]*tableSpec
+	tablePolicy          map[string]tablePolicyMeta
+	materialized         map[string]*materializedRuntime
+	cascadeRefs          map[string][]cascadeArchiveRef
 }
 
 // AnalyticsEvent records one retained observability entry in the admin analytics store.
@@ -76,6 +81,9 @@ type AnalyticsEvent struct {
 
 const systemSuperadminTableName = "_superadmin"
 const systemAuthSessionTableName = "_auth_sessions"
+
+const defaultAuthSessionRetention = 30 * 24 * time.Hour
+const defaultAuthSessionCleanupInterval = time.Hour
 
 type materializedRuntime struct {
 	spec        *materializedSpec
@@ -166,14 +174,23 @@ func (a *App) Open() (*Database, error) {
 		retention = server.DefaultRequestLogRetention
 	}
 	d := &Database{
-		db:                  db,
-		requestLogRetention: retention,
-		enablePprof:         a.config.EnablePprof,
-		tableNameToID:       make(map[string]int),
-		tableSpecs:          make(map[string]*tableSpec),
-		tablePolicy:         make(map[string]tablePolicyMeta),
-		materialized:        make(map[string]*materializedRuntime),
-		cascadeRefs:         make(map[string][]cascadeArchiveRef),
+		db:                   db,
+		requestLogRetention:  retention,
+		authSessionRetention: a.config.AuthSessionRetention,
+		authSessionCleanup:   a.config.AuthSessionCleanup,
+		enablePprof:          a.config.EnablePprof,
+		backgroundStop:       make(chan struct{}),
+		tableNameToID:        make(map[string]int),
+		tableSpecs:           make(map[string]*tableSpec),
+		tablePolicy:          make(map[string]tablePolicyMeta),
+		materialized:         make(map[string]*materializedRuntime),
+		cascadeRefs:          make(map[string][]cascadeArchiveRef),
+	}
+	if d.authSessionRetention <= 0 {
+		d.authSessionRetention = defaultAuthSessionRetention
+	}
+	if d.authSessionCleanup <= 0 {
+		d.authSessionCleanup = defaultAuthSessionCleanupInterval
 	}
 	if a.config.AuthPayloads != nil {
 		d.buildAuthUser = a.config.AuthPayloads.BuildUser
@@ -274,6 +291,7 @@ func (a *App) Open() (*Database, error) {
 	if len(jobs) > 0 {
 		d.cronRunner = cron.Start(context.Background(), jobs)
 	}
+	d.startBackgroundWorkers()
 
 	return d, nil
 }
@@ -508,10 +526,138 @@ func (d *Database) Checkpoint() error {
 
 // Close closes the database and stops cron jobs.
 func (d *Database) Close() error {
+	if d.backgroundStop != nil {
+		close(d.backgroundStop)
+		d.backgroundStop = nil
+	}
+	d.backgroundWG.Wait()
 	if d.cronRunner != nil {
 		d.cronRunner.Stop()
 	}
 	return d.db.Close()
+}
+
+func (d *Database) startBackgroundWorkers() {
+	if d == nil || d.db == nil {
+		return
+	}
+	if d.db.GetTable(systemAuthSessionTableName) != nil {
+		d.backgroundWG.Add(1)
+		go func() {
+			defer d.backgroundWG.Done()
+			d.runAuthSessionCleanupLoop()
+		}()
+	}
+}
+
+func (d *Database) runAuthSessionCleanupLoop() {
+	if d == nil || d.authSessionCleanup <= 0 || d.authSessionRetention <= 0 {
+		return
+	}
+	d.cleanupExpiredAuthSessions(time.Now())
+	ticker := time.NewTicker(d.authSessionCleanup)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			d.cleanupExpiredAuthSessions(time.Now())
+		case <-d.backgroundStop:
+			return
+		}
+	}
+}
+
+func (d *Database) cleanupExpiredAuthSessions(now time.Time) (int, error) {
+	if d == nil || d.authSessionRetention <= 0 {
+		return 0, nil
+	}
+	sessionTable := d.Table(systemAuthSessionTableName)
+	if sessionTable == nil {
+		return 0, nil
+	}
+	cutoff := now.Add(-d.authSessionRetention).Unix()
+	const chunkSize = 512
+	total := sessionTable.Count()
+	if total <= 0 {
+		return 0, nil
+	}
+	staleIDs := make([]string, 0, 32)
+	for offset := 0; offset < total; offset += chunkSize {
+		rows, err := sessionTable.Scan(chunkSize, offset)
+		if err != nil {
+			return len(staleIDs), err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			if !authSessionShouldCleanup(row, cutoff) {
+				continue
+			}
+			id := strings.TrimSpace(toString(row["id"]))
+			if id != "" {
+				staleIDs = append(staleIDs, id)
+			}
+		}
+	}
+	deleted := 0
+	for _, id := range staleIDs {
+		ok, err := sessionTable.Delete(id)
+		if err != nil {
+			return deleted, err
+		}
+		if ok {
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+func authSessionShouldCleanup(row map[string]any, cutoff int64) bool {
+	if row == nil {
+		return false
+	}
+	if revoked := authSessionTimestamp(row["revoked_at"]); revoked > 0 && revoked <= cutoff {
+		return true
+	}
+	if expires := authSessionTimestamp(row["expires_at"]); expires > 0 && expires <= cutoff {
+		return true
+	}
+	return false
+}
+
+func authSessionTimestamp(v any) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case int64:
+		return n
+	case float32:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i
+		}
+		if f, err := n.Float64(); err == nil {
+			return int64(f)
+		}
+	case string:
+		n = strings.TrimSpace(n)
+		if n == "" {
+			return 0
+		}
+		if i, err := strconv.ParseInt(n, 10, 64); err == nil {
+			return i
+		}
+		if f, err := strconv.ParseFloat(n, 64); err == nil {
+			return int64(f)
+		}
+	}
+	return 0
 }
 
 // GetDataDir returns the data directory path for this database.

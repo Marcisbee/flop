@@ -28,6 +28,8 @@ type Config struct {
 	SyncMode              string             `json:"syncMode,omitempty"`
 	AsyncSecondaryIndexes bool               `json:"asyncSecondaryIndexes,omitempty"`
 	RequestLogRetention   time.Duration      `json:"-"`
+	AuthSessionRetention  time.Duration      `json:"-"`
+	AuthSessionCleanup    time.Duration      `json:"-"`
 	EnablePprof           bool               `json:"-"`
 	SMTP                  *SMTPConfig        `json:"-"`
 	AuthPayloads          *AuthPayloadConfig `json:"-"`
