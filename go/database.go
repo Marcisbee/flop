@@ -34,6 +34,7 @@ import (
 
 // Database wraps the internal engine and exposes table operations.
 type Database struct {
+	app                  *App
 	db                   *engine.Database
 	authService          *server.AuthService
 	superadminService    *server.SuperadminService
@@ -51,6 +52,7 @@ type Database struct {
 	cronRunner           *cron.Runner
 	backgroundStop       chan struct{}
 	backgroundWG         sync.WaitGroup
+	backupManager        *backupManager
 	buildAuthUser        func(*Database, *AuthContext) (map[string]any, error)
 	buildAuthMe          func(*Database, *AuthContext) (map[string]any, error)
 	readAuthMe           func(*Database, *AuthContext) []string
@@ -174,6 +176,7 @@ func (a *App) Open() (*Database, error) {
 		retention = server.DefaultRequestLogRetention
 	}
 	d := &Database{
+		app:                  a,
 		db:                   db,
 		requestLogRetention:  retention,
 		authSessionRetention: a.config.AuthSessionRetention,
@@ -291,6 +294,11 @@ func (a *App) Open() (*Database, error) {
 	if len(jobs) > 0 {
 		d.cronRunner = cron.Start(context.Background(), jobs)
 	}
+	backupMgr, err := newBackupManager(d)
+	if err != nil {
+		return nil, err
+	}
+	d.backupManager = backupMgr
 	d.startBackgroundWorkers()
 
 	return d, nil
@@ -526,6 +534,9 @@ func (d *Database) Checkpoint() error {
 
 // Close closes the database and stops cron jobs.
 func (d *Database) Close() error {
+	if d.backupManager != nil {
+		d.backupManager.stop()
+	}
 	if d.backgroundStop != nil {
 		close(d.backgroundStop)
 		d.backgroundStop = nil
@@ -535,6 +546,52 @@ func (d *Database) Close() error {
 		d.cronRunner.Stop()
 	}
 	return d.db.Close()
+}
+
+func (d *Database) reopen() (*Database, error) {
+	if d == nil || d.app == nil {
+		return nil, fmt.Errorf("database app context unavailable")
+	}
+	reopened, err := d.app.Open()
+	if err != nil {
+		return nil, err
+	}
+	if reopened.backgroundStop != nil {
+		close(reopened.backgroundStop)
+	}
+	reopened.backgroundWG.Wait()
+	reopened.backgroundStop = nil
+
+	d.app = reopened.app
+	d.db = reopened.db
+	d.authService = reopened.authService
+	d.superadminService = reopened.superadminService
+	d.mailer = reopened.mailer
+	d.jwtSecret = reopened.jwtSecret
+	d.authInstanceID = reopened.authInstanceID
+	d.requestLogRetention = reopened.requestLogRetention
+	d.authSessionRetention = reopened.authSessionRetention
+	d.authSessionCleanup = reopened.authSessionCleanup
+	d.enablePprof = reopened.enablePprof
+	d.analytics = reopened.analytics
+	d.mediaIndexRebuild = reopened.mediaIndexRebuild
+	d.cronRunner = reopened.cronRunner
+	d.backgroundStop = make(chan struct{})
+	d.buildAuthUser = reopened.buildAuthUser
+	d.buildAuthMe = reopened.buildAuthMe
+	d.readAuthMe = reopened.readAuthMe
+	d.tableNames = reopened.tableNames
+	d.tableNameToID = reopened.tableNameToID
+	d.tableSpecs = reopened.tableSpecs
+	d.tablePolicy = reopened.tablePolicy
+	d.materialized = reopened.materialized
+	d.cascadeRefs = reopened.cascadeRefs
+	d.backupManager = reopened.backupManager
+	if d.backupManager != nil {
+		d.backupManager.db = d
+	}
+	d.startBackgroundWorkers()
+	return d, nil
 }
 
 func (d *Database) startBackgroundWorkers() {
@@ -2769,6 +2826,89 @@ func (p *EngineAdminProvider) AdminMediaRows(limit, offset int, search string, o
 		return nil, 0, fmt.Errorf("database not available")
 	}
 	return p.DB.adminMediaRows(limit, offset, search, orphansOnly)
+}
+
+func (p *EngineAdminProvider) AdminBackupBusy() bool {
+	return p != nil && p.DB != nil && p.DB.backupManager != nil && p.DB.backupManager.Busy()
+}
+
+func (p *EngineAdminProvider) AdminBackupSettings() (BackupSettings, error) {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return BackupSettings{}, fmt.Errorf("backup manager unavailable")
+	}
+	return p.DB.backupManager.getSettings(), nil
+}
+
+func (p *EngineAdminProvider) AdminUpdateBackupSettings(settings BackupSettings) (BackupSettings, error) {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return BackupSettings{}, fmt.Errorf("backup manager unavailable")
+	}
+	current := p.DB.backupManager.rawSettings()
+	if settings.S3.Enabled && settings.S3.Secret == backupSecretMask {
+		settings.S3.Secret = current.S3.Secret
+	}
+	if settings.S3.Enabled && settings.S3.Secret == "" && current.S3.Secret != "" &&
+		settings.S3.AccessKey == current.S3.AccessKey &&
+		settings.S3.Endpoint == current.S3.Endpoint &&
+		settings.S3.Region == current.S3.Region &&
+		settings.S3.Bucket == current.S3.Bucket &&
+		settings.S3.ForcePathStyle == current.S3.ForcePathStyle {
+		settings.S3.Secret = current.S3.Secret
+	}
+	return p.DB.backupManager.updateSettings(settings)
+}
+
+func (p *EngineAdminProvider) AdminTestBackupS3(cfg BackupS3Config) error {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return fmt.Errorf("backup manager unavailable")
+	}
+	current := p.DB.backupManager.rawSettings()
+	if cfg.Enabled && cfg.Secret == backupSecretMask {
+		cfg.Secret = current.S3.Secret
+	}
+	return p.DB.backupManager.testS3(cfg)
+}
+
+func (p *EngineAdminProvider) AdminBackups() ([]AdminBackupFile, error) {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return nil, fmt.Errorf("backup manager unavailable")
+	}
+	return p.DB.backupManager.List(context.Background())
+}
+
+func (p *EngineAdminProvider) AdminCreateBackup() (string, error) {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return "", fmt.Errorf("backup manager unavailable")
+	}
+	return p.DB.backupManager.CreateManual(context.Background())
+}
+
+func (p *EngineAdminProvider) AdminDeleteBackup(key string) error {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return fmt.Errorf("backup manager unavailable")
+	}
+	return p.DB.backupManager.Delete(context.Background(), key)
+}
+
+func (p *EngineAdminProvider) AdminRestoreBackup(key string) error {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return fmt.Errorf("backup manager unavailable")
+	}
+	return p.DB.backupManager.Restore(context.Background(), key)
+}
+
+func (p *EngineAdminProvider) AdminBackupStat(key string) (AdminBackupFile, error) {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return AdminBackupFile{}, fmt.Errorf("backup manager unavailable")
+	}
+	return p.DB.backupManager.Stat(context.Background(), key)
+}
+
+func (p *EngineAdminProvider) AdminBackupOpen(ctx context.Context, key string) (io.ReadCloser, error) {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return nil, fmt.Errorf("backup manager unavailable")
+	}
+	return p.DB.backupManager.Open(ctx, key)
 }
 
 // AdminEnablePprof reports whether profiling endpoints are enabled.

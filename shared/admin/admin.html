@@ -228,6 +228,47 @@ tbody tr.selected{background:var(--bg-active)}
 .panel-table-scroll{flex:1;min-height:0;max-height:min(52vh,560px);overflow:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 .mono-sm{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px}
 
+/* Backups */
+.backups-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:18px}
+.backups-hero{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.backups-title{font-size:24px;font-weight:600;color:var(--text-heading)}
+.backups-actions{display:flex;align-items:center;gap:8px}
+.backups-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.backups-list{display:flex;flex-direction:column}
+.backup-row{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--row-border)}
+.backup-row:last-child{border-bottom:none}
+.backup-row-main{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.backup-row-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-heading)}
+.backup-row-size{color:var(--text-muted);white-space:nowrap}
+.backup-row-meta{font-size:11px;color:var(--text-faint)}
+.backup-row-actions{display:flex;align-items:center;gap:4px}
+.backup-init{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 16px;border:none;background:none;color:var(--text-heading);font-size:15px;font-weight:600;cursor:pointer;width:100%}
+.backup-init:hover{background:var(--bg-hover)}
+.backup-init:disabled{opacity:0.55;cursor:default}
+.backup-settings-toggle{display:inline-flex;align-items:center;gap:8px}
+.backups-options{padding:18px 0 2px;display:flex;flex-direction:column;gap:22px}
+.backup-option-block{display:flex;flex-direction:column;gap:14px}
+.backup-option-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.backup-option-row.backup-option-row-3{grid-template-columns:2fr 1fr 1fr}
+.backup-label{display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600}
+.backup-help{font-size:12px;color:var(--text-muted);line-height:1.35}
+.backup-input,.backup-select{width:100%;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:6px;color:var(--text);font-size:14px;outline:none}
+.backup-input:focus,.backup-select:focus{border-color:var(--accent)}
+.backup-checkbox{display:flex;align-items:center;gap:8px;color:var(--text)}
+.backup-footer{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-height:36px}
+.backup-status-ok{display:inline-flex;align-items:center;gap:6px;color:#42b983;background:rgba(66,185,131,0.12);padding:6px 10px;border-radius:999px;font-size:12px}
+.backup-status-error{display:inline-flex;align-items:center;gap:6px;color:var(--error);background:rgba(244,135,113,0.12);padding:6px 10px;border-radius:999px;font-size:12px}
+.backup-empty{padding:22px 16px;color:var(--text-muted);text-align:center}
+.toggle{position:relative;width:40px;height:22px;border-radius:999px;border:none;background:var(--border-input);cursor:pointer;transition:background .15s ease}
+.toggle.on{background:#39b980}
+.toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:999px;background:#fff;transition:left .15s ease}
+.toggle.on .toggle-knob{left:21px}
+.toggle:disabled{opacity:0.5;cursor:default}
+
+@media (max-width: 980px) {
+  .backup-option-row,.backup-option-row.backup-option-row-3{grid-template-columns:1fr}
+}
+
 /* File fields */
 .file-display{display:inline-flex;align-items:center;gap:6px}
 .file-thumb{width:20px;height:20px;object-fit:cover;border-radius:2px;vertical-align:middle}
@@ -273,6 +314,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'https://esm.s
 import htm from 'https://esm.sh/htm@3.1.1';
 
 const html = htm.bind(h);
+const backupSecretMask = '******';
 
 // ── Auth ──
 let TOKEN = localStorage.getItem('flop_admin_token');
@@ -393,6 +435,10 @@ const icons = {
   chart: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 14h14v1H0V1h1v13z"/><path d="M3 10.5l2.3-2.3 2.2 1.5 3.7-4.2.8.7-4.3 4.9-2.3-1.6L3.7 11.2z"/></svg>`,
   pulse: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 8h2.7l1.2-3.1a.5.5 0 01.94.02L7.6 11.2l1.1-2.2a.5.5 0 01.45-.28H15v1H9.46l-1.5 3a.5.5 0 01-.93-.07L5.3 6.74 4.45 8.9A.5.5 0 013.98 9H1V8z"/></svg>`,
   image: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zm1.5-.5a.5.5 0 00-.5.5v6.293l2.146-2.147a.5.5 0 01.708 0L8.5 10.293l1.646-1.647a.5.5 0 01.708 0L13 10.793V3.5a.5.5 0 00-.5-.5h-9zM13 12.5v-.293l-2.5-2.5-1.646 1.647a.5.5 0 01-.708 0L5.5 8.707 3 11.207v1.293a.5.5 0 00.5.5h9a.5.5 0 00.5-.5z"/><path d="M6 6a1.25 1.25 0 100-2.5A1.25 1.25 0 006 6z"/></svg>`,
+  clock: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5A6.5 6.5 0 1014.5 8 6.5 6.5 0 008 1.5zm0 12A5.5 5.5 0 118 2.5a5.5 5.5 0 010 11zm.5-8v2.793l1.854 1.853-.708.708L7.5 8.707V5.5h1z"/></svg>`,
+  check: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 010 .708l-7 7a.5.5 0 01-.708 0l-3-3a.5.5 0 11.708-.708L6.5 10.293l6.646-6.647a.5.5 0 01.708 0z"/></svg>`,
+  chevDown: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M3.646 5.646a.5.5 0 01.708 0L8 9.293l3.646-3.647a.5.5 0 11.708.708l-4 4a.5.5 0 01-.708 0l-4-4a.5.5 0 010-.708z"/></svg>`,
+  chevUp: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8 5.293 4.354 8.94a.5.5 0 11-.708-.708l4-4a.5.5 0 01.708 0l4 4a.5.5 0 11-.708.708L8 5.293z"/></svg>`,
 };
 
 // ── Helpers ──
@@ -408,6 +454,21 @@ function truncate(s, n = 60) {
   if (s == null) return '';
   const str = String(s);
   return str.length > n ? str.slice(0, n) + '...' : str;
+}
+
+function formatBytes(bytes) {
+  const num = Number(bytes || 0);
+  if (num < 1024) return num + ' B';
+  if (num < 1024 * 1024) return (num / 1024).toFixed(2).replace(/\.00$/, '') + ' KB';
+  if (num < 1024 * 1024 * 1024) return (num / (1024 * 1024)).toFixed(2).replace(/\.00$/, '') + ' MB';
+  return (num / (1024 * 1024 * 1024)).toFixed(2).replace(/\.00$/, '') + ' GB';
+}
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '';
+  return dt.toLocaleString();
 }
 
 function titleCaseToken(token) {
@@ -450,7 +511,7 @@ function Toasts() {
 
 // ── Components ──
 
-function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onBackup, onRestore, onLogout }) {
+function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectBackups, onLogout }) {
   const [tableSearch, setTableSearch] = useState('');
   
   const filteredTables = useMemo(() => {
@@ -507,6 +568,14 @@ function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode
             <span class="sidebar-item-label">Media</span>
           </button>
         `}
+        <div class="sidebar-section-label" style="padding:10px 8px 4px">SYSTEM</div>
+        <button
+          class=${"sidebar-item" + (viewMode === 'backups' ? " active" : "")}
+          onClick=${onSelectBackups}
+        >
+          <span class="sidebar-item-icon">${icons.clock}</span>
+          <span class="sidebar-item-label">Backups</span>
+        </button>
         ${analyticsEnabled && html`
           <div class="sidebar-section-label" style="padding:10px 8px 4px">OBSERVE</div>
           <button
@@ -535,11 +604,6 @@ function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode
         `}
       </div>
       <div class="sidebar-footer">
-        <button class="sidebar-action" onClick=${onBackup}>${icons.download} Backup</button>
-        <label class="sidebar-action">
-          ${icons.upload} Restore
-          <input type="file" accept=".tar.gz,.gz" onChange=${onRestore} hidden />
-        </label>
         <button class="sidebar-action danger" onClick=${onLogout}>${icons.signout} Sign Out</button>
       </div>
     </div>
@@ -2053,6 +2117,352 @@ function MediaPanel() {
   `;
 }
 
+function Toggle({ checked, onChange, disabled = false }) {
+  return html`
+    <button type="button" class=${"toggle" + (checked ? " on" : "")} disabled=${disabled} onClick=${() => !disabled && onChange(!checked)}>
+      <span class="toggle-knob"></span>
+    </button>
+  `;
+}
+
+function BackupsPage() {
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testError, setTestError] = useState('');
+  const [testOk, setTestOk] = useState(false);
+  const [showOptions, setShowOptions] = useState(true);
+  const [settings, setSettings] = useState({ cron: '', cronMaxKeep: 3, s3: { enabled: false, endpoint: '', bucket: '', region: '', accessKey: '', secret: '', forcePathStyle: false } });
+  const [originalSettings, setOriginalSettings] = useState({ cron: '', cronMaxKeep: 3, s3: { enabled: false, endpoint: '', bucket: '', region: '', accessKey: '', secret: '', forcePathStyle: false } });
+  const [downloadBusy, setDownloadBusy] = useState({});
+  const [deleteBusy, setDeleteBusy] = useState({});
+  const [restoreBusy, setRestoreBusy] = useState({});
+
+  const clone = useCallback((value) => JSON.parse(JSON.stringify(value)), []);
+  const hasChanges = JSON.stringify(settings) !== JSON.stringify(originalSettings);
+  const autoEnabled = !!settings.cron;
+
+  const normalizeSettings = useCallback((incoming) => {
+    const next = clone(incoming || {});
+    if (!next.s3) next.s3 = {};
+    return {
+      cron: next.cron || '',
+      cronMaxKeep: Number(next.cronMaxKeep || 3),
+      s3: {
+        enabled: !!next.s3.enabled,
+        endpoint: next.s3.endpoint || '',
+        bucket: next.s3.bucket || '',
+        region: next.s3.region || '',
+        accessKey: next.s3.accessKey || '',
+        secret: next.s3.secret || '',
+        forcePathStyle: !!next.s3.forcePathStyle,
+      },
+    };
+  }, [clone]);
+
+  const maybeTestS3 = useCallback(async (candidate) => {
+    const current = candidate || settings;
+    if (!current?.s3?.enabled) {
+      setTestError('');
+      setTestOk(false);
+      return;
+    }
+    setTesting(true);
+    setTestError('');
+    setTestOk(false);
+    try {
+      await api('/backups/settings/test-s3', {
+        method: 'POST',
+        body: JSON.stringify({ s3: current.s3 }),
+      });
+      setTestOk(true);
+    } catch (err) {
+      setTestError(err.message || 'S3 connection failed');
+    } finally {
+      setTesting(false);
+    }
+  }, [settings]);
+
+  const loadPage = useCallback(async () => {
+    setLoading(true);
+    try {
+      const settingsData = await api('/backups/settings');
+      const normalized = normalizeSettings(settingsData?.settings || {});
+      setSettings(normalized);
+      setOriginalSettings(clone(normalized));
+      if (normalized.s3.enabled) {
+        maybeTestS3(normalized);
+      } else {
+        setTestError('');
+        setTestOk(false);
+      }
+      try {
+        const listData = await api('/backups');
+        setItems((listData?.items || []).slice().sort((a, b) => new Date(b.modified) - new Date(a.modified)));
+        setBusy(!!listData?.busy || !!settingsData?.busy);
+      } catch (err) {
+        setItems([]);
+        setBusy(!!settingsData?.busy);
+        showToast(err.message || 'Failed to load backups list', 'error');
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to load backups', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [clone, normalizeSettings, maybeTestS3]);
+
+  useEffect(() => { loadPage(); }, []);
+
+  const setCronEnabled = useCallback((enabled) => {
+    setSettings(prev => {
+      const next = clone(prev);
+      next.cron = enabled ? (next.cron || '0 0 * * *') : '';
+      if (enabled && (!next.cronMaxKeep || next.cronMaxKeep < 1)) next.cronMaxKeep = 3;
+      return next;
+    });
+  }, [clone]);
+
+  const setS3Enabled = useCallback((enabled) => {
+    setSettings(prev => {
+      const next = clone(prev);
+      next.s3.enabled = enabled;
+      return next;
+    });
+    if (!enabled) {
+      setTestError('');
+      setTestOk(false);
+    }
+  }, [clone]);
+
+  const saveSettings = useCallback(async () => {
+    setSaving(true);
+    try {
+      const payload = clone(settings);
+      if (payload.s3?.secret === backupSecretMask && originalSettings.s3?.secret === backupSecretMask) {
+        delete payload.s3.secret;
+      }
+      const res = await api('/backups/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ settings: payload }),
+      });
+      const normalized = normalizeSettings(res?.settings || payload);
+      setSettings(normalized);
+      setOriginalSettings(clone(normalized));
+      setBusy(false);
+      showToast('Backup settings saved');
+      if (normalized.s3.enabled) {
+        maybeTestS3(normalized);
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to save backup settings', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }, [settings, originalSettings, clone, normalizeSettings, maybeTestS3]);
+
+  const createBackup = useCallback(async () => {
+    setCreating(true);
+    try {
+      await api('/backups', { method: 'POST', body: '{}' });
+      showToast('Backup created');
+      await loadPage();
+    } catch (err) {
+      showToast(err.message || 'Backup failed', 'error');
+    } finally {
+      setCreating(false);
+    }
+  }, [loadPage]);
+
+  const downloadBackup = useCallback(async (key) => {
+    setDownloadBusy(prev => ({ ...prev, [key]: true }));
+    try {
+      const res = await fetch('/_/api/backups/' + encodeURIComponent(key) + '/download', {
+        headers: { 'Authorization': 'Bearer ' + TOKEN }
+      });
+      if (!res.ok) throw new Error('Download failed');
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = key;
+      a.click();
+    } catch (err) {
+      showToast(err.message || 'Download failed', 'error');
+    } finally {
+      setDownloadBusy(prev => ({ ...prev, [key]: false }));
+    }
+  }, []);
+
+  const deleteBackup = useCallback(async (key) => {
+    if (!confirm('Delete backup "' + key + '"?')) return;
+    setDeleteBusy(prev => ({ ...prev, [key]: true }));
+    try {
+      await apiDelete('/backups/' + encodeURIComponent(key));
+      showToast('Backup deleted');
+      await loadPage();
+    } catch (err) {
+      showToast(err.message || 'Delete failed', 'error');
+    } finally {
+      setDeleteBusy(prev => ({ ...prev, [key]: false }));
+    }
+  }, [loadPage]);
+
+  const restoreBackup = useCallback(async (key) => {
+    if (!confirm('Restore "' + key + '"?\n\nThis replaces the current database data and files with the selected backup.')) return;
+    setRestoreBusy(prev => ({ ...prev, [key]: true }));
+    try {
+      const res = await api('/backups/' + encodeURIComponent(key) + '/restore', {
+        method: 'POST',
+        body: '{}',
+      });
+      showToast(res?.message || 'Backup restored');
+      await loadPage();
+    } catch (err) {
+      showToast(err.message || 'Restore failed', 'error');
+    } finally {
+      setRestoreBusy(prev => ({ ...prev, [key]: false }));
+    }
+  }, [loadPage]);
+
+  const selectedPreset = settings.cron === '0 0 * * *' ? 'daily'
+    : settings.cron === '0 0 * * 0' ? 'weekly'
+    : settings.cron === '0 0 * * 1,3' ? 'monwed'
+    : settings.cron === '0 0 1 * *' ? 'monthly'
+    : 'custom';
+
+  return html`
+    <div class="backups-page">
+      <div class="backups-hero">
+        <div class="backups-title">Backup and restore your Flop data</div>
+        <div class="backups-actions">
+          <button class="btn" onClick=${loadPage} disabled=${loading || creating || saving}>${icons.refresh} Refresh</button>
+        </div>
+      </div>
+
+      <div class="backups-card">
+        <div class="backups-list">
+          ${loading ? html`<div class="backup-empty">Loading backups…</div>` : items.length === 0 ? html`<div class="backup-empty">No backups yet.</div>` : items.map(item => html`
+            <div class="backup-row" key=${item.key}>
+              <div class="backup-row-main">
+                <span class="panel-title-icon">${icons.table}</span>
+                <div style="min-width:0;flex:1">
+                  <div class="backup-row-name" title=${item.key}>${item.key}</div>
+                  <div class="backup-row-meta">${formatDateTime(item.modified)}</div>
+                </div>
+                <div class="backup-row-size">(${formatBytes(item.size)})</div>
+              </div>
+              <div class="backup-row-actions">
+                <button class="btn-icon" title="Download" disabled=${busy || !!downloadBusy[item.key] || !!restoreBusy[item.key] || !!deleteBusy[item.key]} onClick=${() => downloadBackup(item.key)}>${icons.download}</button>
+                <button class="btn-icon" title="Restore" disabled=${busy || !!restoreBusy[item.key] || !!deleteBusy[item.key]} onClick=${() => restoreBackup(item.key)}>${icons.upload}</button>
+                <button class="btn-icon danger" title="Delete" disabled=${busy || !!restoreBusy[item.key] || !!deleteBusy[item.key]} onClick=${() => deleteBackup(item.key)}>${icons.trash}</button>
+              </div>
+            </div>
+          `)}
+          <button class="backup-init" disabled=${busy || creating || loading} onClick=${createBackup}>
+            ${busy || creating ? html`<span class="null">${creating ? 'Creating backup…' : 'Backup/restore in progress…'}</span>` : html`<span>${icons.upload}</span><span>Initialize new backup</span>`}
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <button class="btn backup-settings-toggle" onClick=${() => setShowOptions(v => !v)}>
+          <span>Backups options</span>
+          <span>${showOptions ? icons.chevUp : icons.chevDown}</span>
+        </button>
+      </div>
+
+      ${showOptions ? html`
+        <div class="backups-options">
+          <div class="backup-option-block">
+            <div class="backup-checkbox">
+              <${Toggle} checked=${autoEnabled} onChange=${setCronEnabled} disabled=${saving || busy} />
+              <span>Enable auto backups</span>
+            </div>
+            ${autoEnabled ? html`
+              <div class="backup-option-row">
+                <div>
+                  <label class="backup-label">Cron expression</label>
+                  <div style="display:flex;gap:8px">
+                    <input class="backup-input" type="text" value=${settings.cron} onInput=${e => setSettings(prev => ({ ...prev, cron: e.target.value }))} />
+                    <select class="backup-select" value=${selectedPreset} onChange=${e => {
+                      const value = e.target.value;
+                      if (value === 'daily') setSettings(prev => ({ ...prev, cron: '0 0 * * *' }));
+                      if (value === 'weekly') setSettings(prev => ({ ...prev, cron: '0 0 * * 0' }));
+                      if (value === 'monwed') setSettings(prev => ({ ...prev, cron: '0 0 * * 1,3' }));
+                      if (value === 'monthly') setSettings(prev => ({ ...prev, cron: '0 0 1 * *' }));
+                    }}>
+                      <option value="custom">Presets</option>
+                      <option value="daily">Every day at 00:00h</option>
+                      <option value="weekly">Every Sunday at 00:00h</option>
+                      <option value="monwed">Every Mon and Wed at 00:00h</option>
+                      <option value="monthly">Every first day of month at 00:00h</option>
+                    </select>
+                  </div>
+                  <div class="backup-help">Supports numeric list, steps, ranges or macros. The timezone is in UTC.</div>
+                </div>
+                <div>
+                  <label class="backup-label">Max @auto backups to keep</label>
+                  <input class="backup-input" type="number" min="1" value=${settings.cronMaxKeep} onInput=${e => setSettings(prev => ({ ...prev, cronMaxKeep: Number(e.target.value || 0) }))} />
+                </div>
+              </div>
+            ` : null}
+          </div>
+
+          <div class="backup-option-block">
+            <div class="backup-checkbox">
+              <${Toggle} checked=${!!settings.s3.enabled} onChange=${setS3Enabled} disabled=${saving || busy} />
+              <span>Store backups in S3 storage</span>
+            </div>
+            ${settings.s3.enabled ? html`
+              <div class="backup-option-row backup-option-row-3">
+                <div>
+                  <label class="backup-label">Endpoint</label>
+                  <input class="backup-input" type="text" value=${settings.s3.endpoint} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, endpoint: e.target.value } }))} />
+                </div>
+                <div>
+                  <label class="backup-label">Bucket</label>
+                  <input class="backup-input" type="text" value=${settings.s3.bucket} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, bucket: e.target.value } }))} />
+                </div>
+                <div>
+                  <label class="backup-label">Region</label>
+                  <input class="backup-input" type="text" value=${settings.s3.region} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, region: e.target.value } }))} />
+                </div>
+              </div>
+              <div class="backup-option-row">
+                <div>
+                  <label class="backup-label">Access key</label>
+                  <input class="backup-input" type="text" value=${settings.s3.accessKey} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, accessKey: e.target.value } }))} />
+                </div>
+                <div>
+                  <label class="backup-label">Secret</label>
+                  <input class="backup-input" type="password" value=${settings.s3.secret} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, secret: e.target.value } }))} />
+                </div>
+              </div>
+              <label class="backup-checkbox">
+                <input type="checkbox" checked=${!!settings.s3.forcePathStyle} onChange=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, forcePathStyle: e.target.checked } }))} />
+                <span>Force path-style addressing</span>
+              </label>
+            ` : null}
+          </div>
+
+          <div class="backup-footer">
+            ${settings.s3.enabled && !hasChanges && !saving ? (
+              testing ? html`<span class="backup-status-ok">Testing S3…</span>` :
+              testError ? html`<span class="backup-status-error">${testError}</span>` :
+              testOk ? html`<span class="backup-status-ok">${icons.check} S3 connected successfully</span>` : null
+            ) : null}
+            ${hasChanges ? html`<button class="btn" onClick=${() => { setSettings(clone(originalSettings)); setTestError(''); setTestOk(false); }}>Reset</button>` : null}
+            <button class="btn btn-primary" disabled=${saving || !hasChanges || busy} onClick=${saveSettings}>Save changes</button>
+          </div>
+        </div>
+      ` : null}
+    </div>
+  `;
+}
+
 // ── Main App ──
 function App() {
   const [tables, setTables] = useState([]);
@@ -2174,6 +2584,10 @@ function App() {
         setViewMode('observe');
         return;
       }
+      if (decoded === '_backups') {
+        setViewMode('backups');
+        return;
+      }
       if (decoded === '_media') {
         setViewMode('media');
         return;
@@ -2227,26 +2641,9 @@ function App() {
     window.location.hash = '_media';
   }, []);
 
-  const handleBackup = useCallback(async () => {
-    const res = await fetch('/_/api/backup', { headers: { 'Authorization': 'Bearer ' + TOKEN } });
-    const blob = await res.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'flop-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.tar.gz';
-    a.click();
-  }, []);
-
-  const handleRestore = useCallback(async (e) => {
-    const file = e.target.files[0];
-    if (!file || !confirm('This will REPLACE all data. Continue?')) return;
-    const res = await fetch('/_/api/backup', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + TOKEN },
-      body: file,
-    });
-    const data = await res.json();
-    alert(data.message || data.error || 'Done');
-    window.location.reload();
+  const selectBackups = useCallback(() => {
+    setViewMode('backups');
+    window.location.hash = '_backups';
   }, []);
 
   const currentSchema = useMemo(() => {
@@ -2272,8 +2669,7 @@ function App() {
       onSelectAnalyticsVolume=${selectAnalyticsVolume}
       onSelectAnalyticsPerformance=${selectAnalyticsPerformance}
       onSelectObserve=${selectObserve}
-      onBackup=${handleBackup}
-      onRestore=${handleRestore}
+      onSelectBackups=${selectBackups}
       onLogout=${logout}
     />
     <div class="main">
@@ -2283,6 +2679,8 @@ function App() {
         ? html`<${MediaPanel} />`
         : viewMode === 'observe' && observeEnabled
         ? html`<${ObservePanel} />`
+        : viewMode === 'backups'
+        ? html`<${BackupsPage} />`
         : currentTable
         ? html`<${DataTable} key=${(currentArchive ? 'archive:' : 'table:') + currentTable} tableName=${currentTable} tableMeta=${(currentArchive ? archiveTables : tables).find(t => t.name === currentTable)} schema=${currentSchema} archive=${currentArchive} onReload=${loadTables} sseSignal=${sseSignal} />`
         : html`<${EmptyState} />`

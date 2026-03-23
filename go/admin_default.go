@@ -1,12 +1,15 @@
 package flop
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
+	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,6 +79,19 @@ type AdminFilterProvider interface {
 
 type AdminMediaProvider interface {
 	AdminMediaRows(limit, offset int, search string, orphansOnly bool) ([]AdminMediaRow, int, error)
+}
+
+type AdminBackupProvider interface {
+	AdminBackupBusy() bool
+	AdminBackupSettings() (BackupSettings, error)
+	AdminUpdateBackupSettings(BackupSettings) (BackupSettings, error)
+	AdminTestBackupS3(BackupS3Config) error
+	AdminBackups() ([]AdminBackupFile, error)
+	AdminCreateBackup() (string, error)
+	AdminDeleteBackup(key string) error
+	AdminRestoreBackup(key string) error
+	AdminBackupStat(key string) (AdminBackupFile, error)
+	AdminBackupOpen(ctx context.Context, key string) (io.ReadCloser, error)
 }
 
 type AdminWriteProvider interface {
@@ -179,6 +195,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 	sseProvider, sseEnabled := provider.(AdminSSEProvider)
 	filterProvider, filterEnabled := provider.(AdminFilterProvider)
 	mediaProvider, mediaEnabled := provider.(AdminMediaProvider)
+	backupProvider, backupEnabled := provider.(AdminBackupProvider)
 	analyticsProvider, analyticsCapable := provider.(AdminAnalyticsProvider)
 	indexStatsProvider, indexStatsCapable := provider.(AdminIndexStatsProvider)
 	pprofProvider, pprofCapable := provider.(AdminPprofProvider)
@@ -635,6 +652,189 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				return
 			}
 			adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+
+		if path == "/_/api/backups/settings" {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !backupEnabled {
+				adminJSONError(w, "backups unavailable", http.StatusNotFound)
+				return
+			}
+			switch r.Method {
+			case http.MethodGet:
+				settings, err := backupProvider.AdminBackupSettings()
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"settings": settings,
+					"busy":     backupProvider.AdminBackupBusy(),
+				})
+				return
+			case http.MethodPut:
+				var body struct {
+					Settings BackupSettings `json:"settings"`
+				}
+				if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
+					adminJSONError(w, "invalid json", http.StatusBadRequest)
+					return
+				}
+				settings, err := backupProvider.AdminUpdateBackupSettings(body.Settings)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"ok":       true,
+					"settings": settings,
+				})
+				return
+			default:
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+		}
+
+		if path == "/_/api/backups/settings/test-s3" {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !backupEnabled {
+				adminJSONError(w, "backups unavailable", http.StatusNotFound)
+				return
+			}
+			if r.Method != http.MethodPost {
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var body struct {
+				S3 BackupS3Config `json:"s3"`
+			}
+			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
+				adminJSONError(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := backupProvider.AdminTestBackupS3(body.S3); err != nil {
+				adminJSONError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+
+		if path == "/_/api/backups" {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !backupEnabled {
+				adminJSONError(w, "backups unavailable", http.StatusNotFound)
+				return
+			}
+			switch r.Method {
+			case http.MethodGet:
+				items, err := backupProvider.AdminBackups()
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"items": items,
+					"busy":  backupProvider.AdminBackupBusy(),
+				})
+				return
+			case http.MethodPost:
+				key, err := backupProvider.AdminCreateBackup()
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{"ok": true, "key": key})
+				return
+			default:
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+		}
+
+		if strings.HasPrefix(path, "/_/api/backups/") {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !backupEnabled {
+				adminJSONError(w, "backups unavailable", http.StatusNotFound)
+				return
+			}
+			rest := strings.TrimPrefix(path, "/_/api/backups/")
+			parts := strings.Split(strings.Trim(rest, "/"), "/")
+			if len(parts) == 0 || parts[0] == "" {
+				adminJSONError(w, "not found", http.StatusNotFound)
+				return
+			}
+			key, err := url.PathUnescape(parts[0])
+			if err != nil || key == "" {
+				adminJSONError(w, "invalid backup key", http.StatusBadRequest)
+				return
+			}
+
+			if len(parts) == 2 && parts[1] == "download" {
+				if r.Method != http.MethodGet {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				meta, err := backupProvider.AdminBackupStat(key)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				reader, err := backupProvider.AdminBackupOpen(r.Context(), key)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				defer reader.Close()
+				w.Header().Set("Content-Type", "application/zip")
+				w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(meta.Key)))
+				if meta.Size > 0 {
+					w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+				}
+				_, _ = io.Copy(w, reader)
+				return
+			}
+
+			if len(parts) == 2 && parts[1] == "restore" {
+				if r.Method != http.MethodPost {
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if err := backupProvider.AdminRestoreBackup(key); err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"ok":      true,
+					"message": "Backup restored successfully. Existing requests may need to reconnect.",
+				})
+				return
+			}
+
+			if len(parts) == 1 && r.Method == http.MethodDelete {
+				if err := backupProvider.AdminDeleteBackup(key); err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
+				return
+			}
+
+			adminJSONError(w, "not found", http.StatusNotFound)
 			return
 		}
 
