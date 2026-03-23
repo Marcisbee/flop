@@ -838,16 +838,28 @@ func (as *AuthService) normalizeVerifiedUser(user map[string]interface{}) (map[s
 	if as == nil || user == nil {
 		return user, nil
 	}
-	if !as.authFieldExists("verified") || !isTruthy(user["verified"]) {
-		return user, nil
+	updates := map[string]interface{}{}
+	defaultRole := strings.TrimSpace(toString(user["default_role"]))
+	verified := as.authFieldExists("verified") && isTruthy(user["verified"])
+	currentRoles := toStringSlice(user["roles"])
+
+	if as.authFieldExists("roles") && len(currentRoles) == 0 && defaultRole != "" {
+		iRoles := []interface{}{defaultRole}
+		updates["roles"] = iRoles
+		currentRoles = []string{defaultRole}
 	}
 
-	updates := map[string]interface{}{}
-	if as.authFieldExists("default_role") && strings.EqualFold(strings.TrimSpace(toString(user["default_role"])), "unverified") {
-		updates["default_role"] = "user"
+	if as.authFieldExists("verified") && !verified && defaultRole != "" && !strings.EqualFold(defaultRole, "unverified") {
+		updates["verified"] = true
+		verified = true
 	}
-	if as.authFieldExists("roles") {
-		currentRoles := toStringSlice(user["roles"])
+
+	if verified && as.authFieldExists("default_role") && strings.EqualFold(defaultRole, "unverified") {
+		updates["default_role"] = "user"
+		defaultRole = "user"
+	}
+
+	if verified && as.authFieldExists("roles") {
 		nextRoles := promoteVerifiedRoles(currentRoles)
 		if !sameStringSet(currentRoles, nextRoles) {
 			iRoles := make([]interface{}, len(nextRoles))
