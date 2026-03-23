@@ -1,9 +1,8 @@
 /**
  * Go Finance benchmark seeder.
  *
- * Reuses the standard finance benchmark seeder against any host:
- *   deno run --allow-net benchmarks/go-finance/seed.ts --host=http://localhost:1985
+ * Reuses the shared benchmark seeder against any host:
+ *   deno run --allow-net benchmarks/finance-go/seed.ts --host=http://localhost:1985
  */
 
-import "../finance-ts/seed.ts";
-
+import "../compare/seed.ts";

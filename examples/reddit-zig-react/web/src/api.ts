@@ -1,4 +1,4 @@
-// Lightweight typed API client for go2 server
+// Lightweight typed API client for the Zig server
 
 const TOKEN_KEY = 'reddit_token';
 
@@ -54,7 +54,7 @@ function post<T>(path: string, body?: any): Promise<T> {
   return fetchAPI<T>(path, { method: 'POST', body: JSON.stringify(body) });
 }
 
-// ===== Raw Row from go2 =====
+// ===== Raw Row shape =====
 
 interface RawRow {
   ID: number;
@@ -65,7 +65,7 @@ interface RawRow {
   Version: number;
 }
 
-// Flatten a go2 Row into a simpler object: {id, created_at, updated_at, ...Data}
+// Flatten a raw row into a simpler object: {id, created_at, updated_at, ...Data}
 function flattenRow(raw: RawRow): any {
   const out: any = { id: raw.ID, ...raw.Data };
   out.created_at = new Date(raw.CreatedAt).getTime();

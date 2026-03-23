@@ -392,7 +392,7 @@ fn getRowFloatValue(row: *const Table.Row, key: []const u8) f64 {
     return 0.0;
 }
 
-// Build a JSON representation of a Row in the go2 "RawRow" format
+// Build a JSON representation of a row in the API's raw row format
 fn rowToJson(allocator: Allocator, row: *const Table.Row, schema: *const Table.Schema) ![]u8 {
     var buf = std.array_list.Managed(u8).init(allocator);
     errdefer buf.deinit();

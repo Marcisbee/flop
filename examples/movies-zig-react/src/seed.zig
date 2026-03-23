@@ -207,7 +207,7 @@ fn resolveDatasetsDir(allocator: std.mem.Allocator, explicit: ?[]const u8) !Reso
 
     const candidates = [_][]const u8{
         "data/_datasets/imdb",
-        "../movies-go2-react/data/_datasets/imdb",
+        "../movies-go-react/data/_datasets/imdb",
     };
     for (candidates) |path| {
         if (imdbDatasetsPresent(path)) {

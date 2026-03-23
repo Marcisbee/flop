@@ -2,7 +2,6 @@
 
 Compare these engines with identical benchmark scenarios:
 
-- `flop-ts` (`benchmarks/finance-ts/app.ts`)
 - `flop-go` (`benchmarks/finance-go`)
 - `sqlite-ts` (`benchmarks/finance-sqlite/app.ts`)
 - `sqlite-go` (`benchmarks/finance-sqlite-go`)
@@ -61,7 +60,7 @@ deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmar
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --repeats=3 --min-repeats=2 --early-stop-rse=0.05 --warmup-sec=3 --shuffle-engines=1 --strict-setup=1 --setup-retries=8
 
 # only specific engines
-deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --engines=flop-ts,flop-go,turso-ts,pglite-ts,turso-go,mongodb-ts,mongodb-go
+deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --engines=flop-go,turso-ts,pglite-ts,turso-go,mongodb-ts,mongodb-go
 
 # only specific scenarios
 deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmarks/compare/run.ts --scenarios=high-load-rw,reads,writes,edits
@@ -73,7 +72,7 @@ deno run --allow-read --allow-write --allow-run --allow-env --allow-net benchmar
 Engine sets:
 
 - `all` (default): all available engines in the matrix
-- `core`: `flop-ts, flop-go, sqlite-ts, sqlite-go`
+- `core`: `flop-go, sqlite-ts, sqlite-go`
 
 Rigor flags:
 

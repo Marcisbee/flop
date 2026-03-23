@@ -11,7 +11,6 @@
 import { fromFileUrl, resolve } from "@std/path";
 
 type EngineID =
-  | "flop-ts"
   | "flop-go"
   | "sqlite-ts"
   | "sqlite-go"
@@ -100,7 +99,6 @@ const LATEST_RUN_PATH = resolve(
 );
 
 const ENGINE_ORDER: EngineID[] = [
-  "flop-ts",
   "flop-go",
   "sqlite-ts",
   "sqlite-go",

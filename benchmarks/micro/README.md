@@ -5,7 +5,6 @@ workload harness as `benchmarks/compare/run.ts`.
 
 Default engines:
 
-- `flop-ts`
 - `flop-go`
 - `sqlite-ts`
 - `sqlite-go`
@@ -37,7 +36,7 @@ Examples:
 deno task bench:micro --scenarios=high-load-rw,reads,writes,edits
 
 # focus on core engines only
-deno task bench:micro --engines=flop-ts,flop-go,sqlite-ts,sqlite-go
+deno task bench:micro --engines=flop-go,sqlite-ts,sqlite-go
 
 # stronger signal
 deno task bench:micro --duration-sec=8 --repeats=2 --warmup-sec=2 --setup-retries=5
