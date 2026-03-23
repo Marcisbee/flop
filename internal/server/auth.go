@@ -386,6 +386,11 @@ func (as *AuthService) Login(email, password string) (token, refreshToken string
 		return "", "", nil, fmt.Errorf("invalid credentials")
 	}
 
+	user, err = as.normalizeVerifiedUser(user)
+	if err != nil {
+		return "", "", nil, err
+	}
+
 	pk := as.getPK(user)
 	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
 		return "", "", nil, err
@@ -426,6 +431,11 @@ func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 		_ = as.revokeSession(payload.SessionID, "principal_missing")
 		return "", "", fmt.Errorf("user not found")
 	}
+	user, err = as.normalizeVerifiedUser(user)
+	if err != nil {
+		_ = as.revokeSession(payload.SessionID, "principal_invalid")
+		return "", "", err
+	}
 	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
 		_ = as.revokeSession(payload.SessionID, "principal_blocked")
 		return "", "", err
@@ -453,6 +463,11 @@ func (as *AuthService) ValidateAccessToken(token string) (*schema.AuthContext, e
 	if err != nil || user == nil {
 		_ = as.revokeSession(payload.SessionID, "principal_missing")
 		return nil, fmt.Errorf("user not found")
+	}
+	user, err = as.normalizeVerifiedUser(user)
+	if err != nil {
+		_ = as.revokeSession(payload.SessionID, "principal_invalid")
+		return nil, err
 	}
 	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
 		_ = as.revokeSession(payload.SessionID, "principal_blocked")
@@ -795,6 +810,10 @@ func (as *AuthService) issueRefreshToken(id, sessionID string) string {
 
 func (as *AuthService) createUserSession(user map[string]interface{}, reason string) (string, string, *schema.AuthContext, error) {
 	pk := as.getPK(user)
+	user, err := as.normalizeVerifiedUser(user)
+	if err != nil {
+		return "", "", nil, err
+	}
 	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
 		return "", "", nil, err
 	}
@@ -813,6 +832,52 @@ func (as *AuthService) createUserSession(user map[string]interface{}, reason str
 		SessionID:     sessionID,
 		InstanceID:    as.instanceID,
 	}, nil
+}
+
+func (as *AuthService) normalizeVerifiedUser(user map[string]interface{}) (map[string]interface{}, error) {
+	if as == nil || user == nil {
+		return user, nil
+	}
+	if !as.authFieldExists("verified") || !isTruthy(user["verified"]) {
+		return user, nil
+	}
+
+	updates := map[string]interface{}{}
+	if as.authFieldExists("default_role") && strings.EqualFold(strings.TrimSpace(toString(user["default_role"])), "unverified") {
+		updates["default_role"] = "user"
+	}
+	if as.authFieldExists("roles") {
+		currentRoles := toStringSlice(user["roles"])
+		nextRoles := promoteVerifiedRoles(currentRoles)
+		if !sameStringSet(currentRoles, nextRoles) {
+			iRoles := make([]interface{}, len(nextRoles))
+			for i, role := range nextRoles {
+				iRoles[i] = role
+			}
+			updates["roles"] = iRoles
+		}
+	}
+	if len(updates) == 0 {
+		return user, nil
+	}
+
+	updated, err := as.authTable.Update(as.getPK(user), updates, nil)
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if strings.TrimSpace(a[i]) != strings.TrimSpace(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func promoteVerifiedRoles(roles []string) []string {

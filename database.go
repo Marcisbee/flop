@@ -722,7 +722,7 @@ func (d *Database) FileHandler() http.Handler {
 		thumbParam := r.URL.Query().Get("thumb")
 		if thumbParam == "" || len(parts) < 4 {
 			filePath := filepath.Join(d.db.GetDataDir(), "_files", rel)
-			http.ServeFile(w, r, filePath)
+			serveMediaFile(w, r, filePath)
 			return
 		}
 
@@ -745,7 +745,7 @@ func (d *Database) FileHandler() http.Handler {
 
 		thumbPath := images.ThumbPath(d.db.GetDataDir(), tableName, rowID, fieldName, filename, size)
 		if _, err := os.Stat(thumbPath); err == nil {
-			http.ServeFile(w, r, thumbPath)
+			serveMediaFile(w, r, thumbPath)
 			return
 		}
 
@@ -758,8 +758,14 @@ func (d *Database) FileHandler() http.Handler {
 			http.Error(w, "thumbnail generation failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.ServeFile(w, r, thumbPath)
+		serveMediaFile(w, r, thumbPath)
 	})
+}
+
+func serveMediaFile(w http.ResponseWriter, r *http.Request, filePath string) {
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, filePath)
 }
 
 func (d *Database) filePathIsCurrentlyReferenced(rel string) bool {
