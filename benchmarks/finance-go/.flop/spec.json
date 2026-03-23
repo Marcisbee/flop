@@ -1,0 +1,274 @@
+{
+  "config": {},
+  "tables": [
+    {
+      "name": "accounts",
+      "rowType": "Account",
+      "rowTs": "{ balance: number; createdAt?: number; currency: string; id: string; name: string; ownerId: string; type: \"checking\" | \"savings\" | \"credit\" }",
+      "fields": [
+        {
+          "goName": "Balance",
+          "jsonName": "balance",
+          "kind": "number",
+          "tsType": "number",
+          "required": true
+        },
+        {
+          "goName": "CreatedAt",
+          "jsonName": "createdAt",
+          "kind": "timestamp",
+          "tsType": "number",
+          "default": "now"
+        },
+        {
+          "goName": "Currency",
+          "jsonName": "currency",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "maxLen": 8
+        },
+        {
+          "goName": "ID",
+          "jsonName": "id",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "unique": true,
+          "primary": true,
+          "autogen": "[a-z0-9]{15}"
+        },
+        {
+          "goName": "Name",
+          "jsonName": "name",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "maxLen": 120
+        },
+        {
+          "goName": "OwnerID",
+          "jsonName": "ownerId",
+          "kind": "refSingle",
+          "tsType": "string",
+          "required": true,
+          "indexed": true,
+          "refTable": "users",
+          "refField": "id"
+        },
+        {
+          "goName": "Type",
+          "jsonName": "type",
+          "kind": "enum",
+          "tsType": "\"checking\" | \"savings\" | \"credit\"",
+          "required": true,
+          "enumValues": [
+            "checking",
+            "savings",
+            "credit"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ledger",
+      "rowType": "Ledger",
+      "rowTs": "{ accountId: string; amount: number; balanceAfter: number; createdAt?: number; id: string; transactionId: string; type: \"debit\" | \"credit\" }",
+      "fields": [
+        {
+          "goName": "AccountID",
+          "jsonName": "accountId",
+          "kind": "refSingle",
+          "tsType": "string",
+          "required": true,
+          "indexed": true,
+          "refTable": "accounts",
+          "refField": "id"
+        },
+        {
+          "goName": "Amount",
+          "jsonName": "amount",
+          "kind": "number",
+          "tsType": "number",
+          "required": true
+        },
+        {
+          "goName": "BalanceAfter",
+          "jsonName": "balanceAfter",
+          "kind": "number",
+          "tsType": "number",
+          "required": true
+        },
+        {
+          "goName": "CreatedAt",
+          "jsonName": "createdAt",
+          "kind": "timestamp",
+          "tsType": "number",
+          "default": "now"
+        },
+        {
+          "goName": "ID",
+          "jsonName": "id",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "unique": true,
+          "primary": true,
+          "autogen": "[a-z0-9]{15}"
+        },
+        {
+          "goName": "TransactionID",
+          "jsonName": "transactionId",
+          "kind": "refSingle",
+          "tsType": "string",
+          "required": true,
+          "refTable": "transactions",
+          "refField": "id"
+        },
+        {
+          "goName": "Type",
+          "jsonName": "type",
+          "kind": "enum",
+          "tsType": "\"debit\" | \"credit\"",
+          "required": true,
+          "enumValues": [
+            "debit",
+            "credit"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "transactions",
+      "rowType": "Transaction",
+      "rowTs": "{ amount: number; createdAt?: number; currency: string; description?: string; fromAccountId: string; id: string; status: \"pending\" | \"completed\" | \"failed\"; toAccountId: string }",
+      "fields": [
+        {
+          "goName": "Amount",
+          "jsonName": "amount",
+          "kind": "number",
+          "tsType": "number",
+          "required": true
+        },
+        {
+          "goName": "CreatedAt",
+          "jsonName": "createdAt",
+          "kind": "timestamp",
+          "tsType": "number",
+          "default": "now"
+        },
+        {
+          "goName": "Currency",
+          "jsonName": "currency",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "maxLen": 8
+        },
+        {
+          "goName": "Description",
+          "jsonName": "description",
+          "kind": "string",
+          "tsType": "string"
+        },
+        {
+          "goName": "FromAccountID",
+          "jsonName": "fromAccountId",
+          "kind": "refSingle",
+          "tsType": "string",
+          "required": true,
+          "indexed": true,
+          "refTable": "accounts",
+          "refField": "id"
+        },
+        {
+          "goName": "ID",
+          "jsonName": "id",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "unique": true,
+          "primary": true,
+          "autogen": "[a-z0-9]{15}"
+        },
+        {
+          "goName": "Status",
+          "jsonName": "status",
+          "kind": "enum",
+          "tsType": "\"pending\" | \"completed\" | \"failed\"",
+          "required": true,
+          "enumValues": [
+            "pending",
+            "completed",
+            "failed"
+          ]
+        },
+        {
+          "goName": "ToAccountID",
+          "jsonName": "toAccountId",
+          "kind": "refSingle",
+          "tsType": "string",
+          "required": true,
+          "indexed": true,
+          "refTable": "accounts",
+          "refField": "id"
+        }
+      ]
+    },
+    {
+      "name": "users",
+      "rowType": "User",
+      "rowTs": "{ email: string; id: string; name: string; password: string; roles?: (string)[] }",
+      "fields": [
+        {
+          "goName": "Email",
+          "jsonName": "email",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "unique": true,
+          "maxLen": 255,
+          "format": "email"
+        },
+        {
+          "goName": "ID",
+          "jsonName": "id",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "unique": true,
+          "primary": true,
+          "autogen": "[a-z0-9]{15}"
+        },
+        {
+          "goName": "Name",
+          "jsonName": "name",
+          "kind": "string",
+          "tsType": "string",
+          "required": true,
+          "minLen": 2,
+          "maxLen": 120
+        },
+        {
+          "goName": "Password",
+          "jsonName": "password",
+          "kind": "bcrypt",
+          "tsType": "string",
+          "required": true,
+          "bcryptRounds": 10
+        },
+        {
+          "goName": "Roles",
+          "jsonName": "roles",
+          "kind": "roles",
+          "tsType": "(string)[]",
+          "default": []
+        }
+      ]
+    }
+  ],
+  "views": [],
+  "reducers": [],
+  "layouts": [],
+  "pages": []
+}

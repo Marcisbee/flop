@@ -1,7 +1,6 @@
 {
   "entry": [
-    "mod.ts",
-    "client.ts"
+    "go/flop.go"
   ],
   "lsp": {
     "deno": {
@@ -35,14 +34,14 @@
   },
   "setup": {
     "commands": [
-      "deno cache mod.ts client.ts main.ts"
+      "cd go && go test ./..."
     ]
   },
   "dev": {
     "processes": [
       {
         "id": "server",
-        "command": "deno run --watch --allow-read --allow-write --allow-net --allow-env main.ts app.ts",
+        "command": "make -C examples/blog-go-react dev",
         "port": 1985,
         "tunnel": true
       }

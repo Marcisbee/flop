@@ -1,0 +1,15 @@
+.{
+    .name = .reddit_zig_react,
+    .version = "0.0.1",
+    .fingerprint = 0xeb479eca7892a642,
+    .dependencies = .{
+        .flop = .{
+            .path = "../../zig",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

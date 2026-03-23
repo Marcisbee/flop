@@ -1,0 +1,15 @@
+.{
+    .name = .finance_zig,
+    .version = "0.0.1",
+    .fingerprint = 0xdf2e5c282c1482ae,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .dependencies = .{
+        .flop = .{
+            .path = "../../zig",
+        },
+    },
+}
