@@ -52,7 +52,5 @@ examples/movies-go-react/movies-server
 /examples/*/node_modules
 /examples/*/*-server
 /examples/*/web/assets/*.map
-/zig/.zig-cache
-/zig/zig-out
 /.agents
 /test_io
