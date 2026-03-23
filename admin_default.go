@@ -92,6 +92,7 @@ type AdminBackupProvider interface {
 	AdminTestBackupS3(BackupS3Config) error
 	AdminBackups() ([]AdminBackupFile, error)
 	AdminCreateBackup() (string, error)
+	AdminUploadBackup(filename string, file io.Reader) (string, error)
 	AdminDeleteBackup(key string) error
 	AdminRestoreBackup(key string) error
 	AdminBackupStat(key string) (AdminBackupFile, error)
@@ -845,6 +846,34 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
+		}
+
+		if path == "/_/api/backups/upload" {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !backupEnabled {
+				adminJSONError(w, "backups unavailable", http.StatusNotFound)
+				return
+			}
+			if r.Method != http.MethodPost {
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				adminJSONError(w, "backup file is required", http.StatusBadRequest)
+				return
+			}
+			defer file.Close()
+			key, err := backupProvider.AdminUploadBackup(header.Filename, file)
+			if err != nil {
+				adminJSONError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			adminJSONResp(w, http.StatusOK, map[string]any{"ok": true, "key": key})
+			return
 		}
 
 		if strings.HasPrefix(path, "/_/api/backups/") {

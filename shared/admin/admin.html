@@ -2161,6 +2161,7 @@ function BackupsPage() {
   const [downloadBusy, setDownloadBusy] = useState({});
   const [deleteBusy, setDeleteBusy] = useState({});
   const [restoreBusy, setRestoreBusy] = useState({});
+  const [uploading, setUploading] = useState(false);
 
   const clone = useCallback((value) => JSON.parse(JSON.stringify(value)), []);
   const hasChanges = JSON.stringify(settings) !== JSON.stringify(originalSettings);
@@ -2348,6 +2349,22 @@ function BackupsPage() {
     }
   }, [loadPage]);
 
+  const uploadBackup = useCallback(async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      await apiUpload('/backups/upload', file);
+      showToast('Backup uploaded');
+      await loadPage();
+    } catch (err) {
+      showToast(err.message || 'Upload failed', 'error');
+    } finally {
+      event.target.value = '';
+      setUploading(false);
+    }
+  }, [loadPage]);
+
   const selectedPreset = settings.cron === '0 0 * * *' ? 'daily'
     : settings.cron === '0 0 * * 0' ? 'weekly'
     : settings.cron === '0 0 * * 1,3' ? 'monwed'
@@ -2360,6 +2377,10 @@ function BackupsPage() {
         <div class="backups-title">Backup and restore your Flop data</div>
         <div class="backups-actions">
           <button class="btn" onClick=${loadPage} disabled=${loading || creating || saving}>${icons.refresh} Refresh</button>
+          <label class="btn file-upload-btn ${busy || loading || uploading ? 'disabled' : ''}">
+            ${uploading ? 'Uploading…' : html`${icons.upload} Upload backup`}
+            <input type="file" accept=".zip,application/zip" style="display:none" onChange=${uploadBackup} disabled=${busy || loading || uploading} />
+          </label>
         </div>
       </div>
 

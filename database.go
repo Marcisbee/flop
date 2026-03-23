@@ -2941,6 +2941,13 @@ func (p *EngineAdminProvider) AdminCreateBackup() (string, error) {
 	return p.DB.backupManager.CreateManual(context.Background())
 }
 
+func (p *EngineAdminProvider) AdminUploadBackup(filename string, file io.Reader) (string, error) {
+	if p == nil || p.DB == nil || p.DB.backupManager == nil {
+		return "", fmt.Errorf("backup manager unavailable")
+	}
+	return p.DB.backupManager.Upload(context.Background(), filename, file)
+}
+
 func (p *EngineAdminProvider) AdminDeleteBackup(key string) error {
 	if p == nil || p.DB == nil || p.DB.backupManager == nil {
 		return fmt.Errorf("backup manager unavailable")

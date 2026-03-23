@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -217,6 +218,44 @@ func (m *backupManager) CreateManual(ctx context.Context) (string, error) {
 
 func (m *backupManager) CreateAuto(ctx context.Context) (string, error) {
 	return m.create(ctx, true)
+}
+
+func (m *backupManager) Upload(ctx context.Context, filename string, file io.Reader) (string, error) {
+	var created string
+	err := m.withBusy(func() error {
+		storage, err := m.storage()
+		if err != nil {
+			return err
+		}
+
+		tmpFile, err := os.CreateTemp("", "flop-upload-backup-*.zip")
+		if err != nil {
+			return err
+		}
+		tmpPath := tmpFile.Name()
+		defer os.Remove(tmpPath)
+
+		if _, err := io.Copy(tmpFile, file); err != nil {
+			_ = tmpFile.Close()
+			return err
+		}
+		if err := tmpFile.Close(); err != nil {
+			return err
+		}
+		zipReader, err := zip.OpenReader(tmpPath)
+		if err != nil {
+			return fmt.Errorf("uploaded file must be a valid zip backup")
+		}
+		_ = zipReader.Close()
+
+		key := generateUploadedBackupName(filename)
+		if err := storage.Save(ctx, key, tmpPath); err != nil {
+			return err
+		}
+		created = key
+		return nil
+	})
+	return created, err
 }
 
 func (m *backupManager) create(ctx context.Context, auto bool) (string, error) {
@@ -661,6 +700,32 @@ func generateBackupName(auto bool) string {
 		prefix = "@auto"
 	}
 	return fmt.Sprintf("%s_flop_backup_%s.zip", prefix, time.Now().UTC().Format("20060102150405"))
+}
+
+func generateUploadedBackupName(filename string) string {
+	base := strings.TrimSpace(filepath.Base(filename))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "backup.zip"
+	}
+	var builder strings.Builder
+	for _, r := range base {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			builder.WriteRune(r)
+		case r == '.', r == '-', r == '_':
+			builder.WriteRune(r)
+		default:
+			builder.WriteByte('_')
+		}
+	}
+	safe := strings.Trim(builder.String(), "._")
+	if safe == "" {
+		safe = "backup"
+	}
+	if !strings.HasSuffix(strings.ToLower(safe), ".zip") {
+		safe += ".zip"
+	}
+	return fmt.Sprintf("@upload_%s_%s", time.Now().UTC().Format("20060102150405"), safe)
 }
 
 func normalizeBackupSettings(settings BackupSettings) BackupSettings {
