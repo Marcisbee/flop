@@ -1491,6 +1491,7 @@ func (h *APIHandler) authFromRequest(r *http.Request) *AuthContext {
 	if token == "" {
 		return nil
 	}
+	payload := server.VerifyJWT(token, h.db.jwtSecret)
 	if h.db.authService != nil {
 		if auth, err := h.db.authService.ValidateAccessToken(token); err == nil && auth != nil {
 			return &AuthContext{
@@ -1501,6 +1502,9 @@ func (h *APIHandler) authFromRequest(r *http.Request) *AuthContext {
 				SessionID:     auth.SessionID,
 				InstanceID:    auth.InstanceID,
 			}
+		}
+		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
+			return nil
 		}
 	}
 	if h.db.superadminService != nil {
@@ -1514,8 +1518,10 @@ func (h *APIHandler) authFromRequest(r *http.Request) *AuthContext {
 				InstanceID:    auth.InstanceID,
 			}
 		}
+		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
+			return nil
+		}
 	}
-	payload := server.VerifyJWT(token, h.db.jwtSecret)
 	if payload == nil {
 		return nil
 	}
