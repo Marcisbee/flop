@@ -264,9 +264,21 @@ tbody tr.selected{background:var(--bg-active)}
 .toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:999px;background:#fff;transition:left .15s ease}
 .toggle.on .toggle-knob{left:21px}
 .toggle:disabled{opacity:0.5;cursor:default}
+.mail-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:18px}
+.mail-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:18px}
+.mail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.mail-grid.mail-grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.mail-section{display:flex;flex-direction:column;gap:14px}
+.mail-textarea{width:100%;min-height:180px;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:6px;color:var(--text);font-size:13px;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;outline:none;resize:vertical}
+.mail-textarea:focus{border-color:var(--accent)}
+.mail-template-card{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-elevated)}
+.mail-template-title{font-size:14px;font-weight:600;color:var(--text-heading)}
+.mail-inline-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mail-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 
 @media (max-width: 980px) {
   .backup-option-row,.backup-option-row.backup-option-row-3{grid-template-columns:1fr}
+  .mail-grid,.mail-grid.mail-grid-4{grid-template-columns:1fr}
 }
 
 /* File fields */
@@ -315,6 +327,7 @@ import htm from 'https://esm.sh/htm@3.1.1';
 
 const html = htm.bind(h);
 const backupSecretMask = '******';
+const emailPasswordMask = '******';
 
 // ── Auth ──
 let TOKEN = localStorage.getItem('flop_admin_token');
@@ -436,6 +449,7 @@ const icons = {
   pulse: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 8h2.7l1.2-3.1a.5.5 0 01.94.02L7.6 11.2l1.1-2.2a.5.5 0 01.45-.28H15v1H9.46l-1.5 3a.5.5 0 01-.93-.07L5.3 6.74 4.45 8.9A.5.5 0 013.98 9H1V8z"/></svg>`,
   image: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zm1.5-.5a.5.5 0 00-.5.5v6.293l2.146-2.147a.5.5 0 01.708 0L8.5 10.293l1.646-1.647a.5.5 0 01.708 0L13 10.793V3.5a.5.5 0 00-.5-.5h-9zM13 12.5v-.293l-2.5-2.5-1.646 1.647a.5.5 0 01-.708 0L5.5 8.707 3 11.207v1.293a.5.5 0 00.5.5h9a.5.5 0 00.5-.5z"/><path d="M6 6a1.25 1.25 0 100-2.5A1.25 1.25 0 006 6z"/></svg>`,
   clock: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5A6.5 6.5 0 1014.5 8 6.5 6.5 0 008 1.5zm0 12A5.5 5.5 0 118 2.5a5.5 5.5 0 010 11zm.5-8v2.793l1.854 1.853-.708.708L7.5 8.707V5.5h1z"/></svg>`,
+  mail: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 3A1.75 1.75 0 000 4.75v6.5C0 12.216.784 13 1.75 13h12.5A1.75 1.75 0 0016 11.25v-6.5A1.75 1.75 0 0014.25 3H1.75zm0 1h12.5c.207 0 .4.08.544.223L8 8.44 1.206 4.223A.75.75 0 011.75 4zm-.75 1.39l4.94 3.067L1 11.932V5.39zm1.132 6.61l4.64-3.27.832.516a.75.75 0 00.792 0l.832-.516 4.64 3.27H2.132zM15 11.932l-4.94-3.475L15 5.39v6.542z"/></svg>`,
   check: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 010 .708l-7 7a.5.5 0 01-.708 0l-3-3a.5.5 0 11.708-.708L6.5 10.293l6.646-6.647a.5.5 0 01.708 0z"/></svg>`,
   chevDown: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M3.646 5.646a.5.5 0 01.708 0L8 9.293l3.646-3.647a.5.5 0 11.708.708l-4 4a.5.5 0 01-.708 0l-4-4a.5.5 0 010-.708z"/></svg>`,
   chevUp: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8 5.293 4.354 8.94a.5.5 0 11-.708-.708l4-4a.5.5 0 01.708 0l4 4a.5.5 0 11-.708.708L8 5.293z"/></svg>`,
@@ -511,7 +525,7 @@ function Toasts() {
 
 // ── Components ──
 
-function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectBackups, onLogout }) {
+function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectMail, onSelectBackups, onLogout }) {
   const [tableSearch, setTableSearch] = useState('');
   
   const filteredTables = useMemo(() => {
@@ -569,6 +583,13 @@ function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode
           </button>
         `}
         <div class="sidebar-section-label" style="padding:10px 8px 4px">SYSTEM</div>
+        <button
+          class=${"sidebar-item" + (viewMode === 'mail' ? " active" : "")}
+          onClick=${onSelectMail}
+        >
+          <span class="sidebar-item-icon">${icons.mail}</span>
+          <span class="sidebar-item-label">Mail</span>
+        </button>
         <button
           class=${"sidebar-item" + (viewMode === 'backups' ? " active" : "")}
           onClick=${onSelectBackups}
@@ -2463,6 +2484,304 @@ function BackupsPage() {
   `;
 }
 
+function MailSettingsPage() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [testEmail, setTestEmail] = useState('');
+  const [testTemplate, setTestTemplate] = useState('');
+  const [testOk, setTestOk] = useState(false);
+  const [testError, setTestError] = useState('');
+  const [settings, setSettings] = useState({
+    appName: '',
+    appURL: '',
+    senderName: '',
+    senderAddress: '',
+    useSMTP: true,
+    smtp: { host: '', port: 587, username: '', password: '', tls: 'auto', authMethod: 'plain', localName: '' },
+    templates: {
+      verification: { subject: '', body: '' },
+      'email-change': { subject: '', body: '' },
+      'password-reset': { subject: '', body: '' },
+    },
+  });
+  const [originalSettings, setOriginalSettings] = useState({
+    appName: '',
+    appURL: '',
+    senderName: '',
+    senderAddress: '',
+    useSMTP: true,
+    smtp: { host: '', port: 587, username: '', password: '', tls: 'auto', authMethod: 'plain', localName: '' },
+    templates: {
+      verification: { subject: '', body: '' },
+      'email-change': { subject: '', body: '' },
+      'password-reset': { subject: '', body: '' },
+    },
+  });
+
+  const clone = useCallback((value) => JSON.parse(JSON.stringify(value)), []);
+  const hasChanges = JSON.stringify(settings) !== JSON.stringify(originalSettings);
+
+  const normalizeSettings = useCallback((incoming) => {
+    const next = clone(incoming || {});
+    if (!next.smtp) next.smtp = {};
+    if (!next.templates) next.templates = {};
+    return {
+      appName: next.appName || '',
+      appURL: next.appURL || '',
+      senderName: next.senderName || '',
+      senderAddress: next.senderAddress || '',
+      useSMTP: next.useSMTP !== false,
+      smtp: {
+        host: next.smtp.host || '',
+        port: Number(next.smtp.port || 587),
+        username: next.smtp.username || '',
+        password: next.smtp.password || '',
+        tls: next.smtp.tls || 'auto',
+        authMethod: next.smtp.authMethod || 'plain',
+        localName: next.smtp.localName || '',
+      },
+      templates: {
+        verification: {
+          subject: next.templates.verification?.subject || '',
+          body: next.templates.verification?.body || '',
+        },
+        'email-change': {
+          subject: next.templates['email-change']?.subject || '',
+          body: next.templates['email-change']?.body || '',
+        },
+        'password-reset': {
+          subject: next.templates['password-reset']?.subject || '',
+          body: next.templates['password-reset']?.body || '',
+        },
+      },
+    };
+  }, [clone]);
+
+  const loadPage = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api('/mail/settings');
+      const normalized = normalizeSettings(res?.settings || {});
+      setSettings(normalized);
+      setOriginalSettings(clone(normalized));
+      if (!testEmail && normalized.senderAddress) setTestEmail(normalized.senderAddress);
+    } catch (err) {
+      showToast(err.message || 'Failed to load mail settings', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [clone, normalizeSettings, testEmail]);
+
+  useEffect(() => { loadPage(); }, []);
+
+  const saveSettings = useCallback(async () => {
+    setSaving(true);
+    setTestOk(false);
+    setTestError('');
+    try {
+      const payload = clone(settings);
+      if (payload.smtp?.password === emailPasswordMask && originalSettings.smtp?.password === emailPasswordMask) {
+        delete payload.smtp.password;
+      }
+      const res = await api('/mail/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ settings: payload }),
+      });
+      const normalized = normalizeSettings(res?.settings || payload);
+      setSettings(normalized);
+      setOriginalSettings(clone(normalized));
+      showToast('Mail settings saved');
+    } catch (err) {
+      showToast(err.message || 'Failed to save mail settings', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }, [settings, originalSettings, clone, normalizeSettings]);
+
+  const sendTestEmail = useCallback(async () => {
+    setTesting(true);
+    setTestOk(false);
+    setTestError('');
+    try {
+      const payload = clone(settings);
+      if (payload.smtp?.password === emailPasswordMask && originalSettings.smtp?.password === emailPasswordMask) {
+        delete payload.smtp.password;
+      }
+      await api('/mail/settings/test', {
+        method: 'POST',
+        body: JSON.stringify({ settings: payload, email: testEmail, template: testTemplate }),
+      });
+      setTestOk(true);
+      showToast(testTemplate ? 'Template test email sent' : 'Test email sent');
+    } catch (err) {
+      setTestError(err.message || 'Failed to send test email');
+      showToast(err.message || 'Failed to send test email', 'error');
+    } finally {
+      setTesting(false);
+    }
+  }, [settings, originalSettings, clone, testEmail, testTemplate]);
+
+  const updateTemplate = useCallback((name, field, value) => {
+    setSettings(prev => ({
+      ...prev,
+      templates: {
+        ...prev.templates,
+        [name]: {
+          ...prev.templates[name],
+          [field]: value,
+        },
+      },
+    }));
+  }, []);
+
+  return html`
+    <div class="mail-page">
+      <div class="backups-hero">
+        <div class="backups-title">Configure common settings for sending emails.</div>
+        <div class="backups-actions">
+          <button class="btn" onClick=${loadPage} disabled=${loading || saving || testing}>${icons.refresh} Refresh</button>
+        </div>
+      </div>
+
+      <div class="mail-card">
+        <div class="mail-section">
+          <div class="mail-grid">
+            <div>
+              <label class="backup-label">App name</label>
+              <input class="backup-input" type="text" value=${settings.appName} onInput=${e => setSettings(prev => ({ ...prev, appName: e.target.value }))} />
+            </div>
+            <div>
+              <label class="backup-label">App URL</label>
+              <input class="backup-input" type="url" placeholder="https://example.com" value=${settings.appURL} onInput=${e => setSettings(prev => ({ ...prev, appURL: e.target.value }))} />
+            </div>
+          </div>
+
+          <div class="mail-grid">
+            <div>
+              <label class="backup-label">Sender name</label>
+              <input class="backup-input" type="text" value=${settings.senderName} onInput=${e => setSettings(prev => ({ ...prev, senderName: e.target.value }))} />
+            </div>
+            <div>
+              <label class="backup-label">Sender address</label>
+              <input class="backup-input" type="email" value=${settings.senderAddress} onInput=${e => setSettings(prev => ({ ...prev, senderAddress: e.target.value }))} />
+            </div>
+          </div>
+
+          <div class="backup-checkbox">
+            <${Toggle} checked=${!!settings.useSMTP} onChange=${value => setSettings(prev => ({ ...prev, useSMTP: value }))} disabled=${loading || saving || testing} />
+            <span>Use SMTP mail server (recommended)</span>
+          </div>
+
+          ${settings.useSMTP ? html`
+            <div class="mail-grid mail-grid-4">
+              <div>
+                <label class="backup-label">SMTP server host</label>
+                <input class="backup-input" type="text" value=${settings.smtp.host} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, host: e.target.value } }))} />
+              </div>
+              <div>
+                <label class="backup-label">Port</label>
+                <input class="backup-input" type="number" min="1" value=${settings.smtp.port} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, port: Number(e.target.value || 0) } }))} />
+              </div>
+              <div>
+                <label class="backup-label">Username</label>
+                <input class="backup-input" type="text" value=${settings.smtp.username} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, username: e.target.value } }))} />
+              </div>
+              <div>
+                <label class="backup-label">Password</label>
+                <input class="backup-input" type="password" value=${settings.smtp.password} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, password: e.target.value } }))} />
+              </div>
+            </div>
+
+            <div>
+              <button class="btn backup-settings-toggle" onClick=${() => setShowAdvanced(v => !v)}>
+                <span>${showAdvanced ? 'Hide more options' : 'Show more options'}</span>
+                <span>${showAdvanced ? icons.chevUp : icons.chevDown}</span>
+              </button>
+            </div>
+
+            ${showAdvanced ? html`
+              <div class="mail-grid">
+                <div>
+                  <label class="backup-label">TLS encryption</label>
+                  <select class="backup-select" value=${settings.smtp.tls} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, tls: e.target.value } }))}>
+                    <option value="auto">Auto (StartTLS)</option>
+                    <option value="starttls">StartTLS required</option>
+                    <option value="ssl">SSL / TLS</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="backup-label">AUTH method</label>
+                  <select class="backup-select" value=${settings.smtp.authMethod} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, authMethod: e.target.value } }))}>
+                    <option value="plain">PLAIN (default)</option>
+                    <option value="login">LOGIN</option>
+                    <option value="cram-md5">CRAM-MD5</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="backup-label">EHLO/HELO domain</label>
+                  <input class="backup-input" type="text" placeholder="Default to localhost" value=${settings.smtp.localName} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, localName: e.target.value } }))} />
+                </div>
+              </div>
+            ` : null}
+          ` : null}
+
+          <div class="mail-footer">
+            <div class="mail-inline-actions">
+              <input class="backup-input" style="min-width:280px" type="email" placeholder="Test email recipient" value=${testEmail} onInput=${e => setTestEmail(e.target.value)} />
+              <select class="backup-select" style="min-width:220px" value=${testTemplate} onChange=${e => setTestTemplate(e.target.value)}>
+                <option value="">Generic test email</option>
+                <option value="verification">Verification template</option>
+                <option value="email-change">Email change template</option>
+                <option value="password-reset">Password reset template</option>
+              </select>
+              <button class="btn" onClick=${sendTestEmail} disabled=${testing || loading || saving}>${icons.mail} Send test email</button>
+            </div>
+            <div class="mail-inline-actions">
+              ${testing ? html`<span class="backup-status-ok">Sending test email…</span>` : null}
+              ${testOk ? html`<span class="backup-status-ok">${icons.check} Test email sent successfully</span>` : null}
+              ${testError ? html`<span class="backup-status-error">${testError}</span>` : null}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="mail-card">
+        <div class="mail-section">
+          <div class="backups-title" style="font-size:20px">Email templates</div>
+          <div class="backup-help">Available template variables: {{.Email}}, {{.Token}}, {{.URL}}, {{.AppName}}</div>
+
+          ${[
+            ['verification', 'Verification email'],
+            ['email-change', 'Email change confirmation'],
+            ['password-reset', 'Password reset'],
+          ].map(([name, label]) => html`
+            <div class="mail-template-card" key=${name}>
+              <div class="mail-template-title">${label}</div>
+              <div>
+                <label class="backup-label">Subject</label>
+                <input class="backup-input" type="text" value=${settings.templates[name].subject} onInput=${e => updateTemplate(name, 'subject', e.target.value)} />
+              </div>
+              <div>
+                <label class="backup-label">HTML body</label>
+                <textarea class="mail-textarea" value=${settings.templates[name].body} onInput=${e => updateTemplate(name, 'body', e.target.value)}></textarea>
+              </div>
+            </div>
+          `)}
+        </div>
+      </div>
+
+      <div class="backup-footer">
+        ${hasChanges ? html`<button class="btn" onClick=${() => { setSettings(clone(originalSettings)); setTestOk(false); setTestError(''); }}>Reset</button>` : null}
+        <button class="btn btn-primary" disabled=${saving || loading || !hasChanges} onClick=${saveSettings}>Save changes</button>
+      </div>
+    </div>
+  `;
+}
+
 // ── Main App ──
 function App() {
   const [tables, setTables] = useState([]);
@@ -2588,6 +2907,10 @@ function App() {
         setViewMode('backups');
         return;
       }
+      if (decoded === '_mail') {
+        setViewMode('mail');
+        return;
+      }
       if (decoded === '_media') {
         setViewMode('media');
         return;
@@ -2646,6 +2969,11 @@ function App() {
     window.location.hash = '_backups';
   }, []);
 
+  const selectMail = useCallback(() => {
+    setViewMode('mail');
+    window.location.hash = '_mail';
+  }, []);
+
   const currentSchema = useMemo(() => {
     if (!currentTable) return null;
     const source = currentArchive ? archiveTables : tables;
@@ -2669,6 +2997,7 @@ function App() {
       onSelectAnalyticsVolume=${selectAnalyticsVolume}
       onSelectAnalyticsPerformance=${selectAnalyticsPerformance}
       onSelectObserve=${selectObserve}
+      onSelectMail=${selectMail}
       onSelectBackups=${selectBackups}
       onLogout=${logout}
     />
@@ -2679,6 +3008,8 @@ function App() {
         ? html`<${MediaPanel} />`
         : viewMode === 'observe' && observeEnabled
         ? html`<${ObservePanel} />`
+        : viewMode === 'mail'
+        ? html`<${MailSettingsPage} />`
         : viewMode === 'backups'
         ? html`<${BackupsPage} />`
         : currentTable

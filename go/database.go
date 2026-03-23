@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/reqtrace"
-	"html/template"
 	"io"
 	"net"
 	"net/http"
@@ -38,6 +37,8 @@ type Database struct {
 	db                   *engine.Database
 	authService          *server.AuthService
 	superadminService    *server.SuperadminService
+	emailMu              sync.RWMutex
+	emailSettings        EmailSettings
 	mailer               *server.Mailer
 	jwtSecret            string
 	authInstanceID       string
@@ -239,15 +240,8 @@ func (a *App) Open() (*Database, error) {
 		d.superadminService = server.NewSuperadminService(superadminTable, sessionTable, secret, d.authInstanceID)
 	}
 
-	// Set up mailer if SMTP configured
-	if a.config.SMTP != nil {
-		d.mailer = server.NewMailer(server.SMTPConfig{
-			Host:     a.config.SMTP.Host,
-			Port:     a.config.SMTP.Port,
-			Username: a.config.SMTP.Username,
-			Password: a.config.SMTP.Password,
-			From:     a.config.SMTP.From,
-		})
+	if err := d.initEmailSettings(); err != nil {
+		return nil, err
 	}
 
 	// Wire up cached field triggers
@@ -302,14 +296,6 @@ func (a *App) Open() (*Database, error) {
 	d.startBackgroundWorkers()
 
 	return d, nil
-}
-
-// SetEmailTemplate overrides a named email template used by auth flows.
-// Supported names: "verification", "email-change", "password-reset".
-func (d *Database) SetEmailTemplate(name string, tmpl *template.Template) {
-	if d.mailer != nil {
-		d.mailer.SetTemplate(name, tmpl)
-	}
 }
 
 // wireCachedFields registers PubSub subscribers for cached field triggers
@@ -566,6 +552,7 @@ func (d *Database) reopen() (*Database, error) {
 	d.db = reopened.db
 	d.authService = reopened.authService
 	d.superadminService = reopened.superadminService
+	d.emailSettings = reopened.emailSettings
 	d.mailer = reopened.mailer
 	d.jwtSecret = reopened.jwtSecret
 	d.authInstanceID = reopened.authInstanceID
@@ -2830,6 +2817,77 @@ func (p *EngineAdminProvider) AdminMediaRows(limit, offset int, search string, o
 
 func (p *EngineAdminProvider) AdminBackupBusy() bool {
 	return p != nil && p.DB != nil && p.DB.backupManager != nil && p.DB.backupManager.Busy()
+}
+
+func (p *EngineAdminProvider) AdminEmailSettings() (EmailSettings, error) {
+	if p == nil || p.DB == nil {
+		return EmailSettings{}, fmt.Errorf("database not available")
+	}
+	return p.DB.getEmailSettings(), nil
+}
+
+func (p *EngineAdminProvider) AdminUpdateEmailSettings(settings EmailSettings) (EmailSettings, error) {
+	if p == nil || p.DB == nil {
+		return EmailSettings{}, fmt.Errorf("database not available")
+	}
+	current := p.DB.rawEmailSettings()
+	if settings.SMTP.Password == emailPasswordMask {
+		settings.SMTP.Password = current.SMTP.Password
+	}
+	if settings.UseSMTP && settings.SMTP.Password == "" && current.SMTP.Password != "" &&
+		settings.SMTP.Host == current.SMTP.Host &&
+		settings.SMTP.Port == current.SMTP.Port &&
+		settings.SMTP.Username == current.SMTP.Username &&
+		settings.SMTP.TLS == current.SMTP.TLS &&
+		settings.SMTP.AuthMethod == current.SMTP.AuthMethod &&
+		settings.SMTP.LocalName == current.SMTP.LocalName {
+		settings.SMTP.Password = current.SMTP.Password
+	}
+	return p.DB.updateEmailSettings(settings)
+}
+
+func (p *EngineAdminProvider) AdminTestEmail(settings EmailSettings, to string) error {
+	if p == nil || p.DB == nil {
+		return fmt.Errorf("database not available")
+	}
+	current := p.DB.rawEmailSettings()
+	if settings.SMTP.Password == emailPasswordMask {
+		settings.SMTP.Password = current.SMTP.Password
+	}
+	if settings.UseSMTP && settings.SMTP.Password == "" && current.SMTP.Password != "" &&
+		settings.SMTP.Host == current.SMTP.Host &&
+		settings.SMTP.Port == current.SMTP.Port &&
+		settings.SMTP.Username == current.SMTP.Username &&
+		settings.SMTP.TLS == current.SMTP.TLS &&
+		settings.SMTP.AuthMethod == current.SMTP.AuthMethod &&
+		settings.SMTP.LocalName == current.SMTP.LocalName &&
+		settings.SenderName == current.SenderName &&
+		settings.SenderAddress == current.SenderAddress {
+		settings.SMTP.Password = current.SMTP.Password
+	}
+	return p.DB.testEmailSettings(settings, to)
+}
+
+func (p *EngineAdminProvider) AdminTestEmailTemplate(settings EmailSettings, to, templateName string) error {
+	if p == nil || p.DB == nil {
+		return fmt.Errorf("database not available")
+	}
+	current := p.DB.rawEmailSettings()
+	if settings.SMTP.Password == emailPasswordMask {
+		settings.SMTP.Password = current.SMTP.Password
+	}
+	if settings.UseSMTP && settings.SMTP.Password == "" && current.SMTP.Password != "" &&
+		settings.SMTP.Host == current.SMTP.Host &&
+		settings.SMTP.Port == current.SMTP.Port &&
+		settings.SMTP.Username == current.SMTP.Username &&
+		settings.SMTP.TLS == current.SMTP.TLS &&
+		settings.SMTP.AuthMethod == current.SMTP.AuthMethod &&
+		settings.SMTP.LocalName == current.SMTP.LocalName &&
+		settings.SenderName == current.SenderName &&
+		settings.SenderAddress == current.SenderAddress {
+		settings.SMTP.Password = current.SMTP.Password
+	}
+	return p.DB.testEmailTemplate(settings, to, templateName)
 }
 
 func (p *EngineAdminProvider) AdminBackupSettings() (BackupSettings, error) {

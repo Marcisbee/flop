@@ -83,6 +83,10 @@ type AdminMediaProvider interface {
 
 type AdminBackupProvider interface {
 	AdminBackupBusy() bool
+	AdminEmailSettings() (EmailSettings, error)
+	AdminUpdateEmailSettings(EmailSettings) (EmailSettings, error)
+	AdminTestEmail(EmailSettings, string) error
+	AdminTestEmailTemplate(EmailSettings, string, string) error
 	AdminBackupSettings() (BackupSettings, error)
 	AdminUpdateBackupSettings(BackupSettings) (BackupSettings, error)
 	AdminTestBackupS3(BackupS3Config) error
@@ -698,6 +702,86 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
+		}
+
+		if path == "/_/api/mail/settings" {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !backupEnabled {
+				adminJSONError(w, "mail settings unavailable", http.StatusNotFound)
+				return
+			}
+			switch r.Method {
+			case http.MethodGet:
+				settings, err := backupProvider.AdminEmailSettings()
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"settings": settings,
+				})
+				return
+			case http.MethodPut:
+				var body struct {
+					Settings EmailSettings `json:"settings"`
+				}
+				if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
+					adminJSONError(w, "invalid json", http.StatusBadRequest)
+					return
+				}
+				settings, err := backupProvider.AdminUpdateEmailSettings(body.Settings)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"ok":       true,
+					"settings": settings,
+				})
+				return
+			default:
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+		}
+
+		if path == "/_/api/mail/settings/test" {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !backupEnabled {
+				adminJSONError(w, "mail settings unavailable", http.StatusNotFound)
+				return
+			}
+			if r.Method != http.MethodPost {
+				adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			var body struct {
+				Settings EmailSettings `json:"settings"`
+				Email    string        `json:"email"`
+				Template string        `json:"template"`
+			}
+			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
+				adminJSONError(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			var err error
+			if strings.TrimSpace(body.Template) != "" {
+				err = backupProvider.AdminTestEmailTemplate(body.Settings, body.Email, body.Template)
+			} else {
+				err = backupProvider.AdminTestEmail(body.Settings, body.Email)
+			}
+			if err != nil {
+				adminJSONError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
+			return
 		}
 
 		if path == "/_/api/backups/settings/test-s3" {
