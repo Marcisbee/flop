@@ -4,73 +4,23 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin - Setup</title>
 <style>
-:root {
-  --accent: #0078d4;
-  --accent-hover: #106ebe;
-  --error: #d32f2f;
-
-  --bg: #f3f3f3;
-  --bg-surface: #ffffff;
-  --bg-hover: #e8e8e8;
-  --bg-active: #d6ebff;
-  --bg-input: #ffffff;
-  --border: #e0e0e0;
-  --border-input: #cecece;
-  --text: #333333;
-  --text-heading: #1e1e1e;
-  --text-muted: #666666;
-  --text-faint: #888888;
-  --text-dimmed: #999999;
-  --text-ghost: #aaaaaa;
-  --row-border: #f0f0f0;
-  --danger: #d32f2f;
-  --danger-hover-bg: #fdecea;
-  --danger-hover-text: #c62828;
-  --scrollbar-thumb: #c1c1c1;
-  --scrollbar-thumb-hover: #a8a8a8;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --accent: #0078d4;
-    --accent-hover: #006cbd;
-    --error: #f48771;
-
-    --bg: #1e1e1e;
-    --bg-surface: #252526;
-    --bg-hover: #2a2d2e;
-    --bg-active: #37373d;
-    --bg-input: #3c3c3c;
-    --border: #3c3c3c;
-    --border-input: #4a4a4a;
-    --text: #cccccc;
-    --text-heading: #ffffff;
-    --text-muted: #999999;
-    --text-faint: #888888;
-    --text-dimmed: #666666;
-    --text-ghost: #555555;
-    --row-border: #2a2a2a;
-    --danger: #cc6666;
-    --danger-hover-bg: #2d1f1f;
-    --danger-hover-text: #f48771;
-    --scrollbar-thumb: #424242;
-    --scrollbar-thumb-hover: #4a4a4a;
-  }
-}
-
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.login-container{width:100%;max-width:320px;padding:32px}
-.logo{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:32px}
-.logo-text{font-size:24px;font-weight:700;color:var(--text-heading);letter-spacing:-0.5px}
-.subtitle{text-align:center;color:var(--text-faint);font-size:13px;margin-bottom:20px}
-.field{margin-bottom:16px}
-.field label{display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
-.field input{width:100%;padding:8px 10px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:14px;outline:none}
-.field input:focus{border-color:var(--accent)}
-button[type="submit"]{width:100%;padding:10px;background:var(--accent);border:none;border-radius:4px;color:#ffffff;font-size:14px;font-weight:500;cursor:pointer;margin-top:4px}
-button[type="submit"]:hover{background:var(--accent-hover)}
-.error{color:var(--error);font-size:13px;margin-top:12px;text-align:center}
+:root{color-scheme:dark;--accent:#4c8dff;--accent-hover:#6ba1ff;--accent-soft:rgba(76,141,255,.14);--error:#ff7d86;--bg:#101218;--bg-surface:#161920;--bg-input:#11141a;--border:#292e39;--border-input:#363d4a;--text:#d8dce5;--text-heading:#f7f8fb;--text-muted:#9ba3b1;--text-faint:#737c8c;--shadow:0 18px 55px rgba(0,0,0,.32);--sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+@media (prefers-color-scheme:light){:root{color-scheme:light;--accent:#356fd1;--accent-hover:#245fbe;--accent-soft:rgba(53,111,209,.11);--error:#c83f4b;--bg:#f4f5f7;--bg-surface:#fff;--bg-input:#fff;--border:#dfe3e8;--border-input:#cfd5dd;--text:#343b46;--text-heading:#171b22;--text-muted:#66707f;--text-faint:#7d8795;--shadow:0 18px 50px rgba(31,43,62,.14)}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(circle at 50% -10%,var(--accent-soft),transparent 42%),var(--bg);color:var(--text);font:12.5px/1.4 var(--sans)}
+.login-container{width:100%;max-width:344px;padding:24px;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow)}
+.logo{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:16px}
+.logo svg{width:28px;height:28px}
+.logo-text{color:var(--text-heading);font-size:21px;font-weight:700;letter-spacing:-.04em}
+.subtitle{margin-bottom:20px;color:var(--text-faint);font-size:11.5px;text-align:center}
+.field{margin-bottom:12px}
+.field label{display:block;margin-bottom:4px;color:var(--text-muted);font-size:10.5px;font-weight:570}
+.field input,.field select{width:100%;height:32px;padding:5px 8px;outline:0;background:var(--bg-input);border:1px solid var(--border-input);border-radius:5px;color:var(--text);font:inherit}
+.field input:focus,.field select:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+button[type=submit]{width:100%;height:32px;margin-top:4px;background:var(--accent);border:1px solid var(--accent);border-radius:5px;color:#fff;font:600 11.5px var(--sans);cursor:pointer}
+button[type=submit]:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.error{margin-top:10px;padding:6px 8px;background:rgba(255,125,134,.1);border-radius:4px;color:var(--error);font-size:10.5px;text-align:center}
 .hidden{display:none}
 </style>
 </head>
@@ -123,7 +73,6 @@ async function loadExtraFields() {
       if (f.type === 'enum' && f.enumValues && f.enumValues.length) {
         const select = document.createElement('select');
         select.id = 'extra-' + f.name;
-        select.style.cssText = 'width:100%;padding:8px 10px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:14px;outline:none';
         if (f.required) select.required = true;
         const empty = document.createElement('option');
         empty.value = '';
