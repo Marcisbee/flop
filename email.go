@@ -2,11 +2,14 @@ package flop
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/marcisbee/flop/internal/server"
 )
@@ -17,6 +20,9 @@ const (
 )
 
 var emailTemplateNames = []string{"verification", "email-change", "password-reset"}
+
+// ErrAuthEmailUnavailable indicates that an authentication action email could not be delivered.
+var ErrAuthEmailUnavailable = errors.New("flop: auth email delivery unavailable")
 
 type EmailSMTPSettings struct {
 	Host       string `json:"host"`
@@ -58,6 +64,8 @@ func defaultEmailSettings(cfg *SMTPConfig) EmailSettings {
 		return settings
 	}
 	normalized := serverConfigFromSMTP(cfg)
+	settings.AppName = strings.TrimSpace(cfg.AppName)
+	settings.AppURL = strings.TrimSpace(cfg.AppURL)
 	settings.SenderName = normalized.SenderName
 	settings.SenderAddress = normalized.SenderAddress
 	settings.UseSMTP = normalized.Host != ""
@@ -217,6 +225,8 @@ func serverConfigFromSMTP(cfg *SMTPConfig) server.SMTPConfig {
 		return server.SMTPConfig{}
 	}
 	return server.SMTPConfig{
+		AppName:       cfg.AppName,
+		AppURL:        cfg.AppURL,
 		Host:          cfg.Host,
 		Port:          cfg.Port,
 		Username:      cfg.Username,
@@ -273,10 +283,36 @@ func (d *Database) initEmailSettings() error {
 	if err != nil {
 		return err
 	}
+	if d.app.config.RequireAuthEmail {
+		if mailer == nil {
+			return fmt.Errorf("%w: smtp is disabled", ErrAuthEmailUnavailable)
+		}
+		if err := validateAuthEmailAppURL(settings.AppURL); err != nil {
+			return fmt.Errorf("%w: %v", ErrAuthEmailUnavailable, err)
+		}
+	}
 	d.emailMu.Lock()
 	d.emailSettings = settings
 	d.mailer = mailer
 	d.emailMu.Unlock()
+	return nil
+}
+
+func validateAuthEmailAppURL(raw string) error {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return fmt.Errorf("canonical app URL is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("canonical app URL is invalid: %w", err)
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("canonical app URL must be an absolute http(s) URL")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("canonical app URL must not include a query or fragment")
+	}
 	return nil
 }
 
@@ -410,7 +446,31 @@ func (d *Database) sendAuthTemplateEmail(templateName, to, email, token string) 
 	settings := cloneEmailSettings(d.emailSettings, false)
 	d.emailMu.RUnlock()
 	if mailer == nil {
-		return nil
+		err := ErrAuthEmailUnavailable
+		d.recordAuthEmailDelivery(templateName, err)
+		return err
 	}
-	return mailer.SendTemplate(strings.TrimSpace(to), "", templateName, buildEmailTemplateData(settings, templateName, email, token))
+	err := mailer.SendTemplate(strings.TrimSpace(to), "", templateName, buildEmailTemplateData(settings, templateName, email, token))
+	d.recordAuthEmailDelivery(templateName, err)
+	return err
+}
+
+func (d *Database) recordAuthEmailDelivery(templateName string, err error) {
+	status := 202
+	errMessage := ""
+	if err != nil {
+		status = 502
+		errMessage = err.Error()
+	}
+	d.RecordAnalyticsEvent(AnalyticsEvent{
+		Timestamp:    time.Now(),
+		RouteType:    "auth_email",
+		RouteName:    strings.TrimSpace(templateName),
+		Method:       "delivery",
+		Path:         "/internal/auth-email/" + strings.TrimSpace(templateName),
+		Transport:    "smtp",
+		OK:           err == nil,
+		StatusCode:   status,
+		ErrorMessage: errMessage,
+	})
 }
