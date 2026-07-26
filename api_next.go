@@ -777,10 +777,10 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.db.sendAuthTemplateEmail("email-change", in.NewEmail, in.NewEmail, changeToken); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+			jsonError(w, "email delivery unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "token": changeToken})
+		jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true})
 	case "/api/auth/confirm-email-change":
 		var token string
 		switch r.Method {
@@ -842,10 +842,10 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.db.sendAuthTemplateEmail("verification", auth.Email, auth.Email, verifyToken); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+			jsonError(w, "email delivery unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "token": verifyToken})
+		jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true})
 	case "/api/auth/confirm-verification":
 		var token string
 		switch r.Method {
@@ -909,16 +909,9 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		}
 		resetToken, _ := h.db.authService.RequestPasswordReset(in.Email)
 		if resetToken != "" {
-			if err := h.db.sendAuthTemplateEmail("password-reset", in.Email, in.Email, resetToken); err != nil {
-				jsonError(w, err.Error(), http.StatusBadRequest)
-				return
-			}
+			_ = h.db.sendAuthTemplateEmail("password-reset", in.Email, in.Email, resetToken)
 		}
-		resp := map[string]any{"ok": true}
-		if resetToken != "" {
-			resp["token"] = resetToken
-		}
-		jsonResponse(w, http.StatusOK, resp)
+		jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true})
 	case "/api/auth/confirm-password-reset":
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)

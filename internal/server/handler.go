@@ -496,10 +496,16 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 			return
 		}
 		if h.mailer != nil {
-			htmlBody, _ := h.mailer.RenderTemplate("email-change", EmailTemplateData{Email: newEmail, Token: changeToken})
-			go h.mailer.Send(newEmail, "Confirm email change", htmlBody)
+			htmlBody, renderErr := h.mailer.RenderTemplate("email-change", EmailTemplateData{Email: newEmail, Token: changeToken})
+			if renderErr != nil || h.mailer.Send(newEmail, "Confirm email change", htmlBody) != nil {
+				jsonError(w, "Email delivery unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		} else {
+			jsonError(w, "Email delivery unavailable", http.StatusServiceUnavailable)
+			return
 		}
-		jsonResponse(w, map[string]interface{}{"ok": true, "token": changeToken})
+		jsonResponse(w, map[string]interface{}{"ok": true})
 
 	case "/api/auth/confirm-email-change":
 		changeToken, _ := body["token"].(string)
@@ -528,10 +534,16 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 			return
 		}
 		if h.mailer != nil {
-			htmlBody, _ := h.mailer.RenderTemplate("verification", EmailTemplateData{Email: payload.Email, Token: verifyToken})
-			go h.mailer.Send(payload.Email, "Verify your email", htmlBody)
+			htmlBody, renderErr := h.mailer.RenderTemplate("verification", EmailTemplateData{Email: payload.Email, Token: verifyToken})
+			if renderErr != nil || h.mailer.Send(payload.Email, "Verify your email", htmlBody) != nil {
+				jsonError(w, "Email delivery unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		} else {
+			jsonError(w, "Email delivery unavailable", http.StatusServiceUnavailable)
+			return
 		}
-		jsonResponse(w, map[string]interface{}{"ok": true, "token": verifyToken})
+		jsonResponse(w, map[string]interface{}{"ok": true})
 
 	case "/api/auth/confirm-verification":
 		verifyToken, _ := body["token"].(string)
@@ -555,15 +567,13 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 		}
 		resetToken, _ := h.authService.RequestPasswordReset(email)
 		if resetToken != "" && h.mailer != nil {
-			htmlBody, _ := h.mailer.RenderTemplate("password-reset", EmailTemplateData{Email: email, Token: resetToken})
-			go h.mailer.Send(email, "Reset your password", htmlBody)
+			htmlBody, renderErr := h.mailer.RenderTemplate("password-reset", EmailTemplateData{Email: email, Token: resetToken})
+			if renderErr == nil {
+				_ = h.mailer.Send(email, "Reset your password", htmlBody)
+			}
 		}
 		// Always return ok to prevent user enumeration
-		resp := map[string]interface{}{"ok": true}
-		if resetToken != "" {
-			resp["token"] = resetToken
-		}
-		jsonResponse(w, resp)
+		jsonResponse(w, map[string]interface{}{"ok": true})
 
 	case "/api/auth/confirm-password-reset":
 		resetToken, _ := body["token"].(string)

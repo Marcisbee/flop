@@ -17,6 +17,8 @@ import (
 
 // SMTPConfig holds SMTP server settings for sending emails.
 type SMTPConfig struct {
+	AppName       string
+	AppURL        string
 	Host          string
 	Port          int
 	Username      string

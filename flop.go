@@ -32,6 +32,7 @@ type Config struct {
 	AuthSessionCleanup    time.Duration      `json:"-"`
 	EnablePprof           bool               `json:"-"`
 	SMTP                  *SMTPConfig        `json:"-"`
+	RequireAuthEmail      bool               `json:"-"`
 	AuthPayloads          *AuthPayloadConfig `json:"-"`
 }
 
