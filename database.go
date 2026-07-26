@@ -585,16 +585,20 @@ func (d *Database) startBackgroundWorkers() {
 	if d == nil || d.db == nil {
 		return
 	}
+	stop := d.backgroundStop
+	if stop == nil {
+		return
+	}
 	if d.db.GetTable(systemAuthSessionTableName) != nil {
 		d.backgroundWG.Add(1)
-		go func() {
+		go func(stop <-chan struct{}) {
 			defer d.backgroundWG.Done()
-			d.runAuthSessionCleanupLoop()
-		}()
+			d.runAuthSessionCleanupLoop(stop)
+		}(stop)
 	}
 }
 
-func (d *Database) runAuthSessionCleanupLoop() {
+func (d *Database) runAuthSessionCleanupLoop(stop <-chan struct{}) {
 	if d == nil || d.authSessionCleanup <= 0 || d.authSessionRetention <= 0 {
 		return
 	}
@@ -605,7 +609,7 @@ func (d *Database) runAuthSessionCleanupLoop() {
 		select {
 		case <-ticker.C:
 			d.cleanupExpiredAuthSessions(time.Now())
-		case <-d.backgroundStop:
+		case <-stop:
 			return
 		}
 	}

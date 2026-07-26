@@ -5,6 +5,68 @@ import (
 	"time"
 )
 
+func TestAuthSessionCleanupLoopUsesStableStopChannel(t *testing.T) {
+	app := New(Config{
+		DataDir:            t.TempDir(),
+		SyncMode:           "normal",
+		AuthSessionCleanup: time.Hour,
+	})
+	db, err := app.Open()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	close(db.backgroundStop)
+	db.backgroundWG.Wait()
+	db.backgroundStop = nil
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		db.runAuthSessionCleanupLoop(stop)
+		close(done)
+	}()
+	close(stop)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("auth session cleanup did not stop through its stable channel")
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+func TestDatabaseCloseRepeatedlyStopsBackgroundWorkers(t *testing.T) {
+	const cycles = 25
+	for cycle := 0; cycle < cycles; cycle++ {
+		app := New(Config{
+			DataDir:            t.TempDir(),
+			SyncMode:           "normal",
+			AuthSessionCleanup: time.Hour,
+		})
+		db, err := app.Open()
+		if err != nil {
+			t.Fatalf("cycle %d open: %v", cycle, err)
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			done <- db.Close()
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("cycle %d close: %v", cycle, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("cycle %d close timed out", cycle)
+		}
+	}
+}
+
 func TestCleanupExpiredAuthSessionsDeletesOnlyOldDeadRows(t *testing.T) {
 	app := New(Config{
 		DataDir:              t.TempDir(),
