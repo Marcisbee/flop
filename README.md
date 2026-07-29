@@ -21,10 +21,10 @@ reflects the code we still support in production.
 - Lazy loading with in-memory indexes
 - Schema migration support
 - Auth, admin UI, file uploads, and realtime handlers
-- Configurable OpenRouter AI moderators with durable review and action history
+- Configurable OpenRouter AI workflows with durable review and action history
 - Go code generation for app schemas and frontend artifacts
 
-## AI moderation
+## AI workflows
 
 Enable OpenRouter when creating the app. `OpenRouterAPIKey` falls back to the
 `OPENROUTER_API_KEY` environment variable.
@@ -32,28 +32,35 @@ Enable OpenRouter when creating the app. `OpenRouterAPIKey` falls back to the
 ```go
 app := flop.New(flop.Config{
     DataDir: "./data",
-    Moderation: &flop.ModerationConfig{
+    Workflow: &flop.WorkflowConfig{
         // OpenRouterAPIKey: "...",
         Workers: 2,
     },
 })
 ```
 
-Open **AI Moderation** in the admin panel to configure moderators. Each
-moderator selects:
+Open **AI Workflows** in the admin panel to configure reusable automations.
+Workflows support:
 
-- the table, mutation events, and content fields to review;
-- an OpenRouter model and optional provider slug;
-- whether rows are public while review is pending;
-- allowed automatic actions (`review`, `delete`, or `block_user`);
-- optional user fields and a cleared-item threshold for new-user review; and
-- optional target table fields for report moderation.
+- row insert/update, report, Discord, and manual triggers;
+- conditions and indexed `get`, index, or full-text search lookups;
+- an OpenRouter model, optional provider, prompt, and JSON Schema result;
+- approve, review queue, delete, block, and create/propose-alias actions;
+- per-action human approval, row visibility holds, and automatic retries; and
+- durable input, lookup, structured result, reasoning, status, retry, and error history.
 
-Pending rows configured for pre-publication review are hidden from public API
-and access-policy reads. Admin reads still expose them for review. Decisions,
-categories, reasoning, errors, model/provider details, and actions are retained
-as durable moderation runs. Failed runs can be retried, and an administrator
-can allow, delete, or block from the review queue.
+The admin includes new-user and reported-content moderation templates plus a
+Discord game-reconciliation template that searches game candidates and creates
+or proposes an alias. Pending rows configured with `HoldUntilComplete` are
+hidden from public API and access-policy reads while admin reads remain
+available for review.
+
+Applications can dispatch external events or queue a manual workflow:
+
+```go
+err := db.DispatchWorkflowEvent("discord", "activity_mismatch", payload)
+run, err := db.RunWorkflow(workflowID, input)
+```
 
 ## Development
 

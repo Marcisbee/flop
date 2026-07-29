@@ -164,14 +164,15 @@ type AdminMaterializedProvider interface {
 	AdminRefreshMaterialized(table string) error
 }
 
-// AdminModerationProvider exposes AI moderator configuration and audit runs.
-type AdminModerationProvider interface {
-	AdminModerators() ([]Moderator, error)
-	AdminSaveModerator(Moderator) (Moderator, error)
-	AdminDeleteModerator(id string) error
-	AdminModerationRuns(status string, limit, offset int) ([]ModerationRun, int, error)
-	AdminResolveModerationRun(id, action string) (ModerationRun, error)
-	AdminModerationAPIKeyConfigured() bool
+// AdminWorkflowProvider exposes AI workflow configuration and audit runs.
+type AdminWorkflowProvider interface {
+	AdminWorkflows() ([]Workflow, error)
+	AdminSaveWorkflow(Workflow) (Workflow, error)
+	AdminDeleteWorkflow(id string) error
+	AdminWorkflowRuns(status string, limit, offset int) ([]WorkflowRun, int, error)
+	AdminResolveWorkflowRun(id, action string) (WorkflowRun, error)
+	AdminRunWorkflow(id string, input map[string]any) (WorkflowRun, error)
+	AdminWorkflowAPIKeyConfigured() bool
 }
 
 // AdminPprofProvider exposes whether profiling routes should be enabled.
@@ -215,7 +216,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 	analyticsProvider, analyticsCapable := provider.(AdminAnalyticsProvider)
 	indexStatsProvider, indexStatsCapable := provider.(AdminIndexStatsProvider)
 	pprofProvider, pprofCapable := provider.(AdminPprofProvider)
-	moderationProvider, moderationEnabled := provider.(AdminModerationProvider)
+	workflowProvider, workflowEnabled := provider.(AdminWorkflowProvider)
 
 	// Setup provider — generates a one-time token when no superadmin exists.
 	setupProvider, setupCapable := provider.(AdminSetupProvider)
@@ -456,65 +457,85 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			return
 		}
 
-		if strings.HasPrefix(path, "/_/api/moderation") {
+		if strings.HasPrefix(path, "/_/api/workflows") {
 			if authEnabled && !isAuthorizedRequest(r, authProvider) {
 				adminJSONError(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
-			if !moderationEnabled {
-				adminJSONError(w, "moderation unavailable", http.StatusNotFound)
+			if !workflowEnabled {
+				adminJSONError(w, "workflow unavailable", http.StatusNotFound)
 				return
 			}
 			switch {
-			case path == "/_/api/moderation/config" && r.Method == http.MethodGet:
-				moderators, err := moderationProvider.AdminModerators()
+			case path == "/_/api/workflows/config" && r.Method == http.MethodGet:
+				workflows, err := workflowProvider.AdminWorkflows()
 				if err != nil {
 					adminJSONError(w, err.Error(), http.StatusBadRequest)
 					return
 				}
 				adminJSONResp(w, http.StatusOK, map[string]any{
 					"enabled":          true,
-					"apiKeyConfigured": moderationProvider.AdminModerationAPIKeyConfigured(),
-					"moderators":       moderators,
+					"apiKeyConfigured": workflowProvider.AdminWorkflowAPIKeyConfigured(),
+					"workflows":        workflows,
+					"templates":        WorkflowTemplates(),
 				})
 				return
-			case path == "/_/api/moderation/moderators" && r.Method == http.MethodPost:
-				var moderator Moderator
-				if err := jsonx.NewDecoder(r.Body).Decode(&moderator); err != nil {
+			case path == "/_/api/workflows" && r.Method == http.MethodPost:
+				var workflow Workflow
+				if err := jsonx.NewDecoder(r.Body).Decode(&workflow); err != nil {
 					adminJSONError(w, "invalid json", http.StatusBadRequest)
 					return
 				}
-				moderator.ID = ""
-				saved, err := moderationProvider.AdminSaveModerator(moderator)
+				workflow.ID = ""
+				saved, err := workflowProvider.AdminSaveWorkflow(workflow)
 				if err != nil {
 					adminJSONError(w, err.Error(), http.StatusBadRequest)
 					return
 				}
-				adminJSONResp(w, http.StatusCreated, map[string]any{"moderator": saved})
+				adminJSONResp(w, http.StatusCreated, map[string]any{"workflow": saved})
 				return
-			case strings.HasPrefix(path, "/_/api/moderation/moderators/"):
-				id := strings.Trim(strings.TrimPrefix(path, "/_/api/moderation/moderators/"), "/")
+			case strings.HasPrefix(path, "/_/api/workflows/") && strings.HasSuffix(path, "/run") && r.Method == http.MethodPost:
+				id := strings.TrimSuffix(strings.TrimPrefix(path, "/_/api/workflows/"), "/run")
+				id = strings.Trim(id, "/")
+				var body struct {
+					Input map[string]any `json:"input"`
+				}
+				if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
+					adminJSONError(w, "invalid json", http.StatusBadRequest)
+					return
+				}
+				run, err := workflowProvider.AdminRunWorkflow(id, body.Input)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusAccepted, map[string]any{"run": run})
+				return
+			case strings.HasPrefix(path, "/_/api/workflows/") &&
+				path != "/_/api/workflows/runs" &&
+				!strings.HasPrefix(path, "/_/api/workflows/runs/"):
+				id := strings.Trim(strings.TrimPrefix(path, "/_/api/workflows/"), "/")
 				if id == "" {
-					adminJSONError(w, "moderator ID required", http.StatusBadRequest)
+					adminJSONError(w, "workflow ID required", http.StatusBadRequest)
 					return
 				}
 				switch r.Method {
 				case http.MethodPut:
-					var moderator Moderator
-					if err := jsonx.NewDecoder(r.Body).Decode(&moderator); err != nil {
+					var workflow Workflow
+					if err := jsonx.NewDecoder(r.Body).Decode(&workflow); err != nil {
 						adminJSONError(w, "invalid json", http.StatusBadRequest)
 						return
 					}
-					moderator.ID = id
-					saved, err := moderationProvider.AdminSaveModerator(moderator)
+					workflow.ID = id
+					saved, err := workflowProvider.AdminSaveWorkflow(workflow)
 					if err != nil {
 						adminJSONError(w, err.Error(), http.StatusBadRequest)
 						return
 					}
-					adminJSONResp(w, http.StatusOK, map[string]any{"moderator": saved})
+					adminJSONResp(w, http.StatusOK, map[string]any{"workflow": saved})
 					return
 				case http.MethodDelete:
-					if err := moderationProvider.AdminDeleteModerator(id); err != nil {
+					if err := workflowProvider.AdminDeleteWorkflow(id); err != nil {
 						adminJSONError(w, err.Error(), http.StatusBadRequest)
 						return
 					}
@@ -524,13 +545,13 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-			case path == "/_/api/moderation/runs" && r.Method == http.MethodGet:
+			case path == "/_/api/workflows/runs" && r.Method == http.MethodGet:
 				limit := clampInt(parseIntOr(r.URL.Query().Get("limit"), 50), 1, 200)
 				page := parseIntOr(r.URL.Query().Get("page"), 1)
 				if page < 1 {
 					page = 1
 				}
-				runs, total, err := moderationProvider.AdminModerationRuns(strings.TrimSpace(r.URL.Query().Get("status")), limit, (page-1)*limit)
+				runs, total, err := workflowProvider.AdminWorkflowRuns(strings.TrimSpace(r.URL.Query().Get("status")), limit, (page-1)*limit)
 				if err != nil {
 					adminJSONError(w, err.Error(), http.StatusBadRequest)
 					return
@@ -540,8 +561,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					"runs": runs, "total": total, "page": page, "pages": pages, "limit": limit,
 				})
 				return
-			case strings.HasPrefix(path, "/_/api/moderation/runs/") && strings.HasSuffix(path, "/resolve") && r.Method == http.MethodPost:
-				id := strings.TrimSuffix(strings.TrimPrefix(path, "/_/api/moderation/runs/"), "/resolve")
+			case strings.HasPrefix(path, "/_/api/workflows/runs/") && strings.HasSuffix(path, "/resolve") && r.Method == http.MethodPost:
+				id := strings.TrimSuffix(strings.TrimPrefix(path, "/_/api/workflows/runs/"), "/resolve")
 				id = strings.Trim(id, "/")
 				var body struct {
 					Action string `json:"action"`
@@ -550,7 +571,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					adminJSONError(w, "invalid json", http.StatusBadRequest)
 					return
 				}
-				run, err := moderationProvider.AdminResolveModerationRun(id, strings.TrimSpace(body.Action))
+				run, err := workflowProvider.AdminResolveWorkflowRun(id, strings.TrimSpace(body.Action))
 				if err != nil {
 					adminJSONError(w, err.Error(), http.StatusBadRequest)
 					return
