@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/reqtrace"
@@ -54,6 +55,7 @@ type Database struct {
 	backgroundStop       chan struct{}
 	backgroundWG         sync.WaitGroup
 	backupManager        *backupManager
+	moderation           *moderationService
 	buildAuthUser        func(*Database, *AuthContext) (map[string]any, error)
 	buildAuthMe          func(*Database, *AuthContext) (map[string]any, error)
 	readAuthMe           func(*Database, *AuthContext) []string
@@ -243,6 +245,7 @@ func (a *App) Open() (*Database, error) {
 	if err := d.initEmailSettings(); err != nil {
 		return nil, err
 	}
+	d.moderation = newModerationService(d, a.config.Moderation)
 
 	// Wire up cached field triggers
 	a.wireCachedFields(d)
@@ -294,6 +297,7 @@ func (a *App) Open() (*Database, error) {
 	}
 	d.backupManager = backupMgr
 	d.startBackgroundWorkers()
+	d.moderation.startWorkers()
 
 	return d, nil
 }
@@ -523,6 +527,9 @@ func (d *Database) Close() error {
 	if d.backupManager != nil {
 		d.backupManager.stop()
 	}
+	if d.moderation != nil {
+		d.moderation.stopWorkers()
+	}
 	if d.backgroundStop != nil {
 		close(d.backgroundStop)
 		d.backgroundStop = nil
@@ -543,6 +550,9 @@ func (d *Database) reopen() (*Database, error) {
 		return nil, err
 	}
 	if reopened.backgroundStop != nil {
+		if reopened.moderation != nil {
+			reopened.moderation.stopWorkers()
+		}
 		close(reopened.backgroundStop)
 	}
 	reopened.backgroundWG.Wait()
@@ -577,7 +587,9 @@ func (d *Database) reopen() (*Database, error) {
 	if d.backupManager != nil {
 		d.backupManager.db = d
 	}
+	d.moderation = newModerationService(d, d.app.config.Moderation)
 	d.startBackgroundWorkers()
+	d.moderation.startWorkers()
 	return d, nil
 }
 
@@ -943,6 +955,14 @@ func (ti *TableInstance) insertWithTx(data map[string]any, tx *archiveTxn) (map[
 	if txBuf == nil && tableDefCanContainMedia(ti.ti.GetDef()) {
 		_ = ti.db.applyMediaIndexOps(mediaIndexSyncRowOp(ti.name, row))
 	}
+	if ti.db != nil && ti.db.moderation != nil {
+		queue := func() error { return ti.db.moderation.enqueueMutation(ti.name, "insert", row) }
+		if tx != nil {
+			tx.addAfter(queue)
+		} else if err := queue(); err != nil {
+			return nil, err
+		}
+	}
 	if ti.enforcePolicy && ti.requiresReadFiltering() {
 		row, ok := ti.filterReadableRow(row)
 		if !ok {
@@ -973,7 +993,18 @@ func (ti *TableInstance) InsertMany(rows []map[string]any, flushEvery int) (int,
 			}
 		}
 	}
-	return ti.ti.BulkInsert(rows, flushEvery)
+	count, err := ti.ti.BulkInsert(rows, flushEvery)
+	if err != nil {
+		return count, err
+	}
+	if ti.db != nil && ti.db.moderation != nil {
+		for _, row := range rows {
+			if err := ti.db.moderation.enqueueMutation(ti.name, "insert", row); err != nil {
+				return count, err
+			}
+		}
+	}
+	return count, nil
 }
 
 // Get retrieves a row by primary key.
@@ -1073,6 +1104,14 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, tx *arch
 	}
 	if txBuf == nil && tableDefCanContainMedia(ti.ti.GetDef()) {
 		_ = ti.db.applyMediaIndexOps(mediaIndexSyncRowOp(ti.name, row))
+	}
+	if ti.db != nil && ti.db.moderation != nil {
+		queue := func() error { return ti.db.moderation.enqueueMutation(ti.name, "update", row) }
+		if tx != nil {
+			tx.addAfter(queue)
+		} else if err := queue(); err != nil {
+			return nil, err
+		}
 	}
 	if ti.enforcePolicy && ti.requiresReadFiltering() {
 		row, ok := ti.filterReadableRow(row)
@@ -1641,11 +1680,11 @@ func (ti *TableInstance) BuildAutocompleteEntries(keyField, textField string, pa
 }
 
 func (ti *TableInstance) requiresReadFiltering() bool {
-	return ti != nil && ti.enforcePolicy && ti.policy.requiresReadFiltering
+	return ti != nil && ti.enforcePolicy && (ti.policy.requiresReadFiltering || ti.hasModerationFiltering())
 }
 
 func (ti *TableInstance) requiresRowReadFiltering() bool {
-	return ti != nil && ti.enforcePolicy && ti.policy.requiresRowRead
+	return ti != nil && ti.enforcePolicy && (ti.policy.requiresRowRead || ti.hasModerationFiltering())
 }
 
 func (ti *TableInstance) requiresInsertPolicy() bool {
@@ -1673,10 +1712,27 @@ func (ti *TableInstance) requiresFieldWritePolicyForIncoming(incoming map[string
 }
 
 func (ti *TableInstance) allowRead(row map[string]any) bool {
+	if ti != nil && ti.enforcePolicy && ti.db != nil && ti.db.moderation != nil {
+		pk := toString(row[ti.primaryKeyField()])
+		if !ti.db.moderation.visible(ti.name, pk) {
+			return false
+		}
+	}
 	if ti == nil || !ti.enforcePolicy || ti.spec == nil || ti.spec.Access.Read == nil {
 		return true
 	}
 	return ti.spec.Access.Read(&TableReadCtx{Auth: ti.auth, Row: row})
+}
+
+func (ti *TableInstance) hasModerationFiltering() bool {
+	if ti == nil || ti.db == nil || ti.db.moderation == nil || strings.HasPrefix(ti.name, "_") {
+		return false
+	}
+	runs := ti.db.db.GetTable(systemModerationRunTableName)
+	if runs == nil {
+		return false
+	}
+	return len(runs.FindAllByIndex([]string{"visibilityTable"}, ti.name)) > 0
 }
 
 func (ti *TableInstance) allowInsert(next map[string]any) bool {
@@ -2122,7 +2178,13 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	if _, exists := a.tables[systemAuthSessionTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemAuthSessionTableName)
 	}
-	defs := make(map[string]*schema.TableDef, len(a.tables)+2)
+	if _, exists := a.tables[systemModeratorTableName]; exists {
+		panic("flop: table name reserved for system use: " + systemModeratorTableName)
+	}
+	if _, exists := a.tables[systemModerationRunTableName]; exists {
+		panic("flop: table name reserved for system use: " + systemModerationRunTableName)
+	}
+	defs := make(map[string]*schema.TableDef, len(a.tables)+4)
 
 	for name, ts := range a.tables {
 		fields := make([]schema.CompiledField, 0, len(ts.Fields))
@@ -2229,6 +2291,9 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 
 	defs[systemSuperadminTableName] = systemSuperadminTableDef()
 	defs[systemAuthSessionTableName] = systemAuthSessionTableDef()
+	for name, def := range moderationSystemTableDefs() {
+		defs[name] = def
+	}
 
 	return defs
 }
@@ -2359,6 +2424,9 @@ type EngineAdminProvider struct {
 func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
 	for name, t := range p.DB.db.Tables {
+		if isModerationSystemTable(name) {
+			continue
+		}
 		def := t.GetDef()
 		s, _ := marshalOrderedSchema(def.CompiledSchema)
 		materialized, lastRefresh, refreshError := p.DB.materializedStatus(name)
@@ -2379,9 +2447,37 @@ func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 	return tables, nil
 }
 
+func (p *EngineAdminProvider) AdminModerators() ([]Moderator, error) {
+	return p.DB.Moderators()
+}
+
+func (p *EngineAdminProvider) AdminSaveModerator(m Moderator) (Moderator, error) {
+	return p.DB.SaveModerator(m)
+}
+
+func (p *EngineAdminProvider) AdminDeleteModerator(id string) error {
+	return p.DB.DeleteModerator(id)
+}
+
+func (p *EngineAdminProvider) AdminModerationRuns(status string, limit, offset int) ([]ModerationRun, int, error) {
+	return p.DB.ModerationRuns(status, limit, offset)
+}
+
+func (p *EngineAdminProvider) AdminResolveModerationRun(id, action string) (ModerationRun, error) {
+	return p.DB.ResolveModerationRun(id, action)
+}
+
+func (p *EngineAdminProvider) AdminModerationAPIKeyConfigured() bool {
+	return p != nil && p.DB != nil && p.DB.moderation != nil &&
+		strings.TrimSpace(p.DB.moderation.config.OpenRouterAPIKey) != ""
+}
+
 func (p *EngineAdminProvider) AdminArchiveTables() ([]AdminTable, error) {
 	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
 	for name, t := range p.DB.db.Tables {
+		if isModerationSystemTable(name) {
+			continue
+		}
 		records, total, err := t.ScanArchived(1, 0)
 		if err != nil {
 			return nil, err
@@ -2477,6 +2573,9 @@ func marshalArchiveSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 }
 
 func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
+	if isModerationSystemTable(table) {
+		return AdminRowsPage{}, false, nil
+	}
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return AdminRowsPage{}, false, nil
@@ -2522,6 +2621,9 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 }
 
 func (p *EngineAdminProvider) AdminArchiveRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
+	if isModerationSystemTable(table) {
+		return AdminRowsPage{}, false, nil
+	}
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return AdminRowsPage{}, false, nil
@@ -2648,6 +2750,9 @@ func adminFileLabelFromString(s string) string {
 }
 
 func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int, indexField, indexValue string) ([]map[string]any, int, bool, error) {
+	if isModerationSystemTable(table) {
+		return nil, 0, false, nil
+	}
 	ti := p.DB.db.GetTable(table)
 	if ti == nil {
 		return nil, 0, false, nil
@@ -2704,6 +2809,9 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 }
 
 func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) (map[string]any, error) {
+	if isModerationSystemTable(table) {
+		return nil, errors.New("moderation system tables are managed through the moderation API")
+	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return nil, fmt.Errorf("materialized table is read-only: %s", table)
 	}
@@ -2720,6 +2828,9 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 }
 
 func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string]any) error {
+	if isModerationSystemTable(table) {
+		return errors.New("moderation system tables are managed through the moderation API")
+	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return fmt.Errorf("materialized table is read-only: %s", table)
 	}
@@ -2737,6 +2848,9 @@ func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string
 }
 
 func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
+	if isModerationSystemTable(table) {
+		return errors.New("moderation system tables are managed through the moderation API")
+	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return fmt.Errorf("materialized table is read-only: %s", table)
 	}
@@ -2755,6 +2869,9 @@ func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
 }
 
 func (p *EngineAdminProvider) AdminArchiveRow(table, pk string) error {
+	if isModerationSystemTable(table) {
+		return errors.New("moderation system tables are managed through the moderation API")
+	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return fmt.Errorf("materialized table is read-only: %s", table)
 	}
@@ -2773,6 +2890,9 @@ func (p *EngineAdminProvider) AdminArchiveRow(table, pk string) error {
 }
 
 func (p *EngineAdminProvider) AdminRestoreRow(table, archiveID string) error {
+	if isModerationSystemTable(table) {
+		return errors.New("moderation system tables are managed through the moderation API")
+	}
 	ti := p.DB.Table(table)
 	if ti == nil {
 		return fmt.Errorf("table not found: %s", table)
@@ -2781,6 +2901,9 @@ func (p *EngineAdminProvider) AdminRestoreRow(table, archiveID string) error {
 }
 
 func (p *EngineAdminProvider) AdminDeleteArchivedRow(table, archiveID string) error {
+	if isModerationSystemTable(table) {
+		return errors.New("moderation system tables are managed through the moderation API")
+	}
 	ti := p.DB.Table(table)
 	if ti == nil {
 		return fmt.Errorf("table not found: %s", table)

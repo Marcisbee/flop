@@ -164,6 +164,16 @@ type AdminMaterializedProvider interface {
 	AdminRefreshMaterialized(table string) error
 }
 
+// AdminModerationProvider exposes AI moderator configuration and audit runs.
+type AdminModerationProvider interface {
+	AdminModerators() ([]Moderator, error)
+	AdminSaveModerator(Moderator) (Moderator, error)
+	AdminDeleteModerator(id string) error
+	AdminModerationRuns(status string, limit, offset int) ([]ModerationRun, int, error)
+	AdminResolveModerationRun(id, action string) (ModerationRun, error)
+	AdminModerationAPIKeyConfigured() bool
+}
+
 // AdminPprofProvider exposes whether profiling routes should be enabled.
 type AdminPprofProvider interface {
 	AdminEnablePprof() bool
@@ -205,6 +215,7 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 	analyticsProvider, analyticsCapable := provider.(AdminAnalyticsProvider)
 	indexStatsProvider, indexStatsCapable := provider.(AdminIndexStatsProvider)
 	pprofProvider, pprofCapable := provider.(AdminPprofProvider)
+	moderationProvider, moderationEnabled := provider.(AdminModerationProvider)
 
 	// Setup provider — generates a one-time token when no superadmin exists.
 	setupProvider, setupCapable := provider.(AdminSetupProvider)
@@ -443,6 +454,113 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			}
 			server.ServePrefixedPprof("/_/debug/pprof", w, r)
 			return
+		}
+
+		if strings.HasPrefix(path, "/_/api/moderation") {
+			if authEnabled && !isAuthorizedRequest(r, authProvider) {
+				adminJSONError(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !moderationEnabled {
+				adminJSONError(w, "moderation unavailable", http.StatusNotFound)
+				return
+			}
+			switch {
+			case path == "/_/api/moderation/config" && r.Method == http.MethodGet:
+				moderators, err := moderationProvider.AdminModerators()
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"enabled":          true,
+					"apiKeyConfigured": moderationProvider.AdminModerationAPIKeyConfigured(),
+					"moderators":       moderators,
+				})
+				return
+			case path == "/_/api/moderation/moderators" && r.Method == http.MethodPost:
+				var moderator Moderator
+				if err := jsonx.NewDecoder(r.Body).Decode(&moderator); err != nil {
+					adminJSONError(w, "invalid json", http.StatusBadRequest)
+					return
+				}
+				moderator.ID = ""
+				saved, err := moderationProvider.AdminSaveModerator(moderator)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusCreated, map[string]any{"moderator": saved})
+				return
+			case strings.HasPrefix(path, "/_/api/moderation/moderators/"):
+				id := strings.Trim(strings.TrimPrefix(path, "/_/api/moderation/moderators/"), "/")
+				if id == "" {
+					adminJSONError(w, "moderator ID required", http.StatusBadRequest)
+					return
+				}
+				switch r.Method {
+				case http.MethodPut:
+					var moderator Moderator
+					if err := jsonx.NewDecoder(r.Body).Decode(&moderator); err != nil {
+						adminJSONError(w, "invalid json", http.StatusBadRequest)
+						return
+					}
+					moderator.ID = id
+					saved, err := moderationProvider.AdminSaveModerator(moderator)
+					if err != nil {
+						adminJSONError(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					adminJSONResp(w, http.StatusOK, map[string]any{"moderator": saved})
+					return
+				case http.MethodDelete:
+					if err := moderationProvider.AdminDeleteModerator(id); err != nil {
+						adminJSONError(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					adminJSONResp(w, http.StatusOK, map[string]any{"ok": true})
+					return
+				default:
+					adminJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+			case path == "/_/api/moderation/runs" && r.Method == http.MethodGet:
+				limit := clampInt(parseIntOr(r.URL.Query().Get("limit"), 50), 1, 200)
+				page := parseIntOr(r.URL.Query().Get("page"), 1)
+				if page < 1 {
+					page = 1
+				}
+				runs, total, err := moderationProvider.AdminModerationRuns(strings.TrimSpace(r.URL.Query().Get("status")), limit, (page-1)*limit)
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				pages := (total + limit - 1) / limit
+				adminJSONResp(w, http.StatusOK, map[string]any{
+					"runs": runs, "total": total, "page": page, "pages": pages, "limit": limit,
+				})
+				return
+			case strings.HasPrefix(path, "/_/api/moderation/runs/") && strings.HasSuffix(path, "/resolve") && r.Method == http.MethodPost:
+				id := strings.TrimSuffix(strings.TrimPrefix(path, "/_/api/moderation/runs/"), "/resolve")
+				id = strings.Trim(id, "/")
+				var body struct {
+					Action string `json:"action"`
+				}
+				if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
+					adminJSONError(w, "invalid json", http.StatusBadRequest)
+					return
+				}
+				run, err := moderationProvider.AdminResolveModerationRun(id, strings.TrimSpace(body.Action))
+				if err != nil {
+					adminJSONError(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				adminJSONResp(w, http.StatusOK, map[string]any{"run": run})
+				return
+			default:
+				adminJSONError(w, "not found", http.StatusNotFound)
+				return
+			}
 		}
 
 		// Request analytics APIs

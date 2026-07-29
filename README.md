@@ -21,7 +21,39 @@ reflects the code we still support in production.
 - Lazy loading with in-memory indexes
 - Schema migration support
 - Auth, admin UI, file uploads, and realtime handlers
+- Configurable OpenRouter AI moderators with durable review and action history
 - Go code generation for app schemas and frontend artifacts
+
+## AI moderation
+
+Enable OpenRouter when creating the app. `OpenRouterAPIKey` falls back to the
+`OPENROUTER_API_KEY` environment variable.
+
+```go
+app := flop.New(flop.Config{
+    DataDir: "./data",
+    Moderation: &flop.ModerationConfig{
+        // OpenRouterAPIKey: "...",
+        Workers: 2,
+    },
+})
+```
+
+Open **AI Moderation** in the admin panel to configure moderators. Each
+moderator selects:
+
+- the table, mutation events, and content fields to review;
+- an OpenRouter model and optional provider slug;
+- whether rows are public while review is pending;
+- allowed automatic actions (`review`, `delete`, or `block_user`);
+- optional user fields and a cleared-item threshold for new-user review; and
+- optional target table fields for report moderation.
+
+Pending rows configured for pre-publication review are hidden from public API
+and access-policy reads. Admin reads still expose them for review. Decisions,
+categories, reasoning, errors, model/provider details, and actions are retained
+as durable moderation runs. Failed runs can be retried, and an administrator
+can allow, delete, or block from the review queue.
 
 ## Development
 
