@@ -1,10 +1,6 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package storage
-
-type DirLock interface {
-	Close() error
-}
 
 type noopDirLock struct{}
 

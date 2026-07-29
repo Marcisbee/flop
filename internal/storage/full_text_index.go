@@ -442,7 +442,6 @@ func (f *FullTextIndex) docHasAnyTerm(docID uint32, termIDs map[uint32]struct{})
 	return false
 }
 
-
 // rebuildSortedTokensIfNeeded lazily rebuilds the sorted token list.
 func (f *FullTextIndex) rebuildSortedTokensIfNeeded() {
 	if !f.tokensDirty && len(f.sortedTokens) == len(f.tokenIDByText) {
@@ -589,10 +588,10 @@ type scoredDoc struct {
 // topKHeap is a min-heap of scoredDoc for top-K selection.
 type topKHeap []scoredDoc
 
-func (h topKHeap) Len() int            { return len(h) }
-func (h topKHeap) Less(i, j int) bool   { return h[i].score < h[j].score }
-func (h topKHeap) Swap(i, j int)        { h[i], h[j] = h[j], h[i] }
-func (h *topKHeap) Push(x any)          { *h = append(*h, x.(scoredDoc)) }
+func (h topKHeap) Len() int           { return len(h) }
+func (h topKHeap) Less(i, j int) bool { return h[i].score < h[j].score }
+func (h topKHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *topKHeap) Push(x any)        { *h = append(*h, x.(scoredDoc)) }
 func (h *topKHeap) Pop() any {
 	old := *h
 	n := len(old)
@@ -734,4 +733,3 @@ func tokenizeTextsWithFreq(texts ...string) map[string]uint16 {
 
 	return freqs
 }
-

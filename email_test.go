@@ -46,4 +46,3 @@ func TestCloneEmailSettingsMasksPassword(t *testing.T) {
 		t.Fatalf("expected raw password to be preserved, got %q", raw.SMTP.Password)
 	}
 }
-

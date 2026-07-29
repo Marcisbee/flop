@@ -28,10 +28,25 @@ PB_GATE_MAX_DELETE_P99_US ?= 50000
 PB_GATE_MAX_ALLOC_PER_OP ?= 20000
 PB_GATE_MAX_RECOVERY_MS ?= 5000
 
-.PHONY: test quickbench quickbench-save quickbench-compare-last quickbench-list pillarbench pillarbench-save pillar-gate
+.PHONY: test test-race vet fmt-check vulncheck release-check quickbench quickbench-save quickbench-compare-last quickbench-list pillarbench pillarbench-save pillar-gate
 
 test:
 	GOCACHE=$(GOCACHE) go test ./...
+
+test-race:
+	GOCACHE=$(GOCACHE) go test -race ./...
+
+vet:
+	GOCACHE=$(GOCACHE) go vet ./...
+
+fmt-check:
+	@test -z "$$(gofmt -l $$(find . -name '*.go' -not -path './.git/*'))" || \
+		(echo "Go files need formatting"; gofmt -l $$(find . -name '*.go' -not -path './.git/*'); exit 1)
+
+vulncheck:
+	GOCACHE=$(GOCACHE) go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+release-check: fmt-check vet test test-race vulncheck pillar-gate
 
 quickbench:
 	GOCACHE=$(GOCACHE) go run ./cmd/quickbench \

@@ -7,7 +7,7 @@ type LRUCache[K comparable, V any] struct {
 	maxSize int
 	ll      *list.List
 	items   map[K]*list.Element
-	OnEvict func(K, V)
+	OnEvict func(K, V) error
 }
 
 type lruEntry[K comparable, V any] struct {
@@ -32,26 +32,29 @@ func (c *LRUCache[K, V]) Get(key K) (V, bool) {
 	return zero, false
 }
 
-func (c *LRUCache[K, V]) Set(key K, value V) {
+func (c *LRUCache[K, V]) Set(key K, value V) error {
 	if el, ok := c.items[key]; ok {
 		c.ll.MoveToFront(el)
 		el.Value.(*lruEntry[K, V]).value = value
-		return
+		return nil
 	}
 	if c.ll.Len() >= c.maxSize {
 		// Evict oldest (back of list)
 		oldest := c.ll.Back()
 		if oldest != nil {
 			e := oldest.Value.(*lruEntry[K, V])
+			if c.OnEvict != nil {
+				if err := c.OnEvict(e.key, e.value); err != nil {
+					return err
+				}
+			}
 			c.ll.Remove(oldest)
 			delete(c.items, e.key)
-			if c.OnEvict != nil {
-				c.OnEvict(e.key, e.value)
-			}
 		}
 	}
 	el := c.ll.PushFront(&lruEntry[K, V]{key: key, value: value})
 	c.items[key] = el
+	return nil
 }
 
 func (c *LRUCache[K, V]) Has(key K) bool {

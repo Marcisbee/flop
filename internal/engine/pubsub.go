@@ -19,22 +19,28 @@ type ChangeListener func(event ChangeEvent)
 // PubSub provides in-process pub/sub for table change events.
 type PubSub struct {
 	mu              sync.RWMutex
-	listeners       map[string]map[*ChangeListener]struct{}
-	globalListeners map[*ChangeListener]struct{}
-	events          chan ChangeEvent
+	listeners       map[string]map[*ChangeListener]uint64
+	globalListeners map[*ChangeListener]uint64
+	events          chan queuedChangeEvent
 	stop            chan struct{}
 	closeOnce       sync.Once
 	closed          atomic.Bool
+	sequence        atomic.Uint64
 	droppedEvents   atomic.Uint64
+}
+
+type queuedChangeEvent struct {
+	sequence uint64
+	event    ChangeEvent
 }
 
 const pubSubEventQueueSize = 16384
 
 func NewPubSub() *PubSub {
 	ps := &PubSub{
-		listeners:       make(map[string]map[*ChangeListener]struct{}),
-		globalListeners: make(map[*ChangeListener]struct{}),
-		events:          make(chan ChangeEvent, pubSubEventQueueSize),
+		listeners:       make(map[string]map[*ChangeListener]uint64),
+		globalListeners: make(map[*ChangeListener]uint64),
+		events:          make(chan queuedChangeEvent, pubSubEventQueueSize),
 		stop:            make(chan struct{}),
 	}
 	go ps.dispatchLoop()
@@ -47,11 +53,12 @@ func (ps *PubSub) Subscribe(tables []string, callback ChangeListener) func() {
 	defer ps.mu.Unlock()
 
 	cb := &callback
+	since := ps.sequence.Load()
 	for _, table := range tables {
 		if ps.listeners[table] == nil {
-			ps.listeners[table] = make(map[*ChangeListener]struct{})
+			ps.listeners[table] = make(map[*ChangeListener]uint64)
 		}
-		ps.listeners[table][cb] = struct{}{}
+		ps.listeners[table][cb] = since
 	}
 
 	return func() {
@@ -69,7 +76,7 @@ func (ps *PubSub) SubscribeAll(callback ChangeListener) func() {
 	defer ps.mu.Unlock()
 
 	cb := &callback
-	ps.globalListeners[cb] = struct{}{}
+	ps.globalListeners[cb] = ps.sequence.Load()
 
 	return func() {
 		ps.mu.Lock()
@@ -83,8 +90,12 @@ func (ps *PubSub) Publish(event ChangeEvent) {
 	if ps.closed.Load() {
 		return
 	}
+	queued := queuedChangeEvent{
+		sequence: ps.sequence.Add(1),
+		event:    event,
+	}
 	select {
-	case ps.events <- event:
+	case ps.events <- queued:
 	default:
 		// Drop instead of blocking write paths.
 		ps.droppedEvents.Add(1)
@@ -94,40 +105,44 @@ func (ps *PubSub) Publish(event ChangeEvent) {
 func (ps *PubSub) dispatchLoop() {
 	for {
 		select {
-		case event := <-ps.events:
-			ps.dispatch(event)
+		case queued := <-ps.events:
+			ps.dispatch(queued)
 		case <-ps.stop:
 			return
 		}
 	}
 }
 
-func (ps *PubSub) dispatch(event ChangeEvent) {
+func (ps *PubSub) dispatch(queued queuedChangeEvent) {
 	ps.mu.RLock()
 	// Snapshot listeners to avoid holding lock during callbacks
 	var tableCallbacks []ChangeListener
-	if set, ok := ps.listeners[event.Table]; ok {
+	if set, ok := ps.listeners[queued.event.Table]; ok {
 		tableCallbacks = make([]ChangeListener, 0, len(set))
-		for cb := range set {
-			tableCallbacks = append(tableCallbacks, *cb)
+		for cb, since := range set {
+			if queued.sequence > since {
+				tableCallbacks = append(tableCallbacks, *cb)
+			}
 		}
 	}
 	globalCallbacks := make([]ChangeListener, 0, len(ps.globalListeners))
-	for cb := range ps.globalListeners {
-		globalCallbacks = append(globalCallbacks, *cb)
+	for cb, since := range ps.globalListeners {
+		if queued.sequence > since {
+			globalCallbacks = append(globalCallbacks, *cb)
+		}
 	}
 	ps.mu.RUnlock()
 
 	for _, cb := range tableCallbacks {
 		func() {
 			defer func() { recover() }()
-			cb(event)
+			cb(queued.event)
 		}()
 	}
 	for _, cb := range globalCallbacks {
 		func() {
 			defer func() { recover() }()
-			cb(event)
+			cb(queued.event)
 		}()
 	}
 }

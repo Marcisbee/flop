@@ -2,6 +2,7 @@ package engine
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -45,6 +46,10 @@ type Database struct {
 	commitMu       sync.Mutex
 	commitQueue    []commitSlot
 	commitDraining bool
+
+	// Cross-table transaction coordinator.
+	transactionMu sync.Mutex
+	txJournal     transactionJournal
 }
 
 type commitSlot struct {
@@ -89,6 +94,9 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	if db.opened {
 		return nil
 	}
+	if db.syncMode != "full" && db.syncMode != "normal" {
+		return fmt.Errorf("invalid sync mode %q: must be \"full\" or \"normal\"", db.syncMode)
+	}
 
 	if err := os.MkdirAll(db.dataDir, 0755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
@@ -108,6 +116,18 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	if err := os.MkdirAll(filepath.Join(db.dataDir, "_files"), 0755); err != nil {
 		db.opened = false
 		return fmt.Errorf("create files dir: %w", err)
+	}
+	if err := db.loadTransactionJournal(); err != nil {
+		db.opened = false
+		return err
+	}
+	for _, tx := range db.txJournal.Transactions {
+		for tableName := range tx.Tables {
+			if _, ok := tableDefs[tableName]; !ok {
+				db.opened = false
+				return fmt.Errorf("transaction journal references missing table %q", tableName)
+			}
+		}
 	}
 
 	metaPath := filepath.Join(db.dataDir, "_meta.flop")
@@ -133,11 +153,12 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 		}
 		db.Tables[name] = instance
 	}
-
-	// Save meta (may have new schema versions)
-	if err := storage.WriteMetaFile(metaPath, db.meta); err != nil {
+	// Persist recovered pages and indexes for every table before any WAL or
+	// transaction-coordinator state is cleared. Recovery can therefore be
+	// interrupted and safely retried.
+	if err := db.Checkpoint(); err != nil {
 		db.opened = false
-		return fmt.Errorf("write meta: %w", err)
+		return fmt.Errorf("checkpoint opened database: %w", err)
 	}
 
 	return nil
@@ -187,10 +208,7 @@ func (db *Database) EnqueueCommit(walBuffers map[string]*walBufEntry) error {
 			return err
 		}
 	}
-	if db.syncMode != "full" {
-		return db.directFlush(walBuffers, false)
-	}
-	return db.enqueueCommitQueued(walBuffers)
+	return db.coordinatedFlush(walBuffers)
 }
 
 // EnqueueCommitLocked is like EnqueueCommit but the caller already holds the table lock.
@@ -369,14 +387,56 @@ func (db *Database) drainCommitQueue() {
 	}
 }
 
-// Checkpoint flushes all tables and writes meta.
+// Checkpoint flushes all tables and writes meta as one database-wide
+// consistency boundary.
 func (db *Database) Checkpoint() error {
-	for _, table := range db.Tables {
-		if err := table.Checkpoint(); err != nil {
+	return db.withConsistentTablesLocked(nil)
+}
+
+// WithConsistentSnapshot checkpoints the database and invokes fn while all
+// table writes remain blocked. This is intended for backup readers.
+func (db *Database) WithConsistentSnapshot(fn func(dataDir string) error) error {
+	return db.withConsistentTablesLocked(fn)
+}
+
+func (db *Database) withConsistentTablesLocked(fn func(dataDir string) error) error {
+	db.transactionMu.Lock()
+	defer db.transactionMu.Unlock()
+
+	names := make([]string, 0, len(db.Tables))
+	for name := range db.Tables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	tables := make([]*TableInstance, 0, len(names))
+	for _, name := range names {
+		table := db.Tables[name]
+		table.waitForSecondaryIndexBuild()
+		table.mu.Lock()
+		tables = append(tables, table)
+	}
+	defer func() {
+		for i := len(tables) - 1; i >= 0; i-- {
+			tables[i].mu.Unlock()
+		}
+	}()
+
+	for _, table := range tables {
+		if err := table.checkpointLocked(); err != nil {
 			return err
 		}
 	}
-	return storage.WriteMetaFile(filepath.Join(db.dataDir, "_meta.flop"), db.meta)
+	if err := storage.WriteMetaFile(filepath.Join(db.dataDir, "_meta.flop"), db.meta); err != nil {
+		return err
+	}
+	if err := db.clearTransactionJournalLocked(); err != nil {
+		return err
+	}
+	if fn != nil {
+		return fn(db.dataDir)
+	}
+	return nil
 }
 
 // Close closes all tables.
@@ -393,6 +453,9 @@ func (db *Database) Close() error {
 	}
 
 	var firstErr error
+	if err := db.Checkpoint(); err != nil {
+		firstErr = err
+	}
 	for _, table := range db.Tables {
 		if err := table.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -536,6 +599,9 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	// Build migration chains for older versions
 	for v := 1; v < ti.currentVersion; v++ {
 		ti.migChains[v] = schema.BuildMigrationChain(v, ti.currentVersion, ti.def.Migrations, tableMeta.Schemas)
+	}
+	if err := ti.validateStoredRows(); err != nil {
+		return err
 	}
 
 	// Open WAL and replay
@@ -695,13 +761,22 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 	if len(entries) == 0 {
 		return false, nil
 	}
+	if ignored := ti.db.ignoredRecoveryTxIDs(ti.Name); len(ignored) > 0 {
+		filtered := entries[:0]
+		for _, entry := range entries {
+			if !ignored[entry.TxID] {
+				filtered = append(filtered, entry)
+			}
+		}
+		entries = filtered
+		if len(entries) == 0 {
+			return false, nil
+		}
+	}
 
 	checkpointLSN := ti.wal.CheckpointLSN()
 	committedLSN := storage.FindCommittedTxLSN(entries)
 	if len(committedLSN) == 0 {
-		if err := ti.wal.Truncate(); err != nil {
-			return false, err
-		}
 		return false, nil
 	}
 
@@ -733,10 +808,38 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 			return false, err
 		}
 	}
-	if err := ti.wal.Truncate(); err != nil {
-		return false, err
-	}
 	return applied, nil
+}
+
+func (ti *TableInstance) validateStoredRows() error {
+	var validationErr error
+	if err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		if _, err := ti.deserializeCurrentRow(scanned.Data); err != nil {
+			validationErr = fmt.Errorf("table %q page %d slot %d: corrupt row: %w",
+				ti.Name, scanned.PageNumber, scanned.SlotIndex, err)
+			return false
+		}
+		return true
+	}); err != nil {
+		return fmt.Errorf("table %q: validate pages: %w", ti.Name, err)
+	}
+	if validationErr != nil {
+		return validationErr
+	}
+	if ti.archiveFile == nil {
+		return nil
+	}
+	if err := ti.archiveFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		if _, err := storage.DeserializeArchivedRow(scanned.Data); err != nil {
+			validationErr = fmt.Errorf("table %q archive page %d slot %d: corrupt row: %w",
+				ti.Name, scanned.PageNumber, scanned.SlotIndex, err)
+			return false
+		}
+		return true
+	}); err != nil {
+		return fmt.Errorf("table %q: validate archive pages: %w", ti.Name, err)
+	}
+	return validationErr
 }
 
 func (ti *TableInstance) applyWALEntry(entry storage.WALEntry) error {
@@ -763,11 +866,11 @@ func (ti *TableInstance) applyWALInsert(serialized []byte, recordLSN uint64) err
 
 	row, err := ti.deserializeCurrentRow(serialized)
 	if err != nil {
-		return nil
+		return fmt.Errorf("decode WAL insert for table %q: %w", ti.Name, err)
 	}
 	pk := toString(row[ti.primaryKeyField()])
 	if pk == "" {
-		return nil
+		return fmt.Errorf("decode WAL insert for table %q: primary key is empty", ti.Name)
 	}
 	if ti.primaryIndex.Has(pk) {
 		return nil
@@ -909,7 +1012,7 @@ func pageLSNAtLeast(page *storage.Page, recordLSN uint64) bool {
 	if page == nil || recordLSN == 0 {
 		return false
 	}
-	return uint64(page.PageLSN) >= uint64(uint32(recordLSN))
+	return uint64(page.LSN()) >= uint64(uint32(recordLSN))
 }
 
 func (ti *TableInstance) rebuildIndex() error {
@@ -1541,13 +1644,15 @@ func (ti *TableInstance) getUnlocked(key string) (map[string]interface{}, error)
 		chain := ti.migChains[int(sv)]
 		if chain != nil {
 			values, sv2, _, err := storage.DeserializeRawFields(rawData, 0)
-			if err == nil {
-				oldSchema := ti.tableMeta.Schemas[int(sv2)]
-				if oldSchema != nil {
-					oldRow := schema.DeserializeWithSchema(values, oldSchema)
-					return chain.Migrate(oldRow), nil
-				}
+			if err != nil {
+				return nil, err
 			}
+			oldSchema := ti.tableMeta.Schemas[int(sv2)]
+			if oldSchema == nil {
+				return nil, fmt.Errorf("missing stored schema version %d for table %q", sv2, ti.Name)
+			}
+			oldRow := schema.DeserializeWithSchema(values, oldSchema)
+			return chain.Migrate(oldRow), nil
 		}
 	}
 
@@ -3069,25 +3174,36 @@ func (ti *TableInstance) ScanArchived(limit, offset int) ([]*storage.ArchivedRow
 }
 
 func (ti *TableInstance) deserializeCurrentRow(rawData []byte) (map[string]interface{}, error) {
-	row, sv, _, err := storage.DeserializeRow(rawData, 0, ti.def.CompiledSchema)
-	if err != nil {
-		return nil, err
+	if len(rawData) < 2 {
+		return nil, storage.ErrShortBuffer
 	}
-
+	sv := binary.LittleEndian.Uint16(rawData[:2])
+	if int(sv) > ti.currentVersion {
+		return nil, fmt.Errorf("row schema version %d is newer than table %q version %d", sv, ti.Name, ti.currentVersion)
+	}
 	if int(sv) < ti.currentVersion {
 		chain := ti.migChains[int(sv)]
 		if chain != nil {
 			values, sv2, _, err := storage.DeserializeRawFields(rawData, 0)
-			if err == nil {
-				oldSchema := ti.tableMeta.Schemas[int(sv2)]
-				if oldSchema != nil {
-					oldRow := schema.DeserializeWithSchema(values, oldSchema)
-					return chain.Migrate(oldRow), nil
-				}
+			if err != nil {
+				return nil, err
 			}
+			oldSchema := ti.tableMeta.Schemas[int(sv2)]
+			if oldSchema == nil {
+				return nil, fmt.Errorf("missing stored schema version %d for table %q", sv2, ti.Name)
+			}
+			oldRow := schema.DeserializeWithSchema(values, oldSchema)
+			return chain.Migrate(oldRow), nil
 		}
 	}
 
+	row, decodedVersion, _, err := storage.DeserializeRow(rawData, 0, ti.def.CompiledSchema)
+	if err != nil {
+		return nil, err
+	}
+	if decodedVersion != sv {
+		return nil, fmt.Errorf("row schema version changed while decoding")
+	}
 	return row, nil
 }
 
@@ -3203,45 +3319,51 @@ func (ti *TableInstance) Checkpoint() error {
 	}
 
 	ti.mu.Lock()
+	defer ti.mu.Unlock()
+	return ti.checkpointLocked()
+}
+
+// checkpointLocked performs a checkpoint while ti.mu is exclusively held.
+func (ti *TableInstance) checkpointLocked() error {
 	if ti.wal != nil && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
-		ti.mu.Unlock()
 		return nil
 	}
 
 	failpoint.Hit("checkpoint_start")
+	// WAL must reach stable storage before any page containing those changes.
+	if err := ti.wal.Fsync(); err != nil {
+		return err
+	}
+	failpoint.Hit("checkpoint_after_wal_fsync")
+	checkpointLSN := ti.wal.CurrentLSN()
+
 	if err := ti.tableFile.Flush(); err != nil {
-		ti.mu.Unlock()
 		return err
 	}
 	if ti.archiveFile != nil {
 		if err := ti.archiveFile.Flush(); err != nil {
-			ti.mu.Unlock()
 			return err
 		}
 	}
 	failpoint.Hit("checkpoint_after_table_flush")
 	idxPath := filepath.Join(ti.dataDir, ti.Name+".idx")
 	if err := storage.WriteIndexFile(idxPath, ti.primaryIndex); err != nil {
-		ti.mu.Unlock()
 		return err
 	}
 	persistedFiles := []string{idxPath}
 	midxPath := filepath.Join(ti.dataDir, ti.Name+".midx")
 	if err := storage.WriteMappedIndexFile(midxPath, ti.primaryIndex); err != nil {
-		ti.mu.Unlock()
 		return err
 	}
 	persistedFiles = append(persistedFiles, midxPath)
 	if ti.archiveFile != nil {
 		archiveIdxPath := filepath.Join(ti.dataDir, ti.Name+".archive.idx")
 		if err := storage.WriteIndexFile(archiveIdxPath, ti.archiveIndex); err != nil {
-			ti.mu.Unlock()
 			return err
 		}
 		persistedFiles = append(persistedFiles, archiveIdxPath)
 		archiveMidxPath := filepath.Join(ti.dataDir, ti.Name+".archive.midx")
 		if err := storage.WriteMappedIndexFile(archiveMidxPath, ti.archiveIndex); err != nil {
-			ti.mu.Unlock()
 			return err
 		}
 		persistedFiles = append(persistedFiles, archiveMidxPath)
@@ -3254,35 +3376,18 @@ func (ti *TableInstance) Checkpoint() error {
 		switch idx := ti.secondaryIdxs[indexKey].(type) {
 		case *storage.HashIndex:
 			if err := storage.WriteMappedIndexFile(path, idx); err != nil {
-				ti.mu.Unlock()
 				return err
 			}
 			persistedFiles = append(persistedFiles, path)
 		case *storage.MultiIndex:
 			if err := storage.WriteMappedMultiIndexFile(path, idx); err != nil {
-				ti.mu.Unlock()
 				return err
 			}
 			persistedFiles = append(persistedFiles, path)
 		}
 	}
 	failpoint.Hit("checkpoint_after_index_write")
-	if err := ti.wal.Fsync(); err != nil {
-		ti.mu.Unlock()
-		return err
-	}
-	failpoint.Hit("checkpoint_after_wal_fsync")
-	checkpointLSN := ti.wal.CurrentLSN()
-	if err := ti.wal.SetCheckpointLSN(checkpointLSN); err != nil {
-		ti.mu.Unlock()
-		return err
-	}
 	nextGen := ti.checkpointGen + 1
-
-	// Release the table lock before computing CRCs — index files are already
-	// atomically written, so reading them back is safe and avoids blocking
-	// concurrent writes during the I/O-heavy CRC computation.
-	ti.mu.Unlock()
 
 	manifestFiles := make(map[string]uint32, len(persistedFiles))
 	for _, p := range persistedFiles {
@@ -3305,10 +3410,13 @@ func (ti *TableInstance) Checkpoint() error {
 		return err
 	}
 
-	// Update checkpoint gen under lock.
-	ti.mu.Lock()
+	// Publish the WAL checkpoint only after the matching manifest is durable.
+	// A crash before this point safely replays the WAL; a crash after it sees
+	// the new manifest and checkpoint together.
+	if err := ti.wal.SetCheckpointLSN(checkpointLSN); err != nil {
+		return err
+	}
 	ti.checkpointGen = manifest.Generation
-	ti.mu.Unlock()
 
 	return ti.wal.Truncate()
 }

@@ -110,9 +110,9 @@ func (s *SuperadminService) Register(email, password, name string) (string, *sch
 		return "", nil, err
 	}
 	row, err := s.table.Insert(map[string]interface{}{
-		"email":    email,
-		"password": hashedPassword,
-		"name":     name,
+		"email":     email,
+		"password":  hashedPassword,
+		"name":      name,
 		"createdAt": time.Now().UnixMilli(),
 	}, nil)
 	if err != nil {
