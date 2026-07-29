@@ -229,6 +229,33 @@ tbody tr.selected{background:var(--bg-active)}
 .mono-sm{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px}
 
 /* Backups */
+.workflow-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:16px}
+.workflow-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.workflow-title{font-size:24px;font-weight:600;color:var(--text-heading)}
+.workflow-subtitle{margin-top:4px;color:var(--text-muted);line-height:1.4}
+.workflow-tabs{display:flex;gap:4px;border-bottom:1px solid var(--border)}
+.workflow-tab{padding:8px 12px;border:none;border-bottom:2px solid transparent;background:none;color:var(--text-muted);cursor:pointer}
+.workflow-tab.active{border-bottom-color:var(--accent);color:var(--text-heading)}
+.workflow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.workflow-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.workflow-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.workflow-name{font-size:15px;font-weight:600;color:var(--text-heading)}
+.workflow-meta{font-size:11px;color:var(--text-muted);margin-top:3px}
+.workflow-badges{display:flex;flex-wrap:wrap;gap:5px}
+.workflow-badge{padding:2px 7px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-input);font-size:10px;color:var(--text-muted)}
+.workflow-badge.on{color:#42b983;border-color:rgba(66,185,131,.35)}
+.workflow-form{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.workflow-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.workflow-form .row-editor-field textarea{min-height:96px}
+.workflow-checks{display:flex;flex-wrap:wrap;gap:14px}
+.workflow-check{display:flex;align-items:center;gap:6px;color:var(--text)}
+.workflow-warning{padding:10px 12px;border:1px solid rgba(244,135,113,.35);border-radius:6px;background:rgba(244,135,113,.08);color:var(--error)}
+.workflow-run-detail{white-space:normal;line-height:1.35;max-width:440px}
+.status-pill{display:inline-flex;padding:2px 7px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-input);font-size:10px}
+.status-pill.completed{color:#42b983}
+.status-pill.error{color:var(--error)}
+.status-pill.awaiting_approval{color:#e5b567}
+
 .backups-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:18px}
 .backups-hero{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .backups-title{font-size:24px;font-weight:600;color:var(--text-heading)}
@@ -436,6 +463,7 @@ async function fetchRefOptions(tableName) {
 const icons = {
   table: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M14 1H2a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1V2a1 1 0 00-1-1zM2 2h12v3H2V2zm0 4h5v4H2V6zm0 5h5v3H2v-3zm12 3H8v-3h6v3zm0-4H8V6h6v4z"/></svg>`,
   plus: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>`,
+  edit: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.854 1.146a.5.5 0 00-.708 0l-8.5 8.5a.5.5 0 00-.132.235l-.5 2a.5.5 0 00.606.606l2-.5a.5.5 0 00.235-.132l8.5-8.5a.5.5 0 000-.708l-1.5-1.5zM3.474 10.257l8.026-8.026.793.793-8.026 8.026-1.118.28.325-1.073z"/><path d="M2 14h12v1H2z"/></svg>`,
   trash: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3h3v1h-1v9a1 1 0 01-1 1H5a1 1 0 01-1-1V4H3V3h3V2a1 1 0 011-1h2a1 1 0 011 1v1zM5 4v9h6V4H5zm1 1h1v7H6V5zm3 0h1v7H9V5zM7 2v1h2V2H7z"/></svg>`,
   download: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 13h7a.5.5 0 010 1h-7a.5.5 0 010-1zM7.5 2v7.793L5.354 7.646a.5.5 0 10-.708.708l3 3a.5.5 0 00.708 0l3-3a.5.5 0 00-.708-.708L8.5 9.793V2a.5.5 0 00-1 0z"/></svg>`,
   upload: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 13h7a.5.5 0 010 1h-7a.5.5 0 010-1zM7.5 11V3.207L5.354 5.354a.5.5 0 11-.708-.708l3-3a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 3.207V11a.5.5 0 01-1 0z"/></svg>`,
@@ -525,7 +553,7 @@ function Toasts() {
 
 // ── Components ──
 
-function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectMail, onSelectBackups, onLogout }) {
+function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, workflowEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectWorkflow, onSelectMail, onSelectBackups, onLogout }) {
   const [tableSearch, setTableSearch] = useState('');
   
   const filteredTables = useMemo(() => {
@@ -583,6 +611,15 @@ function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode
           </button>
         `}
         <div class="sidebar-section-label" style="padding:10px 8px 4px">SYSTEM</div>
+        ${workflowEnabled && html`
+          <button
+            class=${"sidebar-item" + (viewMode === 'workflow' ? " active" : "")}
+            onClick=${onSelectWorkflow}
+          >
+            <span class="sidebar-item-icon">${icons.pulse}</span>
+            <span class="sidebar-item-label">AI Workflows</span>
+          </button>
+        `}
         <button
           class=${"sidebar-item" + (viewMode === 'mail' ? " active" : "")}
           onClick=${onSelectMail}
@@ -2803,6 +2840,318 @@ function MailSettingsPage() {
   `;
 }
 
+const emptyWorkflow = {
+  id: '', name: '', category: '', enabled: true,
+  trigger: { type: 'row_insert', table: '', events: [] },
+  conditions: [], lookups: [],
+  ai: { model: '', provider: '', prompt: '', resultSchema: {} },
+  actions: [{ type: 'queue_review', requireApproval: true }],
+  holdUntilComplete: false, subjectPath: '', newUserClearedLimit: 0, maxRetries: 2
+};
+
+function WorkflowPage({ tables }) {
+  const [tab, setTab] = useState(() => window.location.hash.includes('/moderation') ? 'moderation' : 'runs');
+  const [workflows, setWorkflows] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [runs, setRuns] = useState([]);
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [status, setStatus] = useState('');
+  const appTables = useMemo(() => (tables || []).filter(t => !t.name.startsWith('_')), [tables]);
+
+  const loadConfig = useCallback(async () => {
+    const data = await api('/workflows/config');
+    setWorkflows(data?.workflows || []);
+    setTemplates(data?.templates || []);
+    setApiKeyConfigured(!!data?.apiKeyConfigured);
+  }, []);
+
+  const loadRuns = useCallback(async () => {
+    const suffix = status ? ('?status=' + encodeURIComponent(status)) : '';
+    const data = await api('/workflows/runs' + suffix);
+    setRuns(data?.runs || []);
+  }, [status]);
+
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      await Promise.all([loadConfig(), loadRuns()]);
+    } catch (err) {
+      showToast(err.message || 'Failed to load workflow', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [loadConfig, loadRuns]);
+
+  useEffect(() => { loadAll(); }, []);
+  useEffect(() => { if (!loading) loadRuns(); }, [status]);
+
+  const editWorkflow = useCallback((workflow) => {
+    const next = clone(workflow || emptyWorkflow);
+    next.trigger = next.trigger || { type: 'manual' };
+    next.ai = next.ai || {};
+    next.actions = next.actions || [];
+    next._conditionsJSON = JSON.stringify(next.conditions || [], null, 2);
+    next._lookupsJSON = JSON.stringify(next.lookups || [], null, 2);
+    next._schemaJSON = JSON.stringify(next.ai.resultSchema || {}, null, 2);
+    next._actionsJSON = JSON.stringify(next.actions || [], null, 2);
+    setEditing(next);
+  }, []);
+
+  const update = useCallback((field, value) => setEditing(prev => ({ ...prev, [field]: value })), []);
+  const updateTrigger = useCallback((field, value) => setEditing(prev => ({ ...prev, trigger: { ...(prev.trigger || {}), [field]: value } })), []);
+  const updateAI = useCallback((field, value) => setEditing(prev => ({ ...prev, ai: { ...(prev.ai || {}), [field]: value } })), []);
+
+  const save = useCallback(async () => {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      const payload = clone(editing);
+      payload.conditions = JSON.parse(payload._conditionsJSON || '[]');
+      payload.lookups = JSON.parse(payload._lookupsJSON || '[]');
+      payload.actions = JSON.parse(payload._actionsJSON || '[]');
+      payload.ai.resultSchema = JSON.parse(payload._schemaJSON || '{}');
+      delete payload._conditionsJSON;
+      delete payload._lookupsJSON;
+      delete payload._actionsJSON;
+      delete payload._schemaJSON;
+      const path = payload.id ? ('/workflows/' + encodeURIComponent(payload.id)) : '/workflows';
+      await api(path, { method: payload.id ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+      showToast(editing.id ? 'Workflow updated' : 'Workflow created');
+      setEditing(null);
+      await loadConfig();
+    } catch (err) {
+      showToast(err.message || 'Failed to save workflow', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }, [editing, loadConfig]);
+
+  const remove = useCallback(async (workflow) => {
+    if (!confirm('Delete workflow "' + workflow.name + '"? Audit runs will be kept.')) return;
+    try {
+      await apiDelete('/workflows/' + encodeURIComponent(workflow.id));
+      showToast('Workflow deleted');
+      await loadConfig();
+    } catch (err) {
+      showToast(err.message || 'Failed to delete workflow', 'error');
+    }
+  }, [loadConfig]);
+
+  const resolve = useCallback(async (run, action) => {
+    const labels = { approve: 'apply the proposed action', reject: 'reject the proposed action', retry: 'retry this workflow run' };
+    if (action !== 'retry' && !confirm('Confirm: ' + labels[action] + '?')) return;
+    try {
+      await api('/workflows/runs/' + encodeURIComponent(run.id) + '/resolve', {
+        method: 'POST', body: JSON.stringify({ action })
+      });
+      showToast('Workflow action applied');
+      await loadRuns();
+    } catch (err) {
+      showToast(err.message || 'Workflow action failed', 'error');
+    }
+  }, [loadRuns]);
+
+  const runManual = useCallback(async (workflow) => {
+    const raw = prompt('Manual input as JSON', '{}');
+    if (raw === null) return;
+    try {
+      await api('/workflows/' + encodeURIComponent(workflow.id) + '/run', {
+        method: 'POST', body: JSON.stringify({ input: JSON.parse(raw) })
+      });
+      showToast('Workflow queued');
+      setTab('runs');
+      await loadRuns();
+    } catch (err) {
+      showToast(err.message || 'Failed to run workflow', 'error');
+    }
+  }, [loadRuns]);
+
+  return html`
+    <div class="workflow-page">
+      <div class="workflow-hero">
+        <div>
+          <div class="workflow-title">AI Workflows</div>
+          <div class="workflow-subtitle">Connect events, conditions, indexed lookups, structured AI decisions, approvals, and database actions.</div>
+        </div>
+        <button class="btn" onClick=${loadAll} disabled=${loading}>${icons.refresh} Refresh</button>
+      </div>
+      ${!apiKeyConfigured && html`
+        <div class="workflow-warning">Set <code>OPENROUTER_API_KEY</code> or <code>Config.Workflow.OpenRouterAPIKey</code>. Runs remain in error and unpublished content stays hidden until retried or approved.</div>
+      `}
+      <div class="workflow-tabs">
+        <button class=${"workflow-tab" + (tab === 'runs' ? ' active' : '')} onClick=${() => setTab('runs')}>Runs & approvals</button>
+        <button class=${"workflow-tab" + (tab === 'moderation' ? ' active' : '')} onClick=${() => setTab('moderation')}>Moderation setup</button>
+        <button class=${"workflow-tab" + (tab === 'workflows' ? ' active' : '')} onClick=${() => setTab('workflows')}>Workflows (${workflows.length})</button>
+      </div>
+
+      ${tab === 'moderation' ? html`
+        <div class="workflow-grid">
+          ${templates.map(template => html`
+            <div class="workflow-card" key=${template.id}>
+              <div class="workflow-card-header">
+                <div><div class="workflow-name">${template.name}</div><div class="workflow-meta">${template.workflow.category || 'workflow'} template</div></div>
+                <button class="btn btn-primary btn-sm" onClick=${() => editWorkflow(template.workflow)}>Use template</button>
+              </div>
+              <div class="workflow-meta">${template.description}</div>
+              <div class="workflow-badges">
+                <span class="workflow-badge">${template.workflow.trigger?.type}</span>
+                ${(template.workflow.actions || []).map(a => html`<span class="workflow-badge" key=${a.type}>${a.type.replaceAll('_', ' ')}</span>`)}
+              </div>
+            </div>
+          `)}
+        </div>
+      ` : tab === 'workflows' ? html`
+        <div style="display:flex;justify-content:flex-end">
+          <button class="btn btn-primary" onClick=${() => editWorkflow(emptyWorkflow)}>${icons.plus} New workflow</button>
+        </div>
+        <div class="workflow-grid">
+          ${workflows.length === 0 ? html`<div class="empty-state" style="min-height:220px"><div class="empty-title">No workflows configured</div><div class="empty-desc">Use a moderation template or create a workflow.</div></div>` : workflows.map(workflow => html`
+            <div class="workflow-card" key=${workflow.id}>
+              <div class="workflow-card-header">
+                <div><div class="workflow-name">${workflow.name}</div><div class="workflow-meta">${workflow.trigger?.type}${workflow.trigger?.table ? ' · ' + workflow.trigger.table : ''} · ${workflow.ai?.model || ''}</div></div>
+                <div style="display:flex;gap:4px">
+                  ${workflow.trigger?.type === 'manual' && html`<button class="btn btn-sm" onClick=${() => runManual(workflow)}>Run</button>`}
+                  <button class="btn-icon" title="Edit" onClick=${() => editWorkflow(workflow)}>${icons.edit}</button>
+                  <button class="btn-icon danger" title="Delete" onClick=${() => remove(workflow)}>${icons.trash}</button>
+                </div>
+              </div>
+              <div class="workflow-badges">
+                <span class=${"workflow-badge" + (workflow.enabled ? ' on' : '')}>${workflow.enabled ? 'enabled' : 'disabled'}</span>
+                ${workflow.category && html`<span class="workflow-badge">${workflow.category}</span>`}
+                <span class="workflow-badge">${workflow.holdUntilComplete ? 'hold rows' : 'non-blocking'}</span>
+                ${(workflow.actions || []).map(a => html`<span class="workflow-badge" key=${a.type}>${a.type.replaceAll('_', ' ')}${a.requireApproval ? ' · approval' : ''}</span>`)}
+              </div>
+              <div class="workflow-meta">${(workflow.lookups || []).length} lookups · ${workflow.maxRetries || 0} retries</div>
+            </div>
+          `)}
+        </div>
+      ` : html`
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <select class="analytics-select" value=${status} onChange=${e => setStatus(e.target.value)}>
+            <option value="">All statuses</option>
+            ${['pending','running','awaiting_approval','error','completed','cancelled'].map(v => html`<option key=${v} value=${v}>${v.replace('_', ' ')}</option>`)}
+          </select>
+        </div>
+        <div class="observe-table-wrap">
+          <div class="panel-table-scroll">
+            <table>
+              <thead><tr><th>Status</th><th>Workflow / event</th><th>Result and reasoning</th><th>Action</th></tr></thead>
+              <tbody>
+                ${runs.length === 0 ? html`<tr><td colspan="4" class="empty-row">${loading ? 'Loading workflow runs…' : 'No workflow runs found'}</td></tr>` : runs.map(run => html`
+                  <tr key=${run.id}>
+                    <td><span class=${"status-pill " + run.status}>${run.status.replace('_', ' ')}</span><div class="th-type">${run.createdAtUnixMilli ? formatDateTime(run.createdAtUnixMilli) : ''}</div><div class="th-type">attempt ${run.attempt}/${(run.maxRetries || 0) + 1}</div></td>
+                    <td><div>${run.workflowName}</div><div class="th-type">${run.trigger}${run.event ? ' · ' + run.event : ''}</div><div class="th-type">${run.table ? run.table + '/' + run.rowId : 'external event'}</div></td>
+                    <td class="workflow-run-detail"><div>${run.recommendedAction || 'Awaiting result'}</div><div class="th-type">${run.reasoning || run.error || ''}</div></td>
+                    <td>
+                      <div style="display:flex;flex-wrap:wrap;gap:4px">
+                        ${run.status === 'awaiting_approval' && html`<button class="btn btn-sm" onClick=${() => resolve(run, 'approve')}>Approve</button>`}
+                        ${run.status === 'awaiting_approval' && html`<button class="btn btn-sm" onClick=${() => resolve(run, 'reject')}>Reject</button>`}
+                        ${run.status === 'error' && html`<button class="btn btn-sm" onClick=${() => resolve(run, 'retry')}>Retry</button>`}
+                        ${!['awaiting_approval','error'].includes(run.status) && html`<span class="th-type">${run.action || '-'}</span>`}
+                      </div>
+                    </td>
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `}
+
+      ${editing && html`
+          <div class="workflow-form">
+            <div class="workflow-card-header">
+              <div class="workflow-name">${editing.id ? 'Edit workflow' : 'New workflow'}</div>
+              <button class="btn-icon" onClick=${() => setEditing(null)}>&times;</button>
+            </div>
+            <div class="workflow-form-grid">
+              <div class="row-editor-field">
+                <label>Name</label>
+                <input value=${editing.name} onInput=${e => update('name', e.target.value)} />
+              </div>
+              <div class="row-editor-field">
+                <label>Category</label>
+                <input placeholder="moderation" value=${editing.category || ''} onInput=${e => update('category', e.target.value)} />
+              </div>
+              <div class="row-editor-field">
+                <label>Trigger</label>
+                <select value=${editing.trigger?.type || ''} onChange=${e => updateTrigger('type', e.target.value)}>
+                  ${['row_insert','row_update','report','discord','manual'].map(v => html`<option value=${v} key=${v}>${v.replace('_', ' ')}</option>`)}
+                </select>
+              </div>
+              ${['row_insert','row_update','report'].includes(editing.trigger?.type) && html`
+                <div class="row-editor-field">
+                  <label>Trigger table</label>
+                  <select value=${editing.trigger?.table || ''} onChange=${e => updateTrigger('table', e.target.value)}>
+                    <option value="">Select table</option>
+                    ${appTables.map(t => html`<option key=${t.name} value=${t.name}>${t.name}</option>`)}
+                  </select>
+                </div>
+              `}
+              ${['discord','report'].includes(editing.trigger?.type) && html`
+                <div class="row-editor-field">
+                  <label>Event name (optional)</label>
+                  <input placeholder="activity_mismatch" value=${editing.trigger?.event || ''} onInput=${e => updateTrigger('event', e.target.value)} />
+                </div>
+              `}
+              <div class="row-editor-field">
+                <label>Model</label>
+                <input placeholder="provider/model-name" value=${editing.ai?.model || ''} onInput=${e => updateAI('model', e.target.value)} />
+              </div>
+              <div class="row-editor-field">
+                <label>OpenRouter provider slug (optional)</label>
+                <input placeholder="openai" value=${editing.ai?.provider || ''} onInput=${e => updateAI('provider', e.target.value)} />
+              </div>
+              <div class="row-editor-field">
+                <label>Stop per-subject workflow after completed runs</label>
+                <input type="number" min="0" value=${editing.newUserClearedLimit || 0} onInput=${e => update('newUserClearedLimit', Number(e.target.value || 0))} />
+              </div>
+              <div class="row-editor-field">
+                <label>Subject path</label>
+                <input placeholder="input.row.userId" value=${editing.subjectPath || ''} onInput=${e => update('subjectPath', e.target.value)} />
+              </div>
+              <div class="row-editor-field">
+                <label>Automatic retries</label>
+                <input type="number" min="0" max="10" value=${editing.maxRetries || 0} onInput=${e => update('maxRetries', Number(e.target.value || 0))} />
+              </div>
+            </div>
+            <div class="row-editor-field">
+              <label>AI prompt</label>
+              <textarea value=${editing.ai?.prompt || ''} onInput=${e => updateAI('prompt', e.target.value)}></textarea>
+            </div>
+            <div class="workflow-checks">
+              <label class="workflow-check"><input type="checkbox" checked=${editing.enabled} onChange=${e => update('enabled', e.target.checked)} /> Enabled</label>
+              <label class="workflow-check"><input type="checkbox" checked=${editing.holdUntilComplete} onChange=${e => update('holdUntilComplete', e.target.checked)} /> Hold row visibility until complete</label>
+            </div>
+            <div class="workflow-form-grid">
+              ${[
+                ['_conditionsJSON', 'Conditions', '[{"field":"input.row.kind","operator":"equals","value":"post"}]'],
+                ['_lookupsJSON', 'Lookups / tools', '[{"name":"candidates","type":"search","table":"games","inputPath":"input.name","searchFields":["name"],"limit":10}]'],
+                ['_schemaJSON', 'Structured result JSON Schema', '{"type":"object","properties":{...}}'],
+                ['_actionsJSON', 'Actions', '[{"type":"delete","table":"posts","idPath":"input.rowId","requireApproval":true}]']
+              ].map(([field, label, placeholder]) => html`
+                <div class="row-editor-field" key=${field}>
+                  <label>${label} (JSON)</label>
+                  <textarea placeholder=${placeholder} value=${editing[field] || ''} onInput=${e => update(field, e.target.value)}></textarea>
+                </div>
+              `)}
+            </div>
+            <div class="workflow-meta">
+              Paths may reference <code>input</code>, <code>lookups</code>, and <code>result</code>. Sensitive actions can set <code>requireApproval</code>.
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <button class="btn" onClick=${() => setEditing(null)}>Cancel</button>
+              <button class="btn btn-primary" disabled=${saving} onClick=${save}>${saving ? 'Saving…' : 'Save workflow'}</button>
+            </div>
+          </div>
+      `}
+    </div>
+  `;
+}
+
 // ── Main App ──
 function App() {
   const [tables, setTables] = useState([]);
@@ -2813,6 +3162,7 @@ function App() {
   const [analyticsEnabled, setAnalyticsEnabled] = useState(false);
   const [mediaEnabled, setMediaEnabled] = useState(false);
   const [observeEnabled, setObserveEnabled] = useState(false);
+  const [workflowEnabled, setWorkflowEnabled] = useState(false);
   const evtRef = useRef(null);
 
   const loadTables = useCallback(async () => {
@@ -2904,6 +3254,9 @@ function App() {
     api('/analytics/indexes').then((data) => {
       if (data && data.data) setObserveEnabled(true);
     }).catch(() => setObserveEnabled(false));
+    api('/workflows/config').then((data) => {
+      setWorkflowEnabled(!!data?.enabled);
+    }).catch(() => setWorkflowEnabled(false));
   }, []);
 
   // Hash sync
@@ -2934,6 +3287,10 @@ function App() {
       }
       if (decoded === '_media') {
         setViewMode('media');
+        return;
+      }
+      if (decoded === '_workflow') {
+        setViewMode('workflow');
         return;
       }
       if (h.startsWith('_archive/')) {
@@ -2995,6 +3352,11 @@ function App() {
     window.location.hash = '_mail';
   }, []);
 
+  const selectWorkflow = useCallback(() => {
+    setViewMode('workflow');
+    window.location.hash = '_workflow';
+  }, []);
+
   const currentSchema = useMemo(() => {
     if (!currentTable) return null;
     const source = currentArchive ? archiveTables : tables;
@@ -3012,12 +3374,14 @@ function App() {
       analyticsEnabled=${analyticsEnabled}
       mediaEnabled=${mediaEnabled}
       observeEnabled=${observeEnabled}
+      workflowEnabled=${workflowEnabled}
       onSelect=${selectTable}
       onSelectArchive=${selectArchive}
       onSelectMedia=${selectMedia}
       onSelectAnalyticsVolume=${selectAnalyticsVolume}
       onSelectAnalyticsPerformance=${selectAnalyticsPerformance}
       onSelectObserve=${selectObserve}
+      onSelectWorkflow=${selectWorkflow}
       onSelectMail=${selectMail}
       onSelectBackups=${selectBackups}
       onLogout=${logout}
@@ -3033,6 +3397,8 @@ function App() {
         ? html`<${MailSettingsPage} />`
         : viewMode === 'backups'
         ? html`<${BackupsPage} />`
+        : viewMode === 'workflow' && workflowEnabled
+        ? html`<${WorkflowPage} tables=${tables} />`
         : currentTable
         ? html`<${DataTable} key=${(currentArchive ? 'archive:' : 'table:') + currentTable} tableName=${currentTable} tableMeta=${(currentArchive ? archiveTables : tables).find(t => t.name === currentTable)} schema=${currentSchema} archive=${currentArchive} onReload=${loadTables} sseSignal=${sseSignal} />`
         : html`<${EmptyState} />`

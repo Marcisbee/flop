@@ -21,7 +21,46 @@ reflects the code we still support in production.
 - Lazy loading with in-memory indexes
 - Schema migration support
 - Auth, admin UI, file uploads, and realtime handlers
+- Configurable OpenRouter AI workflows with durable review and action history
 - Go code generation for app schemas and frontend artifacts
+
+## AI workflows
+
+Enable OpenRouter when creating the app. `OpenRouterAPIKey` falls back to the
+`OPENROUTER_API_KEY` environment variable.
+
+```go
+app := flop.New(flop.Config{
+    DataDir: "./data",
+    Workflow: &flop.WorkflowConfig{
+        // OpenRouterAPIKey: "...",
+        Workers: 2,
+    },
+})
+```
+
+Open **AI Workflows** in the admin panel to configure reusable automations.
+Workflows support:
+
+- row insert/update, report, Discord, and manual triggers;
+- conditions and indexed `get`, index, or full-text search lookups;
+- an OpenRouter model, optional provider, prompt, and JSON Schema result;
+- approve, review queue, delete, block, and create/propose-alias actions;
+- per-action human approval, row visibility holds, and automatic retries; and
+- durable input, lookup, structured result, reasoning, status, retry, and error history.
+
+The admin includes new-user and reported-content moderation templates plus a
+Discord game-reconciliation template that searches game candidates and creates
+or proposes an alias. Pending rows configured with `HoldUntilComplete` are
+hidden from public API and access-policy reads while admin reads remain
+available for review.
+
+Applications can dispatch external events or queue a manual workflow:
+
+```go
+err := db.DispatchWorkflowEvent("discord", "activity_mismatch", payload)
+run, err := db.RunWorkflow(workflowID, input)
+```
 
 ## Development
 

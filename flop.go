@@ -34,6 +34,7 @@ type Config struct {
 	SMTP                  *SMTPConfig        `json:"-"`
 	RequireAuthEmail      bool               `json:"-"`
 	AuthPayloads          *AuthPayloadConfig `json:"-"`
+	Workflow              *WorkflowConfig    `json:"-"`
 }
 
 type AuthPayloadConfig struct {
