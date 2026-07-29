@@ -37,6 +37,16 @@ Run the benchmark gate used by CI:
 make pillar-gate
 ```
 
+Run the complete production qualification locally:
+
+```sh
+make release-check
+```
+
+This runs formatting, vet, unit, race, reachable-vulnerability, crash-recovery,
+and performance gates. `SyncMode` accepts only `full` (the durable default) or
+`normal`; invalid values fail database startup.
+
 Launch the maintained demo apps from the repository root:
 
 ```sh

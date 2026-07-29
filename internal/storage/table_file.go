@@ -111,7 +111,8 @@ func (tf *TableFile) allocatePageLocked() (uint32, *Page, error) {
 	page := CreatePage(pageNumber)
 
 	offset := int64(schema.FileHeaderSize) + int64(pageNumber)*int64(schema.PageSize)
-	if _, err := tf.file.WriteAt(page.Data[:], offset); err != nil {
+	data := page.Snapshot()
+	if _, err := tf.file.WriteAt(data[:], offset); err != nil {
 		return 0, nil, err
 	}
 
@@ -120,7 +121,9 @@ func (tf *TableFile) allocatePageLocked() (uint32, *Page, error) {
 		return 0, nil, err
 	}
 
-	tf.pageCache.PutPage(pageNumber, page)
+	if err := tf.pageCache.PutPage(pageNumber, page); err != nil {
+		return 0, nil, err
+	}
 	return pageNumber, page, nil
 }
 
@@ -176,7 +179,7 @@ func (tf *TableFile) ForEachRow(fn func(ScannedRow) bool) error {
 	for p := uint32(0); p < pageCount; p++ {
 		page, err := tf.GetPage(p)
 		if err != nil {
-			continue // skip unreadable pages (truncated file, I/O error)
+			return fmt.Errorf("read page %d: %w", p, err)
 		}
 		keepGoing := true
 		page.ForEachSlot(func(slotIndex int, data []byte) bool {

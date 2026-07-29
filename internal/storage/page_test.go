@@ -2,8 +2,37 @@ package storage
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+func TestPageCachePreservesDirtyPageWhenEvictionWriteFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pages.flop")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open page file: %v", err)
+	}
+	cache := NewPageCache(file, 1)
+	page0 := CreatePage(0)
+	if err := cache.PutPage(0, page0); err != nil {
+		t.Fatalf("put first page: %v", err)
+	}
+	cache.MarkDirty(0)
+	if err := file.Close(); err != nil {
+		t.Fatalf("close page file: %v", err)
+	}
+
+	if err := cache.PutPage(1, CreatePage(1)); err == nil {
+		t.Fatal("expected dirty-page eviction write to fail")
+	}
+	if !cache.IsDirty(0) {
+		t.Fatal("dirty page was discarded after failed eviction")
+	}
+	if got, err := cache.GetPage(0); err != nil || got != page0 {
+		t.Fatalf("dirty cached page was not retained: page=%p err=%v", got, err)
+	}
+}
 
 func TestPageInsertReusesDeletedSlot(t *testing.T) {
 	p := CreatePage(0)

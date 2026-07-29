@@ -460,6 +460,8 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	defer unsubscribe()
+	fmt.Fprint(w, ": connected\n\n")
+	flusher.Flush()
 
 	heartbeat := time.NewTicker(apiSSEHeartbeat)
 	defer heartbeat.Stop()

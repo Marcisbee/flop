@@ -22,10 +22,11 @@ func NewPageCache(file *os.File, maxPages int) *PageCache {
 		file:       file,
 	}
 	lru := util.NewLRUCache[uint32, *Page](maxPages)
-	lru.OnEvict = func(pageNum uint32, page *Page) {
+	lru.OnEvict = func(pageNum uint32, page *Page) error {
 		if pc.dirtyPages[pageNum] {
-			pc.flushPageSync(pageNum, page)
+			return pc.flushPageSync(pageNum, page)
 		}
+		return nil
 	}
 	pc.cache = lru
 	return pc
@@ -43,14 +44,16 @@ func (pc *PageCache) GetPage(pageNumber uint32) (*Page, error) {
 	if err != nil {
 		return nil, err
 	}
-	pc.cache.Set(pageNumber, p)
+	if err := pc.cache.Set(pageNumber, p); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
-func (pc *PageCache) PutPage(pageNumber uint32, page *Page) {
+func (pc *PageCache) PutPage(pageNumber uint32, page *Page) error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
-	pc.cache.Set(pageNumber, page)
+	return pc.cache.Set(pageNumber, page)
 }
 
 func (pc *PageCache) MarkDirty(pageNumber uint32) {
@@ -81,19 +84,28 @@ func (pc *PageCache) readPageFromDisk(pageNumber uint32) (*Page, error) {
 	if err != nil && n < schema.PageSize {
 		return nil, err
 	}
-	return NewPage(buf), nil
+	page := NewPage(buf)
+	if err := page.Validate(pageNumber); err != nil {
+		return nil, err
+	}
+	return page, nil
 }
 
 func (pc *PageCache) writePageToDisk(pageNumber uint32, page *Page) error {
 	offset := int64(schema.FileHeaderSize) + int64(pageNumber)*int64(schema.PageSize)
-	_, err := pc.file.WriteAt(page.Data[:], offset)
+	data := page.Snapshot()
+	_, err := pc.file.WriteAt(data[:], offset)
 	return err
 }
 
-func (pc *PageCache) flushPageSync(pageNumber uint32, page *Page) {
+func (pc *PageCache) flushPageSync(pageNumber uint32, page *Page) error {
 	offset := int64(schema.FileHeaderSize) + int64(pageNumber)*int64(schema.PageSize)
-	pc.file.WriteAt(page.Data[:], offset)
+	data := page.Snapshot()
+	if _, err := pc.file.WriteAt(data[:], offset); err != nil {
+		return err
+	}
 	delete(pc.dirtyPages, pageNumber)
+	return nil
 }
 
 func (pc *PageCache) IsDirty(pageNumber uint32) bool {

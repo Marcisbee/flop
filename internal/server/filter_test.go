@@ -315,12 +315,12 @@ func TestExtractSingleEquality(t *testing.T) {
 		{`name='alice'`, "name", "alice", true},
 		{`count=42`, "count", "42", true},
 		// Not simple equality — should return false
-		{`name~"alice"`, "", "", false},              // like, not eq
-		{`name!="alice"`, "", "", false},              // not-equal
-		{`a="1" && b="2"`, "", "", false},             // multiple expressions
-		{`a="1" || b="2"`, "", "", false},             // OR
-		{`(a="1")`, "", "", false},                    // nested group, not bare Expr
-		{`name>"alice"`, "", "", false},               // gt, not eq
+		{`name~"alice"`, "", "", false},   // like, not eq
+		{`name!="alice"`, "", "", false},  // not-equal
+		{`a="1" && b="2"`, "", "", false}, // multiple expressions
+		{`a="1" || b="2"`, "", "", false}, // OR
+		{`(a="1")`, "", "", false},        // nested group, not bare Expr
+		{`name>"alice"`, "", "", false},   // gt, not eq
 	}
 
 	for _, tc := range tests {

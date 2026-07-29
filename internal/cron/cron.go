@@ -13,11 +13,11 @@ import (
 
 // Schedule represents a parsed cron expression.
 type Schedule struct {
-	Minutes    []bool // [0..59]
-	Hours      []bool // [0..23]
+	Minutes     []bool // [0..59]
+	Hours       []bool // [0..23]
 	DaysOfMonth []bool // [1..31] (index 0 unused)
-	Months     []bool // [1..12] (index 0 unused)
-	DaysOfWeek []bool // [0..6] Sunday=0
+	Months      []bool // [1..12] (index 0 unused)
+	DaysOfWeek  []bool // [0..6] Sunday=0
 }
 
 var monthNames = map[string]int{

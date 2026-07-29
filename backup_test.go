@@ -144,9 +144,9 @@ func TestBackupSnapshotSkipsProtectedAdminFiles(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	protectedFiles := map[string]string{
-		backupSettingsRelPath:      `{"cron":"0 0 * * *"}`,
-		emailSettingsBackupRelPath: `{"appName":"Strike"}`,
-		testProtectedSuperadminSentinel:      `[{"email":"admin@example.com"}]`,
+		backupSettingsRelPath:           `{"cron":"0 0 * * *"}`,
+		emailSettingsBackupRelPath:      `{"appName":"Strike"}`,
+		testProtectedSuperadminSentinel: `[{"email":"admin@example.com"}]`,
 	}
 	for rel, body := range protectedFiles {
 		path := filepath.Join(db.GetDataDir(), filepath.FromSlash(rel))
@@ -200,9 +200,9 @@ func TestBackupRestorePreservesProtectedAdminFiles(t *testing.T) {
 	}
 
 	protectedPaths := map[string]string{
-		backupSettingsRelPath:      `{"cron":"0 0 * * *","cronMaxKeep":1}`,
-		emailSettingsBackupRelPath: `{"appName":"at-backup","templates":{}}`,
-		testProtectedSuperadminSentinel:      `[{"email":"before@example.com"}]`,
+		backupSettingsRelPath:           `{"cron":"0 0 * * *","cronMaxKeep":1}`,
+		emailSettingsBackupRelPath:      `{"appName":"at-backup","templates":{}}`,
+		testProtectedSuperadminSentinel: `[{"email":"before@example.com"}]`,
 	}
 	for rel, body := range protectedPaths {
 		path := filepath.Join(db.GetDataDir(), filepath.FromSlash(rel))
@@ -224,9 +224,9 @@ func TestBackupRestorePreservesProtectedAdminFiles(t *testing.T) {
 	}
 
 	currentProtected := map[string]string{
-		backupSettingsRelPath:      `{"cron":"0 1 * * *","cronMaxKeep":2}`,
-		emailSettingsBackupRelPath: `{"appName":"keep-current","templates":{}}`,
-		testProtectedSuperadminSentinel:      `[{"email":"current@example.com"}]`,
+		backupSettingsRelPath:           `{"cron":"0 1 * * *","cronMaxKeep":2}`,
+		emailSettingsBackupRelPath:      `{"appName":"keep-current","templates":{}}`,
+		testProtectedSuperadminSentinel: `[{"email":"current@example.com"}]`,
 	}
 	for rel, body := range currentProtected {
 		path := filepath.Join(db.GetDataDir(), filepath.FromSlash(rel))

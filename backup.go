@@ -28,10 +28,10 @@ import (
 )
 
 const (
-	backupSettingsRelPath = "_system/backups.json"
+	backupSettingsRelPath      = "_system/backups.json"
 	emailSettingsBackupRelPath = "_system/email.json"
-	localBackupsDirName   = "backups"
-	backupSecretMask      = "******"
+	localBackupsDirName        = "backups"
+	backupSecretMask           = "******"
 )
 
 var protectedBackupRestorePaths = []string{
@@ -549,9 +549,6 @@ func (m *backupManager) runSchedule(ctx context.Context, schedule *cron.Schedule
 }
 
 func (m *backupManager) writeSnapshotZip() (string, error) {
-	if err := m.db.Checkpoint(); err != nil {
-		return "", err
-	}
 	tmpFile, err := os.CreateTemp("", "flop-backup-*.zip")
 	if err != nil {
 		return "", err
@@ -559,56 +556,58 @@ func (m *backupManager) writeSnapshotZip() (string, error) {
 	tmpPath := tmpFile.Name()
 	zipWriter := zip.NewWriter(tmpFile)
 
-	err = filepath.WalkDir(m.db.GetDataDir(), func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == m.db.GetDataDir() {
-			return nil
-		}
-
-		rel, err := filepath.Rel(m.db.GetDataDir(), path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-
-		if entry.IsDir() {
-			if shouldSkipBackupEntry(rel) {
-				return filepath.SkipDir
+	err = m.db.db.WithConsistentSnapshot(func(dataDir string) error {
+		return filepath.WalkDir(dataDir, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
 			}
-			return nil
-		}
-		if shouldSkipBackupEntry(rel) {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		header, err := zip.FileInfoHeader(info)
-		if err != nil {
-			return err
-		}
-		header.Name = rel
-		header.Method = zip.Deflate
-		writer, err := zipWriter.CreateHeader(header)
-		if err != nil {
-			return err
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(writer, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		return closeErr
+			if path == dataDir {
+				return nil
+			}
+
+			rel, err := filepath.Rel(dataDir, path)
+			if err != nil {
+				return err
+			}
+			rel = filepath.ToSlash(rel)
+
+			if entry.IsDir() {
+				if shouldSkipBackupEntry(rel) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if shouldSkipBackupEntry(rel) {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			header, err := zip.FileInfoHeader(info)
+			if err != nil {
+				return err
+			}
+			header.Name = rel
+			header.Method = zip.Deflate
+			writer, err := zipWriter.CreateHeader(header)
+			if err != nil {
+				return err
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(writer, file)
+			closeErr := file.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			return closeErr
+		})
 	})
 	if err != nil {
 		_ = zipWriter.Close()

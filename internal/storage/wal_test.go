@@ -10,6 +10,81 @@ import (
 	"github.com/marcisbee/flop/internal/util"
 )
 
+func TestOpenWALRejectsCorruptHeaderWithoutTruncating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "corrupt.wal")
+	original := []byte("not-a-valid-wal-header")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatalf("write corrupt WAL: %v", err)
+	}
+
+	if _, err := OpenWAL(path); err == nil {
+		t.Fatal("expected corrupt WAL header to be rejected")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read WAL after rejected open: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("corrupt WAL was modified: got=%q want=%q", got, original)
+	}
+}
+
+func TestWALReplayTruncatesTornTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "torn.wal")
+	w, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("open WAL: %v", err)
+	}
+	txID := w.BeginTransaction()
+	if err := w.FlushBatch([][]byte{
+		w.BuildBeginRecord(txID),
+		w.BuildRecord(txID, WALOpInsert, []byte("complete")),
+	}, []uint32{txID}); err != nil {
+		t.Fatalf("flush complete transaction: %v", err)
+	}
+	before, err := w.file.Stat()
+	if err != nil {
+		t.Fatalf("stat WAL: %v", err)
+	}
+	if _, err := w.file.WriteAt([]byte{0x40, 0x00, 0x00, 0x00, 0x01}, before.Size()); err != nil {
+		t.Fatalf("append torn record: %v", err)
+	}
+
+	entries, err := w.Replay()
+	if err != nil {
+		t.Fatalf("replay torn WAL: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected complete transaction to survive, got %d entries", len(entries))
+	}
+	after, err := w.file.Stat()
+	if err != nil {
+		t.Fatalf("stat repaired WAL: %v", err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("torn tail not truncated: got=%d want=%d", after.Size(), before.Size())
+	}
+	_ = w.Close()
+}
+
+func TestWALReplayRejectsChecksumCorruption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "checksum.wal")
+	w, err := OpenWAL(path)
+	if err != nil {
+		t.Fatalf("open WAL: %v", err)
+	}
+	txID := w.BeginTransaction()
+	record := w.BuildRecord(txID, WALOpInsert, []byte("payload"))
+	record[len(record)-1] ^= 0xff
+	if _, err := w.file.WriteAt(record, walHeaderSize); err != nil {
+		t.Fatalf("write corrupt record: %v", err)
+	}
+	if _, err := w.Replay(); err == nil {
+		t.Fatal("expected checksum corruption to fail replay")
+	}
+	_ = w.Close()
+}
+
 func TestWALReplayV2BeginCommitLSN(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.wal")
 	w, err := OpenWAL(path)

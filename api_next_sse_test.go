@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,7 +55,7 @@ func TestAPISSERespectsRowReadAccess(t *testing.T) {
 	}, secret)
 
 	h := app.APIHandler(db)
-	rec := httptest.NewRecorder()
+	rec := newSynchronizedRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/sse?tables=posts&_token="+token, nil).WithContext(ctx)
 
@@ -64,8 +65,11 @@ func TestAPISSERespectsRowReadAccess(t *testing.T) {
 		close(done)
 	}()
 
-	// Give handler time to subscribe.
-	time.Sleep(30 * time.Millisecond)
+	if !waitForSSEConnected(rec, time.Second) {
+		cancel()
+		<-done
+		t.Fatalf("timed out waiting for SSE subscription; body=%q", rec.BodyString())
+	}
 
 	// Readable update -> should emit normal update with row id.
 	if _, err := raw.Update("p1", map[string]any{"title": "own-updated"}); err != nil {
@@ -91,12 +95,12 @@ func TestAPISSERespectsRowReadAccess(t *testing.T) {
 	if !waitForMinChangeEvents(rec, 4, 2*time.Second) {
 		cancel()
 		<-done
-		t.Fatalf("timed out waiting for SSE events; body=%q", rec.Body.String())
+		t.Fatalf("timed out waiting for SSE events; body=%q", rec.BodyString())
 	}
 	cancel()
 	<-done
 
-	events := parseSSEChanges(rec.Body.String())
+	events := parseSSEChanges(rec.BodyString())
 	if len(events) != 4 {
 		t.Fatalf("expected 4 change events, got %d: %#v", len(events), events)
 	}
@@ -155,7 +159,7 @@ func TestAPISSEPublicTableEmitsRawChanges(t *testing.T) {
 	}
 
 	h := app.APIHandler(db)
-	rec := httptest.NewRecorder()
+	rec := newSynchronizedRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/sse?tables=logs", nil).WithContext(ctx)
 
@@ -164,7 +168,11 @@ func TestAPISSEPublicTableEmitsRawChanges(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		close(done)
 	}()
-	time.Sleep(30 * time.Millisecond)
+	if !waitForSSEConnected(rec, time.Second) {
+		cancel()
+		<-done
+		t.Fatalf("timed out waiting for SSE subscription; body=%q", rec.BodyString())
+	}
 
 	if _, err := raw.Insert(map[string]any{"id": "l1", "msg": "hello"}); err != nil {
 		t.Fatalf("insert l1: %v", err)
@@ -172,12 +180,12 @@ func TestAPISSEPublicTableEmitsRawChanges(t *testing.T) {
 	if !waitForMinChangeEvents(rec, 1, time.Second) {
 		cancel()
 		<-done
-		t.Fatalf("timed out waiting for SSE event; body=%q", rec.Body.String())
+		t.Fatalf("timed out waiting for SSE event; body=%q", rec.BodyString())
 	}
 	cancel()
 	<-done
 
-	events := parseSSEChanges(rec.Body.String())
+	events := parseSSEChanges(rec.BodyString())
 	if len(events) < 1 {
 		t.Fatalf("expected at least 1 event, got %d", len(events))
 	}
@@ -214,13 +222,51 @@ func parseSSEChanges(raw string) []map[string]any {
 	return out
 }
 
-func waitForMinChangeEvents(rec *httptest.ResponseRecorder, min int, timeout time.Duration) bool {
+type synchronizedRecorder struct {
+	*httptest.ResponseRecorder
+	mu sync.Mutex
+}
+
+func newSynchronizedRecorder() *synchronizedRecorder {
+	return &synchronizedRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (r *synchronizedRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ResponseRecorder.Write(p)
+}
+
+func (r *synchronizedRecorder) Flush() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ResponseRecorder.Flush()
+}
+
+func (r *synchronizedRecorder) BodyString() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Body.String()
+}
+
+func waitForMinChangeEvents(rec *synchronizedRecorder, min int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if len(parseSSEChanges(rec.Body.String())) >= min {
+		if len(parseSSEChanges(rec.BodyString())) >= min {
 			return true
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	return len(parseSSEChanges(rec.Body.String())) >= min
+	return len(parseSSEChanges(rec.BodyString())) >= min
+}
+
+func waitForSSEConnected(rec *synchronizedRecorder, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(rec.BodyString(), ": connected\n\n") {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return strings.Contains(rec.BodyString(), ": connected\n\n")
 }

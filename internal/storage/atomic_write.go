@@ -61,3 +61,9 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	cleanup = false
 	return nil
 }
+
+// WriteFileAtomic durably replaces path using temp-file, fsync, rename, and
+// parent-directory fsync.
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
+	return writeFileAtomic(path, data, mode)
+}

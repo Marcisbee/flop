@@ -13,11 +13,11 @@ import (
 
 // WAL operation codes.
 const (
-	WALOpBegin  = 0
-	WALOpInsert = 1
-	WALOpUpdate = 2
-	WALOpDelete = 3
-	WALOpCommit = 4
+	WALOpBegin         = 0
+	WALOpInsert        = 1
+	WALOpUpdate        = 2
+	WALOpDelete        = 3
+	WALOpCommit        = 4
 	WALOpArchiveInsert = 5
 	WALOpArchiveDelete = 6
 
@@ -78,13 +78,8 @@ func OpenWAL(path string) (*WAL, error) {
 		}
 	} else {
 		if err := w.readHeader(); err != nil {
-			// Reset on bad header
-			_ = f.Truncate(0)
-			w.version = walVersionCurrent
-			if err := w.writeHeader(); err != nil {
-				f.Close()
-				return nil, err
-			}
+			f.Close()
+			return nil, fmt.Errorf("read WAL header: %w", err)
 		}
 	}
 
@@ -335,20 +330,29 @@ func (w *WAL) Replay() ([]WALEntry, error) {
 	entries := make([]WALEntry, 0, 64)
 	offset := 0
 	var maxLSN uint64
+	tornTail := false
 
-	for offset+4 <= len(fullBuf) {
+	for offset < len(fullBuf) {
+		if offset+4 > len(fullBuf) {
+			tornTail = true
+			break
+		}
 		recordLen := int(binary.LittleEndian.Uint32(fullBuf[offset : offset+4]))
-		if recordLen <= 0 || offset+4+recordLen > len(fullBuf) {
+		if recordLen <= 0 {
+			return nil, fmt.Errorf("corrupt WAL record length at offset %d", walHeaderSize+offset)
+		}
+		if offset+4+recordLen > len(fullBuf) {
+			tornTail = true
 			break
 		}
 
 		recordStart := offset + 4
 		recordEnd := recordStart + recordLen
 		if recordEnd-recordStart < 9 {
-			break
+			return nil, fmt.Errorf("corrupt WAL record at offset %d: record too short", walHeaderSize+offset)
 		}
 		if recordEnd-recordStart < 13 {
-			break
+			return nil, fmt.Errorf("corrupt WAL record at offset %d: record too short", walHeaderSize+offset)
 		}
 
 		var (
@@ -363,7 +367,7 @@ func (w *WAL) Replay() ([]WALEntry, error) {
 
 		if w.version >= walVersionCurrent {
 			if recordEnd-recordStart < 21 {
-				break
+				return nil, fmt.Errorf("corrupt WAL record at offset %d: record too short", walHeaderSize+offset)
 			}
 			lsn = binary.LittleEndian.Uint64(fullBuf[recordStart+5 : recordStart+13])
 			dataLen = binary.LittleEndian.Uint32(fullBuf[recordStart+13 : recordStart+17])
@@ -375,14 +379,14 @@ func (w *WAL) Replay() ([]WALEntry, error) {
 
 		dataEnd := dataStartPos + int(dataLen)
 		crcPos := dataEnd
-		if dataEnd < dataStartPos || crcPos+4 > recordEnd {
-			break
+		if dataEnd < dataStartPos || crcPos+4 != recordEnd {
+			return nil, fmt.Errorf("corrupt WAL record at offset %d: invalid payload length", walHeaderSize+offset)
 		}
 
 		expectedCRC := binary.LittleEndian.Uint32(fullBuf[crcPos : crcPos+4])
 		actualCRC := util.CRC32(fullBuf[offset:crcPos])
 		if expectedCRC != actualCRC {
-			break // stop at first corrupted/torn record
+			return nil, fmt.Errorf("corrupt WAL record at offset %d: CRC32 mismatch", walHeaderSize+offset)
 		}
 
 		data := make([]byte, dataLen)
@@ -394,6 +398,14 @@ func (w *WAL) Replay() ([]WALEntry, error) {
 		offset += 4 + recordLen
 	}
 
+	if tornTail {
+		if err := w.file.Truncate(int64(walHeaderSize + offset)); err != nil {
+			return nil, fmt.Errorf("truncate torn WAL tail: %w", err)
+		}
+		if err := w.file.Sync(); err != nil {
+			return nil, fmt.Errorf("sync repaired WAL tail: %w", err)
+		}
+	}
 	if maxLSN > 0 {
 		w.lsn.Store(maxLSN)
 	}

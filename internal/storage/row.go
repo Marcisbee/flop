@@ -103,7 +103,7 @@ func DeserializeRow(buf []byte, offset int, cs *schema.CompiledSchema) (row map[
 	for i := 0; i < fieldCount && i < len(cs.Fields); i++ {
 		field := cs.Fields[i]
 		if offset >= len(buf) {
-			break
+			return nil, 0, 0, ErrShortBuffer
 		}
 		tag := schema.TypeTag(buf[offset])
 		offset++
@@ -111,6 +111,9 @@ func DeserializeRow(buf []byte, offset int, cs *schema.CompiledSchema) (row map[
 		if tag == schema.TagNull {
 			row[field.Name] = nil
 			continue
+		}
+		if expected := schema.FieldTypeTag(field.Kind); tag != expected {
+			return nil, 0, 0, fmt.Errorf("invalid type tag for field %q: got=%d want=%d", field.Name, tag, expected)
 		}
 
 		switch tag {
@@ -145,6 +148,9 @@ func DeserializeRow(buf []byte, offset int, cs *schema.CompiledSchema) (row map[
 			if offset >= len(buf) {
 				return nil, 0, 0, ErrShortBuffer
 			}
+			if buf[offset] > 1 {
+				return nil, 0, 0, fmt.Errorf("invalid boolean encoding: %d", buf[offset])
+			}
 			row[field.Name] = buf[offset] == 1
 			offset++
 
@@ -161,7 +167,9 @@ func DeserializeRow(buf []byte, offset int, cs *schema.CompiledSchema) (row map[
 					return nil, 0, 0, ErrShortBuffer
 				}
 				var v interface{}
-				json.Unmarshal(buf[offset:offset+int(length)], &v)
+				if err := json.Unmarshal(buf[offset:offset+int(length)], &v); err != nil {
+					return nil, 0, 0, fmt.Errorf("invalid JSON field: %w", err)
+				}
 				row[field.Name] = v
 			}
 			offset += int(length)
@@ -210,7 +218,7 @@ func DeserializeRow(buf []byte, offset int, cs *schema.CompiledSchema) (row map[
 			row[field.Name] = vec
 
 		default:
-			row[field.Name] = nil
+			return nil, 0, 0, fmt.Errorf("invalid field type tag: %d", tag)
 		}
 	}
 
@@ -233,7 +241,7 @@ func DeserializeRawFields(buf []byte, offset int) (values []interface{}, schemaV
 
 	for i := 0; i < fieldCount; i++ {
 		if offset >= len(buf) {
-			break
+			return nil, 0, 0, ErrShortBuffer
 		}
 		tag := schema.TypeTag(buf[offset])
 		offset++
@@ -245,43 +253,78 @@ func DeserializeRawFields(buf []byte, offset int) (values []interface{}, schemaV
 
 		switch tag {
 		case schema.TagString:
+			if offset+4 > len(buf) {
+				return nil, 0, 0, ErrShortBuffer
+			}
 			length := binary.LittleEndian.Uint32(buf[offset : offset+4])
 			offset += 4
+			if offset+int(length) > len(buf) {
+				return nil, 0, 0, ErrShortBuffer
+			}
 			values = append(values, string(buf[offset:offset+int(length)]))
 			offset += int(length)
 
 		case schema.TagNumber:
+			if offset+8 > len(buf) {
+				return nil, 0, 0, ErrShortBuffer
+			}
 			bits := binary.LittleEndian.Uint64(buf[offset : offset+8])
 			values = append(values, math.Float64frombits(bits))
 			offset += 8
 
 		case schema.TagInteger:
+			if offset+4 > len(buf) {
+				return nil, 0, 0, ErrShortBuffer
+			}
 			values = append(values, int32(binary.LittleEndian.Uint32(buf[offset:offset+4])))
 			offset += 4
 
 		case schema.TagBoolean:
+			if offset >= len(buf) {
+				return nil, 0, 0, ErrShortBuffer
+			}
+			if buf[offset] > 1 {
+				return nil, 0, 0, fmt.Errorf("invalid boolean encoding: %d", buf[offset])
+			}
 			values = append(values, buf[offset] == 1)
 			offset++
 
 		case schema.TagJson, schema.TagFileSingle, schema.TagFileMulti:
+			if offset+4 > len(buf) {
+				return nil, 0, 0, ErrShortBuffer
+			}
 			length := binary.LittleEndian.Uint32(buf[offset : offset+4])
 			offset += 4
 			if length == 0 {
 				values = append(values, nil)
 			} else {
+				if offset+int(length) > len(buf) {
+					return nil, 0, 0, ErrShortBuffer
+				}
 				var v interface{}
-				json.Unmarshal(buf[offset:offset+int(length)], &v)
+				if err := json.Unmarshal(buf[offset:offset+int(length)], &v); err != nil {
+					return nil, 0, 0, fmt.Errorf("invalid JSON field: %w", err)
+				}
 				values = append(values, v)
 			}
 			offset += int(length)
 
 		case schema.TagArray:
+			if offset+2 > len(buf) {
+				return nil, 0, 0, ErrShortBuffer
+			}
 			count := binary.LittleEndian.Uint16(buf[offset : offset+2])
 			offset += 2
 			arr := make([]string, 0, count)
 			for j := 0; j < int(count); j++ {
+				if offset+2 > len(buf) {
+					return nil, 0, 0, ErrShortBuffer
+				}
 				length := binary.LittleEndian.Uint16(buf[offset : offset+2])
 				offset += 2
+				if offset+int(length) > len(buf) {
+					return nil, 0, 0, ErrShortBuffer
+				}
 				arr = append(arr, string(buf[offset:offset+int(length)]))
 				offset += int(length)
 			}
@@ -292,10 +335,16 @@ func DeserializeRawFields(buf []byte, offset int) (values []interface{}, schemaV
 			values = append(values, iArr)
 
 		case schema.TagVector:
+			if offset+2 > len(buf) {
+				return nil, 0, 0, ErrShortBuffer
+			}
 			count := binary.LittleEndian.Uint16(buf[offset : offset+2])
 			offset += 2
 			vec := make([]interface{}, 0, count)
 			for j := 0; j < int(count); j++ {
+				if offset+8 > len(buf) {
+					return nil, 0, 0, ErrShortBuffer
+				}
 				bits := binary.LittleEndian.Uint64(buf[offset : offset+8])
 				vec = append(vec, math.Float64frombits(bits))
 				offset += 8
@@ -303,7 +352,7 @@ func DeserializeRawFields(buf []byte, offset int) (values []interface{}, schemaV
 			values = append(values, vec)
 
 		default:
-			values = append(values, nil)
+			return nil, 0, 0, fmt.Errorf("invalid field type tag: %d", tag)
 		}
 	}
 
@@ -433,4 +482,3 @@ func toFloat64Slice(v interface{}) []float64 {
 		return nil
 	}
 }
-
