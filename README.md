@@ -45,7 +45,7 @@ Workflows support:
 - row insert/update, report, Discord, and manual triggers;
 - conditions and indexed `get`, index, or full-text search lookups;
 - an OpenRouter model, optional provider, prompt, and JSON Schema result;
-- approve, review queue, delete, block, and create/propose-alias actions;
+- approve, review queue, delete, archive, block, and create/propose-alias actions;
 - per-action human approval, row visibility holds, and automatic retries; and
 - durable input, lookup, structured result, reasoning, status, retry, and error history.
 
@@ -54,6 +54,26 @@ Discord game-reconciliation template that searches game candidates and creates
 or proposes an alias. Pending rows configured with `HoldUntilComplete` are
 hidden from public API and access-policy reads while admin reads remain
 available for review.
+
+Applications can replace those conventional starter templates with definitions
+that match their own tables and fields:
+
+```go
+Workflow: &flop.WorkflowConfig{
+    Templates: []flop.WorkflowTemplate{
+        {
+            ID:   "app-post-moderator",
+            Name: "App post moderator",
+            Workflow: flop.Workflow{
+                // Application-specific trigger, paths, and actions.
+            },
+        },
+    },
+},
+```
+
+Set `Templates` to an empty non-nil slice to hide all starters. An `archive`
+workflow action uses the table's normal cascade-archive semantics.
 
 Applications can dispatch external events or queue a manual workflow:
 

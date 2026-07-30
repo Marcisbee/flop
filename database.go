@@ -2451,6 +2451,13 @@ func (p *EngineAdminProvider) AdminWorkflows() ([]Workflow, error) {
 	return p.DB.Workflows()
 }
 
+func (p *EngineAdminProvider) AdminWorkflowTemplates() []WorkflowTemplate {
+	if p == nil || p.DB == nil {
+		return WorkflowTemplates()
+	}
+	return p.DB.WorkflowTemplates()
+}
+
 func (p *EngineAdminProvider) AdminSaveWorkflow(m Workflow) (Workflow, error) {
 	return p.DB.SaveWorkflow(m)
 }

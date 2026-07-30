@@ -175,6 +175,12 @@ type AdminWorkflowProvider interface {
 	AdminWorkflowAPIKeyConfigured() bool
 }
 
+// AdminWorkflowTemplateProvider optionally supplies application-specific
+// workflow templates to the admin UI.
+type AdminWorkflowTemplateProvider interface {
+	AdminWorkflowTemplates() []WorkflowTemplate
+}
+
 // AdminPprofProvider exposes whether profiling routes should be enabled.
 type AdminPprofProvider interface {
 	AdminEnablePprof() bool
@@ -473,11 +479,15 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					adminJSONError(w, err.Error(), http.StatusBadRequest)
 					return
 				}
+				templates := WorkflowTemplates()
+				if templateProvider, ok := provider.(AdminWorkflowTemplateProvider); ok {
+					templates = templateProvider.AdminWorkflowTemplates()
+				}
 				adminJSONResp(w, http.StatusOK, map[string]any{
 					"enabled":          true,
 					"apiKeyConfigured": workflowProvider.AdminWorkflowAPIKeyConfigured(),
 					"workflows":        workflows,
-					"templates":        WorkflowTemplates(),
+					"templates":        templates,
 				})
 				return
 			case path == "/_/api/workflows" && r.Method == http.MethodPost:

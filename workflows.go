@@ -30,6 +30,9 @@ type WorkflowConfig struct {
 	OpenRouterURL    string
 	HTTPClient       *http.Client
 	Workers          int
+	// Templates replaces the built-in admin workflow templates when non-nil.
+	// Use an empty slice to expose no templates.
+	Templates []WorkflowTemplate
 }
 
 // WorkflowTrigger selects events that start a workflow. Row triggers use Table.
@@ -637,6 +640,17 @@ func (s *workflowService) applyAction(run WorkflowRun, action WorkflowAction) er
 		}
 		_, err := table.Delete(id)
 		return err
+	case "archive":
+		table := s.db.Table(action.Table)
+		if table == nil {
+			return fmt.Errorf("workflow archive table %q not found", action.Table)
+		}
+		id := strings.TrimSpace(toString(valueAtPath(scope, action.IDPath)))
+		if id == "" {
+			return errors.New("workflow archive action resolved an empty ID")
+		}
+		_, err := table.Archive(id)
+		return err
 	case "block":
 		table := s.db.db.GetTable(action.Table)
 		if table == nil {
@@ -822,16 +836,16 @@ func (s *workflowService) validateWorkflow(workflow Workflow) error {
 		}
 	}
 	for _, action := range workflow.Actions {
-		if !containsString([]string{"approve", "queue_review", "delete", "block", "create_alias", "propose_alias"}, action.Type) {
+		if !containsString([]string{"approve", "queue_review", "delete", "archive", "block", "create_alias", "propose_alias"}, action.Type) {
 			return fmt.Errorf("unsupported workflow action %q", action.Type)
 		}
-		if containsString([]string{"delete", "block", "create_alias", "propose_alias"}, action.Type) {
+		if containsString([]string{"delete", "archive", "block", "create_alias", "propose_alias"}, action.Type) {
 			table := s.db.db.GetTable(action.Table)
 			if table == nil || strings.HasPrefix(action.Table, "_") {
 				return fmt.Errorf("workflow action table %q not found", action.Table)
 			}
 		}
-		if (action.Type == "delete" || action.Type == "block") && action.IDPath == "" {
+		if (action.Type == "delete" || action.Type == "archive" || action.Type == "block") && action.IDPath == "" {
 			return fmt.Errorf("workflow action %q needs an ID path", action.Type)
 		}
 		if action.Type == "block" && action.Field == "" {
@@ -1367,6 +1381,15 @@ func WorkflowTemplates() []WorkflowTemplate {
 			},
 		},
 	}
+}
+
+// WorkflowTemplates returns the application-configured workflow templates.
+// Built-in templates are returned when WorkflowConfig.Templates is nil.
+func (d *Database) WorkflowTemplates() []WorkflowTemplate {
+	if d == nil || d.workflow == nil || d.workflow.config.Templates == nil {
+		return WorkflowTemplates()
+	}
+	return append([]WorkflowTemplate(nil), d.workflow.config.Templates...)
 }
 
 func workflowMatches(workflow Workflow, trigger, event, tableName string) bool {
