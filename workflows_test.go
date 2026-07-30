@@ -79,6 +79,10 @@ func (p noAuthWorkflowAdmin) AdminWorkflows() ([]Workflow, error) {
 	return p.provider.AdminWorkflows()
 }
 
+func (p noAuthWorkflowAdmin) AdminWorkflowTemplates() []WorkflowTemplate {
+	return p.provider.AdminWorkflowTemplates()
+}
+
 func (p noAuthWorkflowAdmin) AdminSaveWorkflow(workflow Workflow) (Workflow, error) {
 	return p.provider.AdminSaveWorkflow(workflow)
 }
@@ -206,6 +210,57 @@ func TestReportedContentWorkflowRequiresApprovalBeforeDelete(t *testing.T) {
 	}
 	if row, _ := db.Table("posts").Get("target"); row != nil {
 		t.Fatal("approved delete did not remove target")
+	}
+}
+
+func TestReportedContentWorkflowArchivesTargetAndDependents(t *testing.T) {
+	router := httptest.NewServer(workflowResponse(`{"action":"archive","reasoning":"valid report"}`))
+	defer router.Close()
+	app, _, posts, reports := workflowTestApp(t, router.URL)
+	Define(app, "comments", func(s *SchemaBuilder) {
+		s.String("id").Primary().Required()
+		s.Ref("postId", posts, "id").Required().CascadeArchive()
+		s.String("body").Required()
+	})
+	db, err := app.Open()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := posts.Insert(db, map[string]any{"id": "target", "userId": "u1", "body": "reported post"}); err != nil {
+		t.Fatalf("insert target: %v", err)
+	}
+	if _, err := db.Table("comments").Insert(map[string]any{"id": "c1", "postId": "target", "body": "dependent"}); err != nil {
+		t.Fatalf("insert dependent: %v", err)
+	}
+	_, err = db.SaveWorkflow(Workflow{
+		Name: "Archive reports", Enabled: true, Category: "moderation",
+		Trigger: WorkflowTrigger{Type: "report", Table: "reports", Events: []string{"insert"}},
+		AI:      WorkflowAIStep{Model: "test/model", Prompt: "review report", ResultSchema: defaultWorkflowResultSchema([]string{"archive"})},
+		Actions: []WorkflowAction{{Type: "archive", Table: "posts", IDPath: "input.row.postId", RequireApproval: true}},
+	})
+	if err != nil {
+		t.Fatalf("save workflow: %v", err)
+	}
+	if _, err := reports.Insert(db, map[string]any{"id": "r1", "postId": "target", "reason": "illegal"}); err != nil {
+		t.Fatalf("insert report: %v", err)
+	}
+	run := waitForWorkflowRun(t, db, "awaiting_approval")
+	if _, err := db.ResolveWorkflowRun(run.ID, "approve"); err != nil {
+		t.Fatalf("approve run: %v", err)
+	}
+	if row, _ := db.Table("posts").Get("target"); row != nil {
+		t.Fatal("approved archive left target live")
+	}
+	if row, _ := db.Table("comments").Get("c1"); row != nil {
+		t.Fatal("approved archive left dependent live")
+	}
+	for _, table := range []string{"posts", "comments"} {
+		records, _, err := db.db.GetTable(table).ScanArchived(10, 0)
+		if err != nil || len(records) != 1 {
+			t.Fatalf("%s archived records=%d err=%v", table, len(records), err)
+		}
 	}
 }
 
@@ -361,5 +416,46 @@ func TestWorkflowAdminConfigAndRunsRoutes(t *testing.T) {
 				t.Fatalf("workflow templates=%d, want 3", len(body.Templates))
 			}
 		}
+	}
+}
+
+func TestWorkflowAdminUsesApplicationTemplates(t *testing.T) {
+	router := httptest.NewServer(workflowResponse(`{"action":"approve","reasoning":"ok"}`))
+	defer router.Close()
+	app, _, _, _ := workflowTestApp(t, router.URL)
+	app.config.Workflow.Templates = []WorkflowTemplate{{
+		ID:          "strike-post-moderator",
+		Name:        "Strike post moderator",
+		Description: "Review Strike posts.",
+		Workflow: Workflow{
+			Name:    "Strike post moderator",
+			Enabled: true,
+			Trigger: WorkflowTrigger{Type: "row_insert", Table: "posts"},
+			AI:      WorkflowAIStep{Model: "test/model", Prompt: "review"},
+			Actions: []WorkflowAction{{Type: "archive", Table: "posts", IDPath: "input.row.id"}},
+		},
+	}}
+	db, err := app.Open()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mux := http.NewServeMux()
+	MountDefaultAdmin(mux, noAuthWorkflowAdmin{provider: &EngineAdminProvider{DB: db}})
+	req := httptest.NewRequest(http.MethodGet, "/_/api/workflows/config", nil)
+	resp := httptest.NewRecorder()
+	mux.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Templates []WorkflowTemplate `json:"templates"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if len(body.Templates) != 1 || body.Templates[0].ID != "strike-post-moderator" {
+		t.Fatalf("application templates not exposed: %+v", body.Templates)
 	}
 }
