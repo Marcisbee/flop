@@ -2849,6 +2849,8 @@ const emptyWorkflow = {
   holdUntilComplete: false, subjectPath: '', newUserClearedLimit: 0, maxRetries: 2
 };
 
+const cloneWorkflow = (workflow) => JSON.parse(JSON.stringify(workflow || emptyWorkflow));
+
 function WorkflowPage({ tables }) {
   const [tab, setTab] = useState(() => window.location.hash.includes('/moderation') ? 'moderation' : 'runs');
   const [workflows, setWorkflows] = useState([]);
@@ -2889,7 +2891,7 @@ function WorkflowPage({ tables }) {
   useEffect(() => { if (!loading) loadRuns(); }, [status]);
 
   const editWorkflow = useCallback((workflow) => {
-    const next = clone(workflow || emptyWorkflow);
+    const next = cloneWorkflow(workflow);
     next.trigger = next.trigger || { type: 'manual' };
     next.ai = next.ai || {};
     next.actions = next.actions || [];
@@ -2908,7 +2910,7 @@ function WorkflowPage({ tables }) {
     if (!editing) return;
     setSaving(true);
     try {
-      const payload = clone(editing);
+      const payload = cloneWorkflow(editing);
       payload.conditions = JSON.parse(payload._conditionsJSON || '[]');
       payload.lookups = JSON.parse(payload._lookupsJSON || '[]');
       payload.actions = JSON.parse(payload._actionsJSON || '[]');
