@@ -153,8 +153,8 @@ func TestForceRebuildSecondaryIndexesPersistsMultiIndexFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read stale index: %v", err)
 	}
-	if got := len(before.GetAll("drama")); got != 0 {
-		t.Fatalf("expected stale on-disk drama postings to be empty, got %d", got)
+	if got := len(before.GetAll("drama")); got == 0 {
+		t.Fatal("expected startup to repair and persist the corrupt secondary index")
 	}
 
 	if err := ti.ForceRebuildSecondaryIndexes(); err != nil {
@@ -553,5 +553,120 @@ func TestCloseWaitsForAsyncSecondaryIndexBuild(t *testing.T) {
 	}
 	if got := toString(row["id"]); got != "id-000100" {
 		t.Fatalf("unexpected verify id: got %q", got)
+	}
+}
+
+func TestAsyncFullTextBuildDoesNotBlockWritesAndReconcilesChanges(t *testing.T) {
+	dataDir := t.TempDir()
+	seedDef := testMovieTableDef(true)
+	seedDef.Indexes = seedDef.Indexes[:2]
+	seedDB := NewDatabase(DatabaseConfig{DataDir: dataDir, SyncMode: "normal"})
+	if err := seedDB.Open(map[string]*schema.TableDef{"movies": seedDef}); err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seedTI := mustTable(t, seedDB)
+	seedMovies(t, seedTI, 200)
+	if err := seedDB.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBuild := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseBuild)
+	testDetachedIndexBuildStartHook = func() {
+		close(started)
+		<-release
+	}
+	t.Cleanup(func() { testDetachedIndexBuildStartHook = nil })
+
+	asyncDB := openTestDB(t, dataDir, true, true)
+	t.Cleanup(func() { _ = asyncDB.Close() })
+	ti := mustTable(t, asyncDB)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("full-text builder did not start")
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := ti.Insert(map[string]interface{}{
+			"id": "id-live", "slug": "slug-live", "title": "Live Ingestion", "genre": "news",
+		}, nil)
+		writeDone <- err
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("insert while full-text index builds: %v", err)
+		}
+	case <-time.After(time.Second):
+		releaseBuild()
+		t.Fatal("insert was blocked by full-text index construction")
+	}
+
+	if _, err := ti.Update("id-000010", map[string]interface{}{"title": "Updated During Build"}, nil); err != nil {
+		t.Fatalf("update while full-text index builds: %v", err)
+	}
+	if ok, err := ti.Delete("id-000011", nil); err != nil || !ok {
+		t.Fatalf("delete while full-text index builds: ok=%v err=%v", ok, err)
+	}
+	releaseBuild()
+	waitForIndexesReady(t, ti, 5*time.Second)
+
+	assertSearchID := func(query, want string) {
+		t.Helper()
+		rows, err := ti.SearchFullText([]string{"title"}, query, 10)
+		if err != nil {
+			t.Fatalf("search %q: %v", query, err)
+		}
+		for _, row := range rows {
+			if toString(row["id"]) == want {
+				return
+			}
+		}
+		t.Fatalf("search %q missing %s", query, want)
+	}
+	assertSearchID("ingestion", "id-live")
+	assertSearchID("updated", "id-000010")
+	deleted, err := ti.SearchFullText([]string{"title"}, "movie 000011", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range deleted {
+		if toString(row["id"]) == "id-000011" {
+			t.Fatal("deleted row remained in rebuilt full-text index")
+		}
+	}
+}
+
+func TestFullTextIndexPersistsAcrossCleanRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	seedDB := openTestDB(t, dataDir, false, false)
+	seedTI := mustTable(t, seedDB)
+	seedMovies(t, seedTI, 500)
+	if err := seedDB.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	buildDB := openTestDB(t, dataDir, false, true)
+	if err := buildDB.Close(); err != nil {
+		t.Fatalf("close indexed db: %v", err)
+	}
+
+	reopened := openTestDB(t, dataDir, true, true)
+	defer func() { _ = reopened.Close() }()
+	ti := mustTable(t, reopened)
+	if ti.indexBuildDone != nil {
+		t.Fatal("clean restart rebuilt a persisted full-text index")
+	}
+	if !ti.secondaryIndexesReady() || !ti.secondaryIndexesFresh() {
+		t.Fatal("persisted secondary indexes were not immediately ready and fresh")
+	}
+	rows, err := ti.SearchFullText([]string{"title"}, "game shadows", 5)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("search persisted full-text index: rows=%d err=%v", len(rows), err)
 	}
 }
