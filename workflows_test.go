@@ -1,6 +1,7 @@
 package flop
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,52 @@ func workflowResponse(result string) http.Handler {
 			"choices": []any{map[string]any{"message": map[string]any{"content": result}}},
 		})
 	})
+}
+
+func TestOpenRouterDataCollectionPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		policy string
+		want   string
+	}{
+		{name: "defaults to deny", want: "deny"},
+		{name: "allows provider collection when selected", policy: "allow", want: "allow"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var got string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Provider map[string]any `json:"provider"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode OpenRouter request: %v", err)
+				}
+				got, _ = body.Provider["data_collection"].(string)
+				workflowResponse(`{"action":"approve","reasoning":"ok"}`).ServeHTTP(w, r)
+			}))
+			defer server.Close()
+
+			service := &workflowService{
+				config: WorkflowConfig{OpenRouterAPIKey: "test-key", OpenRouterURL: server.URL},
+				client: server.Client(),
+				ctx:    context.Background(),
+			}
+			_, err := service.askOpenRouter(Workflow{
+				AI: WorkflowAIStep{
+					Model:          "test/model",
+					DataCollection: test.policy,
+					Prompt:         "review",
+				},
+				Actions: []WorkflowAction{{Type: "approve"}},
+			}, map[string]any{"body": "hello"})
+			if err != nil {
+				t.Fatalf("ask OpenRouter: %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("data_collection = %q, want %q", got, test.want)
+			}
+		})
+	}
 }
 
 func waitForWorkflowRun(t *testing.T, db *Database, status string) WorkflowRun {
