@@ -339,10 +339,10 @@ func (m *MultiIndex) GetAll(key string) []schema.RowPointer {
 	}
 	if uuidKey, ok := parseUUIDIndexKey(key); ok {
 		if ptrs, found := m.uuid[uuidKey]; found {
-			return ptrs
+			return append([]schema.RowPointer(nil), ptrs...)
 		}
 	}
-	return m.data[key]
+	return append([]schema.RowPointer(nil), m.data[key]...)
 }
 
 func (m *MultiIndex) Delete(key string, pointer schema.RowPointer) {

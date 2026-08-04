@@ -99,3 +99,17 @@ func TestMappedMultiIndexReadWriteAndOverlay(t *testing.T) {
 		t.Fatalf("k1 len after overlay = %d, want 2", len(ptrs))
 	}
 }
+
+func TestMultiIndexGetAllReturnsSnapshot(t *testing.T) {
+	idx := NewMultiIndex()
+	want := schema.RowPointer{PageNumber: 7, SlotIndex: 3}
+	idx.Add("k", want)
+
+	got := idx.GetAll("k")
+	got[0] = schema.RowPointer{PageNumber: 99, SlotIndex: 9}
+
+	current := idx.GetAll("k")
+	if len(current) != 1 || current[0] != want {
+		t.Fatalf("GetAll exposed mutable index storage: got %+v, want %+v", current, want)
+	}
+}

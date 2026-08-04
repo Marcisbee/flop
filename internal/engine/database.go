@@ -3181,22 +3181,12 @@ func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema
 			matchKey = storage.CompositeKey(anySlice(value))
 		}
 		ptr, ok := hi.Get(matchKey)
-		if ok {
-			matches, err := ti.rowPointerMatchesIndexKey(ptr, fields, matchKey)
-			if err == nil && matches {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "", start)
-				return ptr, true
-			}
-			hi.Delete(matchKey)
-		}
-		ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 1)
-		if err != nil || len(ptrs) == 0 {
-			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "rehydrate scan", start)
+		if !ok {
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "", start)
 			return schema.RowPointer{}, false
 		}
-		hi.Set(matchKey, ptrs[0])
-		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "rehydrate scan", start)
-		return ptrs[0], true
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "", start)
+		return ptr, true
 	}
 	return schema.RowPointer{}, false
 }
@@ -3232,57 +3222,12 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 			matchKey = storage.CompositeKey(anySlice(value))
 		}
 		ptrs := idx.GetAll(matchKey)
-		staleFound := false
-		out := make([]schema.RowPointer, 0, len(ptrs))
-		for _, ptr := range ptrs {
-			matches, err := ti.rowPointerMatchesIndexKey(ptr, fields, matchKey)
-			if err != nil || !matches {
-				staleFound = true
-				idx.Delete(matchKey, ptr)
-				continue
-			}
-			out = append(out, ptr)
+		if len(ptrs) == 0 {
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index empty", start)
+			return nil
 		}
-		if staleFound {
-			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
-			if err != nil {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index repair scan error", start)
-				return out
-			}
-			for _, ptr := range ptrs {
-				found := false
-				for _, existing := range out {
-					if rowPointerEqual(existing, ptr) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					idx.Add(matchKey, ptr)
-					out = append(out, ptr)
-				}
-			}
-			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(out), len(ptrs), "multi-index repair scan", start)
-			return out
-		}
-		if len(out) == 0 {
-			if ti.secondaryIndexesFresh() {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index empty", start)
-				return nil
-			}
-			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
-			if err != nil {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index fallback scan error", start)
-				return nil
-			}
-			for _, ptr := range ptrs {
-				idx.Add(matchKey, ptr)
-			}
-			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(ptrs), len(ptrs), "multi-index fallback scan", start)
-			return ptrs
-		}
-		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(out), len(out), "multi-index", start)
-		return out
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(ptrs), len(ptrs), "multi-index", start)
+		return ptrs
 	case *storage.HashIndex:
 		matchKey := toString(value)
 		if len(fields) > 1 {
@@ -3290,18 +3235,8 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 		}
 		p, ok := idx.Get(matchKey)
 		if ok {
-			matches, err := ti.rowPointerMatchesIndexKey(p, fields, matchKey)
-			if err == nil && matches {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index", start)
-				return []schema.RowPointer{p}
-			}
-			idx.Delete(matchKey)
-			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 1)
-			if err == nil && len(ptrs) > 0 {
-				idx.Set(matchKey, ptrs[0])
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index repair scan", start)
-				return []schema.RowPointer{ptrs[0]}
-			}
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index", start)
+			return []schema.RowPointer{p}
 		}
 		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "unique-index", start)
 	}

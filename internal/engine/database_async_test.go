@@ -216,6 +216,32 @@ func TestFreshMultiIndexEmptyLookupSkipsFallbackScan(t *testing.T) {
 	}
 }
 
+func TestIndexedReadDoesNotRepairPendingRows(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+	seedMovies(t, ti, 2)
+
+	ti.addPendingKey("id-000000")
+	defer ti.clearPendingKeys([]string{"id-000000"})
+
+	tc := reqtrace.Start()
+	ptrs := ti.FindAllByIndex([]string{"genre"}, "action")
+	tc.End()
+	if len(ptrs) != 1 {
+		t.Fatalf("indexed result changed while its row was pending: got %d, want 1", len(ptrs))
+	}
+	for _, span := range tc.Spans() {
+		note, _ := span["note"].(string)
+		if strings.Contains(note, "scan") || strings.Contains(note, "repair") {
+			t.Fatalf("indexed read performed request-path recovery: note %q", note)
+		}
+	}
+	if got := len(ti.secondaryIdxs["genre"].(*storage.MultiIndex).GetAll("action")); got != 1 {
+		t.Fatalf("indexed read mutated shared postings: got %d, want 1", got)
+	}
+}
+
 func TestSecondaryIndexFallbackUniqueConstraints(t *testing.T) {
 	db := openTestDB(t, t.TempDir(), false, true)
 	t.Cleanup(func() { _ = db.Close() })
