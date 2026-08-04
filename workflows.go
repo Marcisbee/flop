@@ -64,10 +64,11 @@ type WorkflowLookup struct {
 
 // WorkflowAIStep describes a structured OpenRouter call.
 type WorkflowAIStep struct {
-	Model        string         `json:"model"`
-	Provider     string         `json:"provider,omitempty"`
-	Prompt       string         `json:"prompt"`
-	ResultSchema map[string]any `json:"resultSchema,omitempty"`
+	Model          string         `json:"model"`
+	Provider       string         `json:"provider,omitempty"`
+	DataCollection string         `json:"dataCollection,omitempty"`
+	Prompt         string         `json:"prompt"`
+	ResultSchema   map[string]any `json:"resultSchema,omitempty"`
 }
 
 // WorkflowAction maps an AI action to a database operation.
@@ -385,6 +386,10 @@ func (s *workflowService) askOpenRouter(workflow Workflow, content map[string]an
 		}
 		schema = defaultWorkflowResultSchema(actions)
 	}
+	dataCollection := "deny"
+	if workflow.AI.DataCollection == "allow" {
+		dataCollection = "allow"
+	}
 	requestBody := map[string]any{
 		"model": workflow.AI.Model,
 		"messages": []map[string]string{
@@ -402,7 +407,7 @@ func (s *workflowService) askOpenRouter(workflow Workflow, content map[string]an
 		},
 		"provider": map[string]any{
 			"require_parameters": true,
-			"data_collection":    "deny",
+			"data_collection":    dataCollection,
 		},
 	}
 	if strings.TrimSpace(workflow.AI.Provider) != "" {
@@ -410,7 +415,7 @@ func (s *workflowService) askOpenRouter(workflow Workflow, content map[string]an
 			"order":              []string{workflow.AI.Provider},
 			"allow_fallbacks":    false,
 			"require_parameters": true,
-			"data_collection":    "deny",
+			"data_collection":    dataCollection,
 		}
 	}
 	body, err := json.Marshal(requestBody)
@@ -788,6 +793,9 @@ func (s *workflowService) validateWorkflow(workflow Workflow) error {
 	workflow.AI.Prompt = strings.TrimSpace(workflow.AI.Prompt)
 	if workflow.Name == "" || workflow.Trigger.Type == "" || workflow.AI.Model == "" || workflow.AI.Prompt == "" {
 		return errors.New("workflow name, trigger, AI model, and prompt are required")
+	}
+	if !containsString([]string{"", "allow", "deny"}, workflow.AI.DataCollection) {
+		return errors.New("workflow AI data collection must be allow or deny")
 	}
 	if !containsString([]string{"row_insert", "row_update", "report", "discord", "manual"}, workflow.Trigger.Type) {
 		return fmt.Errorf("unsupported workflow trigger %q", workflow.Trigger.Type)

@@ -2844,7 +2844,7 @@ const emptyWorkflow = {
   id: '', name: '', category: '', enabled: true,
   trigger: { type: 'row_insert', table: '', events: [] },
   conditions: [], lookups: [],
-  ai: { model: '', provider: '', prompt: '', resultSchema: {} },
+  ai: { model: '', provider: '', dataCollection: 'deny', prompt: '', resultSchema: {} },
   actions: [{ type: 'queue_review', requireApproval: true }],
   holdUntilComplete: false, subjectPath: '', newUserClearedLimit: 0, maxRetries: 2
 };
@@ -3106,6 +3106,13 @@ function WorkflowPage({ tables }) {
               <div class="row-editor-field">
                 <label>OpenRouter provider slug (optional)</label>
                 <input placeholder="openai" value=${editing.ai?.provider || ''} onInput=${e => updateAI('provider', e.target.value)} />
+              </div>
+              <div class="row-editor-field">
+                <label>Provider data collection</label>
+                <select value=${editing.ai?.dataCollection || 'deny'} onChange=${e => updateAI('dataCollection', e.target.value)}>
+                  <option value="deny">Deny (private providers only)</option>
+                  <option value="allow">Allow (provider may store or train)</option>
+                </select>
               </div>
               <div class="row-editor-field">
                 <label>Stop per-subject workflow after completed runs</label>

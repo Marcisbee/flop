@@ -45,6 +45,7 @@ Workflows support:
 - row insert/update, report, Discord, and manual triggers;
 - conditions and indexed `get`, index, or full-text search lookups;
 - an OpenRouter model, optional provider, prompt, and JSON Schema result;
+- a per-workflow provider data-collection policy that defaults to `deny`;
 - approve, review queue, delete, archive, block, and create/propose-alias actions;
 - per-action human approval, row visibility holds, and automatic retries; and
 - durable input, lookup, structured result, reasoning, status, retry, and error history.
