@@ -3181,12 +3181,8 @@ func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler 
 			"hasAuth":    token != "",
 			"source":     "go-middleware",
 		}
-		if spans := traceCollector.Spans(); len(spans) > 0 {
-			details["trace"] = spans
-			details["traceSpans"] = len(spans)
-		}
 
-		analytics.Record(server.AnalyticsEvent{
+		event := server.AnalyticsEvent{
 			Timestamp:    time.Now(),
 			RouteType:    routeType,
 			RouteName:    routeName,
@@ -3199,7 +3195,9 @@ func (p *EngineAdminProvider) WrapWithAnalytics(next http.Handler) http.Handler 
 			ErrorMessage: rec.errorMessage,
 			UserID:       userID,
 			Details:      details,
-		})
+		}
+		event.CaptureTrace(traceCollector)
+		analytics.Record(event)
 	})
 }
 

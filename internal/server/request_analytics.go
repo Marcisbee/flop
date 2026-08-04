@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
+	"github.com/marcisbee/flop/internal/reqtrace"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,9 +17,12 @@ import (
 
 const (
 	DefaultRequestLogRetention = 7 * 24 * time.Hour
-	requestLogQueueSize        = 8192
-	requestMaxDetailBytes      = 16 * 1024
+	requestLogQueueSize        = 512
+	requestTraceSpanLimit      = 32
+	requestMaxDetailBytes      = 4 * 1024
 	requestMaxErrorBytes       = 512
+	requestLogMaxRetained      = 10000
+	requestLogTrimBatch        = 1000
 )
 
 var latencyUpperBoundsMs = [...]float64{
@@ -38,6 +42,18 @@ type AnalyticsEvent struct {
 	ErrorMessage string
 	UserID       string
 	Details      map[string]interface{}
+	Trace        []reqtrace.Span
+	TraceDropped int
+}
+
+// CaptureTrace attaches a bounded typed snapshot. Keeping spans typed until the
+// analytics worker serializes them prevents queued requests from retaining a
+// large graph of per-span maps under load.
+func (event *AnalyticsEvent) CaptureTrace(collector *reqtrace.Collector) {
+	if event == nil || collector == nil {
+		return
+	}
+	event.Trace, event.TraceDropped = collector.Snapshot(requestTraceSpanLimit)
 }
 
 type requestLogRecord struct {
@@ -125,6 +141,7 @@ type RequestAnalytics struct {
 	seq       atomic.Uint64
 	dropped   atomic.Uint64
 	queue     chan AnalyticsEvent
+	compact   bool
 }
 
 func NewRequestAnalytics(retention time.Duration) *RequestAnalytics {
@@ -157,11 +174,13 @@ func (ra *RequestAnalytics) initStorage(storagePath string) {
 	}
 	ra.storage = storagePath
 	ra.loadFromDiskLocked()
+	ra.trimLogCapacityLocked(true)
 	if err := ra.compactLocked(); err != nil {
 		// Continue without persistence if rewrite fails.
 		ra.storage = ""
 		return
 	}
+	ra.compact = false
 }
 
 func (ra *RequestAnalytics) loadFromDiskLocked() {
@@ -209,8 +228,10 @@ func (ra *RequestAnalytics) loop() {
 		case <-ticker.C:
 			ra.mu.Lock()
 			changed := ra.pruneLocked(time.Now())
-			if changed {
-				_ = ra.compactLocked()
+			if changed || ra.compact {
+				if err := ra.compactLocked(); err == nil {
+					ra.compact = false
+				}
 			}
 			ra.lastPrune = time.Now().UnixMilli()
 			ra.mu.Unlock()
@@ -241,8 +262,10 @@ func (ra *RequestAnalytics) SetRetention(retention time.Duration) {
 	}
 	ra.mu.Lock()
 	ra.retention = retention
-	if ra.pruneLocked(time.Now()) {
-		_ = ra.compactLocked()
+	if ra.pruneLocked(time.Now()) || ra.compact {
+		if err := ra.compactLocked(); err == nil {
+			ra.compact = false
+		}
 	}
 	ra.lastPrune = time.Now().UnixMilli()
 	ra.mu.Unlock()
@@ -463,7 +486,19 @@ func (ra *RequestAnalytics) apply(event AnalyticsEvent) {
 		status = "error"
 	}
 
-	detailText := detailsToText(event.Details)
+	details := event.Details
+	if len(event.Trace) > 0 || event.TraceDropped > 0 {
+		details = cloneDetailsMap(details)
+		if trace := reqtrace.SpansToMaps(event.Trace); len(trace) > 0 {
+			details["trace"] = trace
+			details["traceSpans"] = len(trace)
+		}
+		if event.TraceDropped > 0 {
+			details["traceDroppedSpans"] = event.TraceDropped
+			details["traceTruncated"] = true
+		}
+	}
+	detailText := detailsToText(details)
 	errText := truncateText(strings.TrimSpace(event.ErrorMessage), requestMaxErrorBytes)
 	rec := requestLogRecord{
 		Ts:           ts,
@@ -485,13 +520,16 @@ func (ra *RequestAnalytics) apply(event AnalyticsEvent) {
 
 	ra.mu.Lock()
 	ra.logs = append(ra.logs, rec)
+	ra.trimLogCapacityLocked(false)
 	ra.addMetricsFromRecordLocked(rec)
 	ra.appendRecordLocked(rec)
 
 	const pruneIntervalMs = int64(time.Minute / time.Millisecond)
 	if ts-ra.lastPrune >= pruneIntervalMs {
-		if ra.pruneLocked(time.UnixMilli(ts)) {
-			_ = ra.compactLocked()
+		if ra.pruneLocked(time.UnixMilli(ts)) || ra.compact {
+			if err := ra.compactLocked(); err == nil {
+				ra.compact = false
+			}
 		}
 		ra.lastPrune = ts
 	}
@@ -521,6 +559,9 @@ func (ra *RequestAnalytics) pruneLocked(now time.Time) bool {
 			ra.logs = append([]requestLogRecord(nil), dst...)
 		}
 	}
+	if ra.trimLogCapacityLocked(true) {
+		changed = true
+	}
 
 	cutoffMinute := floorMinuteUnixMilli(cutoff)
 	for k, b := range ra.metrics {
@@ -530,6 +571,23 @@ func (ra *RequestAnalytics) pruneLocked(now time.Time) bool {
 		}
 	}
 	return changed
+}
+
+func (ra *RequestAnalytics) trimLogCapacityLocked(force bool) bool {
+	threshold := requestLogMaxRetained + requestLogTrimBatch
+	if force {
+		threshold = requestLogMaxRetained
+	}
+	if len(ra.logs) <= threshold {
+		return false
+	}
+	drop := len(ra.logs) - requestLogMaxRetained
+	retained := make([]requestLogRecord, requestLogMaxRetained)
+	copy(retained, ra.logs[drop:])
+	ra.logs = retained
+	ra.dropped.Add(uint64(drop))
+	ra.compact = true
+	return true
 }
 
 func addBucket(agg *requestAgg, bucket *requestMinuteBucket) {
@@ -765,6 +823,7 @@ func trimTraceDetailsToFit(details map[string]interface{}, maxBytes int) {
 	if !ok || len(traceItems) == 0 {
 		return
 	}
+	alreadyDropped := int(toFloatValue(details["traceDroppedSpans"]))
 
 	compactTrace := make([]map[string]interface{}, 0, len(traceItems))
 	for _, item := range traceItems {
@@ -816,7 +875,7 @@ func trimTraceDetailsToFit(details map[string]interface{}, maxBytes int) {
 		compactTrace = compactTrace[:len(compactTrace)-1]
 		details["trace"] = compactTrace
 		details["traceSpans"] = len(compactTrace)
-		details["traceDroppedSpans"] = len(traceItems) - len(compactTrace)
+		details["traceDroppedSpans"] = alreadyDropped + len(traceItems) - len(compactTrace)
 		details["traceTruncated"] = true
 		if _, ok := marshalDetailsWithinLimit(details, maxBytes); ok {
 			return
