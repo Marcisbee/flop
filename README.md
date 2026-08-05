@@ -104,8 +104,10 @@ make release-check
 ```
 
 This runs formatting, vet, unit, race, reachable-vulnerability, crash-recovery,
-and performance gates. `SyncMode` accepts only `full` (the durable default) or
-`normal`; invalid values fail database startup.
+and performance gates. The performance gate uses the median of three fresh
+samples so a transient host stall cannot mask or imitate a sustained regression;
+the crash-recovery matrix runs once. `SyncMode` accepts only `full` (the durable
+default) or `normal`; invalid values fail database startup.
 
 Launch the maintained demo apps from the repository root:
 
