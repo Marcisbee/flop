@@ -201,6 +201,13 @@ func TestWorkflowRowTriggerHoldsUntilApprovedAndStopsAfterThreshold(t *testing.T
 	if run.Action != "approve" || run.Reasoning == "" {
 		t.Fatalf("unexpected run: %+v", run)
 	}
+	if run.Table != "posts" || run.RowID != "p1" {
+		t.Fatalf("workflow source = %s/%s, want posts/p1", run.Table, run.RowID)
+	}
+	inputRow, ok := run.Input["row"].(map[string]any)
+	if !ok || inputRow["id"] != "p1" || inputRow["body"] != "hello" {
+		t.Fatalf("workflow source snapshot = %#v", run.Input["row"])
+	}
 	if row, err := publicPosts.Get("p1"); err != nil || row == nil {
 		t.Fatalf("completed row should be visible, row=%v err=%v", row, err)
 	}
