@@ -20,6 +20,7 @@ PB_GATE_OPS ?= 4000
 PB_GATE_WORKERS ?= 4
 PB_GATE_SYNC_MODE ?= full
 PB_GATE_CRASH_RUNS ?= 1
+PB_GATE_RUNS ?= 3
 PB_GATE_RESULTS_DIR ?= .pillarbench/results
 PB_GATE_MIN_TPS ?= 250
 PB_GATE_MAX_INSERT_P99_US ?= 50000
@@ -130,21 +131,31 @@ pillarbench-save:
 
 pillar-gate:
 	@mkdir -p $(PB_GATE_RESULTS_DIR)
-	@stamp=$$(date -u +%Y%m%dT%H%M%SZ); \
-	out="$(PB_GATE_RESULTS_DIR)/gate-$${stamp}-$(PB_GATE_SYNC_MODE)-r$(PB_GATE_ROWS)-o$(PB_GATE_OPS).json"; \
-	echo "Running pillarbench gate report -> $$out"; \
-	GOCACHE=$(GOCACHE) go run ./cmd/pillarbench \
-		-mode all \
-		-sync-mode $(PB_GATE_SYNC_MODE) \
-		-rows $(PB_GATE_ROWS) \
-		-ops $(PB_GATE_OPS) \
-		-workers $(PB_GATE_WORKERS) \
-		-crash-runs $(PB_GATE_CRASH_RUNS) \
-		-json=false \
-		-out "$$out"; \
+	@case "$(PB_GATE_RUNS)" in ''|*[!0-9]*) echo "PB_GATE_RUNS must be a positive integer"; exit 2;; esac; \
+	if [ "$(PB_GATE_RUNS)" -lt 1 ]; then echo "PB_GATE_RUNS must be a positive integer"; exit 2; fi; \
+	stamp=$$(date -u +%Y%m%dT%H%M%SZ); \
+	run=1; \
+	set --; \
+	while [ $$run -le $(PB_GATE_RUNS) ]; do \
+		mode=baseline; \
+		if [ $$run -eq 1 ]; then mode=all; fi; \
+		out="$(PB_GATE_RESULTS_DIR)/gate-$${stamp}-run$${run}-$(PB_GATE_SYNC_MODE)-r$(PB_GATE_ROWS)-o$(PB_GATE_OPS).json"; \
+		echo "Running pillarbench gate sample $$run/$(PB_GATE_RUNS) -> $$out"; \
+		GOCACHE=$(GOCACHE) go run ./cmd/pillarbench \
+			-mode "$$mode" \
+			-sync-mode $(PB_GATE_SYNC_MODE) \
+			-rows $(PB_GATE_ROWS) \
+			-ops $(PB_GATE_OPS) \
+			-workers $(PB_GATE_WORKERS) \
+			-crash-runs $(PB_GATE_CRASH_RUNS) \
+			-json=false \
+			-out "$$out" || exit; \
+		set -- "$$@" -report "$$out"; \
+		run=$$((run + 1)); \
+	done; \
 	echo "Validating gate thresholds"; \
 	GOCACHE=$(GOCACHE) go run ./cmd/pillargate \
-		-report "$$out" \
+		"$$@" \
 		-min-workload-tps $(PB_GATE_MIN_TPS) \
 		-max-insert-p99-us $(PB_GATE_MAX_INSERT_P99_US) \
 		-max-update-p99-us $(PB_GATE_MAX_UPDATE_P99_US) \
