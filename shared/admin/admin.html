@@ -251,6 +251,14 @@ tbody tr.selected{background:var(--bg-active)}
 .workflow-check{display:flex;align-items:center;gap:6px;color:var(--text)}
 .workflow-warning{padding:10px 12px;border:1px solid rgba(244,135,113,.35);border-radius:6px;background:rgba(244,135,113,.08);color:var(--error)}
 .workflow-run-detail{white-space:normal;line-height:1.35;max-width:440px}
+.workflow-run-source{white-space:normal;min-width:150px}
+.workflow-run-source-name{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;color:var(--text-heading);font-size:11px}
+.workflow-run-source-action{margin-top:6px}
+.workflow-source-backdrop{position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:24px}
+.workflow-source-dialog{width:min(720px,100%);max-height:min(760px,calc(100vh - 48px));background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);display:flex;flex-direction:column;overflow:hidden}
+.workflow-source-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border)}
+.workflow-source-body{padding:16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.workflow-source-content{margin:0;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:5px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.5;color:var(--text)}
 .status-pill{display:inline-flex;padding:2px 7px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-input);font-size:10px}
 .status-pill.completed{color:#42b983}
 .status-pill.error{color:var(--error)}
@@ -2851,6 +2859,22 @@ const emptyWorkflow = {
 
 const cloneWorkflow = (workflow) => JSON.parse(JSON.stringify(workflow || emptyWorkflow));
 
+function workflowRunContent(run) {
+  const input = run?.input;
+  if (input && typeof input === 'object' && input.row != null) return input.row;
+  return input ?? null;
+}
+
+function formatWorkflowRunContent(run) {
+  const content = workflowRunContent(run);
+  if (content == null) return 'No captured input.';
+  try {
+    return JSON.stringify(content, null, 2);
+  } catch {
+    return String(content);
+  }
+}
+
 function WorkflowPage({ tables }) {
   const [tab, setTab] = useState(() => window.location.hash.includes('/moderation') ? 'moderation' : 'runs');
   const [workflows, setWorkflows] = useState([]);
@@ -2860,6 +2884,7 @@ function WorkflowPage({ tables }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [inspectingRun, setInspectingRun] = useState(null);
   const [status, setStatus] = useState('');
   const appTables = useMemo(() => (tables || []).filter(t => !t.name.startsWith('_')), [tables]);
 
@@ -2889,6 +2914,14 @@ function WorkflowPage({ tables }) {
 
   useEffect(() => { loadAll(); }, []);
   useEffect(() => { if (!loading) loadRuns(); }, [status]);
+  useEffect(() => {
+    if (!inspectingRun) return;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setInspectingRun(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [inspectingRun]);
 
   const editWorkflow = useCallback((workflow) => {
     const next = cloneWorkflow(workflow);
@@ -3040,12 +3073,18 @@ function WorkflowPage({ tables }) {
         <div class="observe-table-wrap">
           <div class="panel-table-scroll">
             <table>
-              <thead><tr><th>Status</th><th>Workflow / event</th><th>Result and reasoning</th><th>Action</th></tr></thead>
+              <thead><tr><th>Status</th><th>Workflow / event</th><th>Source</th><th>Result and reasoning</th><th>Action</th></tr></thead>
               <tbody>
-                ${runs.length === 0 ? html`<tr><td colspan="4" class="empty-row">${loading ? 'Loading workflow runs…' : 'No workflow runs found'}</td></tr>` : runs.map(run => html`
+                ${runs.length === 0 ? html`<tr><td colspan="5" class="empty-row">${loading ? 'Loading workflow runs…' : 'No workflow runs found'}</td></tr>` : runs.map(run => html`
                   <tr key=${run.id}>
                     <td><span class=${"status-pill " + run.status}>${run.status.replace('_', ' ')}</span><div class="th-type">${run.createdAtUnixMilli ? formatDateTime(run.createdAtUnixMilli) : ''}</div><div class="th-type">attempt ${run.attempt}/${(run.maxRetries || 0) + 1}</div></td>
-                    <td><div>${run.workflowName}</div><div class="th-type">${run.trigger}${run.event ? ' · ' + run.event : ''}</div><div class="th-type">${run.table ? run.table + '/' + run.rowId : 'external event'}</div></td>
+                    <td><div>${run.workflowName}</div><div class="th-type">${run.trigger}${run.event ? ' · ' + run.event : ''}</div></td>
+                    <td class="workflow-run-source">
+                      ${run.table && run.rowId
+                        ? html`<div class="workflow-run-source-name">${run.table}</div><div class="th-type">row ${run.rowId}</div>`
+                        : html`<div class="th-type">${run.trigger === 'manual' ? 'Manual input' : 'External event input'}</div>`}
+                      ${workflowRunContent(run) != null && html`<button class="btn btn-sm workflow-run-source-action" onClick=${() => setInspectingRun(run)}>Inspect content</button>`}
+                    </td>
                     <td class="workflow-run-detail"><div>${run.recommendedAction || 'Awaiting result'}</div><div class="th-type">${run.reasoning || run.error || ''}</div></td>
                     <td>
                       <div style="display:flex;flex-wrap:wrap;gap:4px">
@@ -3059,6 +3098,28 @@ function WorkflowPage({ tables }) {
                 `)}
               </tbody>
             </table>
+          </div>
+        </div>
+      `}
+
+      ${inspectingRun && html`
+        <div class="workflow-source-backdrop" role="presentation" onClick=${() => setInspectingRun(null)}>
+          <div class="workflow-source-dialog" role="dialog" aria-modal="true" aria-label="Workflow source content" onClick=${event => event.stopPropagation()}>
+            <div class="workflow-source-header">
+              <div>
+                <div class="workflow-name">Workflow source content</div>
+                <div class="workflow-meta">
+                  ${inspectingRun.table && inspectingRun.rowId
+                    ? inspectingRun.table + ' · row ' + inspectingRun.rowId
+                    : inspectingRun.trigger === 'manual' ? 'Manual input' : 'External event input'}
+                </div>
+              </div>
+              <button class="btn-icon" aria-label="Close" onClick=${() => setInspectingRun(null)}>×</button>
+            </div>
+            <div class="workflow-source-body">
+              <div class="workflow-meta">Captured when this run was created</div>
+              <pre class="workflow-source-content">${formatWorkflowRunContent(inspectingRun)}</pre>
+            </div>
           </div>
         </div>
       `}
