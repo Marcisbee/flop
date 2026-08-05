@@ -361,11 +361,7 @@ func (h *Handler) executeHandler(
 		if req != nil {
 			details["queryBytes"] = len(req.URL.RawQuery)
 		}
-		if spans := traceCollector.Spans(); len(spans) > 0 {
-			details["trace"] = spans
-			details["traceSpans"] = len(spans)
-		}
-		h.analytics.Record(AnalyticsEvent{
+		event := AnalyticsEvent{
 			Timestamp:    time.Now(),
 			RouteType:    handlerType,
 			RouteName:    name,
@@ -378,7 +374,9 @@ func (h *Handler) executeHandler(
 			ErrorMessage: ternaryError(err),
 			UserID:       ternaryUserID(auth),
 			Details:      details,
-		})
+		}
+		event.CaptureTrace(traceCollector)
+		h.analytics.Record(event)
 	}
 	return result, err
 }

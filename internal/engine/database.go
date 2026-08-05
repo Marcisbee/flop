@@ -68,6 +68,7 @@ type walBufEntry struct {
 }
 
 var testEnqueueCommitHook func() error
+var testDetachedIndexBuildStartHook func()
 
 func NewDatabase(config DatabaseConfig) *Database {
 	if config.DataDir == "" {
@@ -153,15 +154,34 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 		}
 		db.Tables[name] = instance
 	}
-	// Persist recovered pages and indexes for every table before any WAL or
-	// transaction-coordinator state is cleared. Recovery can therefore be
-	// interrupted and safely retried.
-	if err := db.Checkpoint(); err != nil {
+	// Persist recovery before returning, but do not turn a clean startup into a
+	// blocking wait for asynchronous secondary-index construction. No caller can
+	// write before Open returns, so clean tables need no table checkpoint here.
+	if err := db.checkpointAfterOpen(); err != nil {
 		db.opened = false
 		return fmt.Errorf("checkpoint opened database: %w", err)
 	}
 
 	return nil
+}
+
+func (db *Database) checkpointAfterOpen() error {
+	needsRecoveryCheckpoint := len(db.txJournal.Transactions) > 0
+	for _, table := range db.Tables {
+		if table.wal != nil && table.wal.CurrentLSN() != table.wal.CheckpointLSN() {
+			needsRecoveryCheckpoint = true
+			break
+		}
+	}
+	if needsRecoveryCheckpoint {
+		return db.Checkpoint()
+	}
+	if err := storage.WriteMetaFile(filepath.Join(db.dataDir, "_meta.flop"), db.meta); err != nil {
+		return err
+	}
+	db.transactionMu.Lock()
+	defer db.transactionMu.Unlock()
+	return db.clearTransactionJournalLocked()
 }
 
 func randomHex(n int) string {
@@ -482,25 +502,29 @@ const updateLockShards = 256
 type TableInstance struct {
 	Name string
 
-	def              *schema.TableDef
-	tableFile        *storage.TableFile
-	archiveFile      *storage.TableFile
-	wal              *storage.WAL
-	primaryIndex     *storage.HashIndex
-	archiveIndex     *storage.HashIndex
-	secondaryIdxs    map[string]interface{} // *HashIndex, *MultiIndex, or *FullTextIndex
-	indexDefsByKey   map[string]schema.IndexDef
-	indexStateMu     sync.RWMutex
-	indexesReady     bool
-	indexesFresh     bool
-	indexBuildDone   chan struct{}
-	indexesToRebuild map[string]bool
-	migChains        map[int]*schema.MigrationChain
-	currentVersion   int
-	tableMeta        *schema.StoredTableMeta
-	dataDir          string
-	pubsub           *PubSub
-	db               *Database
+	def                *schema.TableDef
+	tableFile          *storage.TableFile
+	archiveFile        *storage.TableFile
+	wal                *storage.WAL
+	primaryIndex       *storage.HashIndex
+	archiveIndex       *storage.HashIndex
+	secondaryIdxs      map[string]interface{} // *HashIndex, *MultiIndex, or *FullTextIndex
+	indexDefsByKey     map[string]schema.IndexDef
+	indexStateMu       sync.RWMutex
+	indexesReady       bool
+	indexesFresh       bool
+	indexBuildDone     chan struct{}
+	indexesToRebuild   map[string]bool
+	indexBuildDirtyMu  sync.Mutex
+	indexBuildDirty    map[string]struct{}
+	indexBuildTracking atomic.Bool
+	secondaryPersistMu sync.Mutex
+	migChains          map[int]*schema.MigrationChain
+	currentVersion     int
+	tableMeta          *schema.StoredTableMeta
+	dataDir            string
+	pubsub             *PubSub
+	db                 *Database
 
 	// mu coordinates checkpoints/schema-changing writes.
 	// Checkpoint and slow-path rewrites take Lock.
@@ -699,8 +723,14 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 			continue
 		}
 		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
-			ti.secondaryIdxs[indexKey] = storage.NewFullTextIndex()
-			ti.indexesToRebuild[indexKey] = true
+			persistPath := secondaryIndexDiskPath(dataDir, ti.Name, indexKey, true)
+			idx, snapshotLSN, lerr := storage.ReadFullTextIndexFile(persistPath)
+			if lerr == nil && snapshotLSN == ti.wal.CheckpointLSN() {
+				ti.secondaryIdxs[indexKey] = idx
+			} else {
+				ti.secondaryIdxs[indexKey] = storage.NewFullTextIndex()
+				ti.indexesToRebuild[indexKey] = true
+			}
 		} else if indexDef.Unique {
 			persistPath := secondaryIndexDiskPath(dataDir, ti.Name, indexKey, true)
 			idx, lerr := storage.ReadMappedIndexFile(persistPath)
@@ -731,8 +761,8 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	if len(ti.def.Indexes) == 0 {
 		return nil
 	}
+	ti.setIndexesFresh(manifestValid)
 	if len(ti.indexesToRebuild) == 0 {
-		ti.setIndexesFresh(false)
 		ti.setIndexesReady(true)
 		return nil
 	}
@@ -741,8 +771,11 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		if err := ti.rebuildSecondaryIndexesByKeys(ti.indexesToRebuild); err != nil {
 			return err
 		}
+		if err := ti.persistSecondaryIndexesLocked(); err != nil {
+			return err
+		}
 		ti.indexesToRebuild = make(map[string]bool)
-		ti.setIndexesFresh(rebuiltAllIndexes)
+		ti.setIndexesFresh(ti.secondaryIndexesFresh() || rebuiltAllIndexes)
 		ti.setIndexesReady(true)
 		return nil
 	}
@@ -888,6 +921,7 @@ func (ti *TableInstance) applyWALInsert(serialized []byte, recordLSN uint64) err
 	ti.tableFile.MarkPageDirty(pageNum)
 	ti.tableFile.IncrementTotalRows()
 	ti.primaryIndex.Set(pk, schema.RowPointer{PageNumber: pageNum, SlotIndex: uint16(slotIndex)})
+	ti.markIndexBuildDirty(pk)
 	return nil
 }
 
@@ -920,6 +954,7 @@ func (ti *TableInstance) applyWALUpdate(serialized []byte, recordLSN uint64) err
 	if page.UpdateRow(int(pointer.SlotIndex), serialized) {
 		page.SetPageLSN(recordLSN)
 		ti.tableFile.MarkPageDirty(pointer.PageNumber)
+		ti.markIndexBuildDirty(pk)
 		return nil
 	}
 
@@ -938,6 +973,7 @@ func (ti *TableInstance) applyWALUpdate(serialized []byte, recordLSN uint64) err
 	newPage.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(newPageNum)
 	ti.primaryIndex.Set(pk, schema.RowPointer{PageNumber: newPageNum, SlotIndex: uint16(newSlot)})
+	ti.markIndexBuildDirty(pk)
 	return nil
 }
 
@@ -961,6 +997,7 @@ func (ti *TableInstance) applyWALDelete(pk string, recordLSN uint64) error {
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	ti.tableFile.DecrementTotalRows()
 	ti.primaryIndex.Delete(pk)
+	ti.markIndexBuildDirty(pk)
 	return nil
 }
 
@@ -1188,6 +1225,11 @@ func (ti *TableInstance) rebuildSecondaryIndexesByKeys(keys map[string]bool) err
 }
 
 func (ti *TableInstance) rebuildSecondaryIndexesAsync() {
+	if ti.onlyFullTextIndexesNeedRebuild() {
+		ti.rebuildFullTextIndexesAsync()
+		return
+	}
+
 	start := time.Now()
 	defer close(ti.indexBuildDone)
 	rebuiltAllIndexes := len(ti.indexesToRebuild) == len(ti.def.Indexes)
@@ -1207,17 +1249,171 @@ func (ti *TableInstance) rebuildSecondaryIndexesAsync() {
 	}
 	fmt.Fprintf(os.Stderr, "flop: %s: secondary indexes ready in %s\n", ti.Name, time.Since(start).Round(time.Millisecond))
 	ti.indexesToRebuild = make(map[string]bool)
-	ti.setIndexesFresh(rebuiltAllIndexes)
+	ti.setIndexesFresh(ti.secondaryIndexesFresh() || rebuiltAllIndexes)
 	ti.setIndexesReady(true)
 }
 
-func (ti *TableInstance) persistSecondaryIndexesLocked() error {
-	for indexKey, indexDef := range ti.indexDefsByKey {
-		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
+func (ti *TableInstance) onlyFullTextIndexesNeedRebuild() bool {
+	if len(ti.indexesToRebuild) == 0 {
+		return false
+	}
+	for indexKey := range ti.indexesToRebuild {
+		indexDef, ok := ti.indexDefsByKey[indexKey]
+		if !ok || normalizeIndexType(indexDef.Type) != schema.IndexTypeFullText {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildFullTextIndexesAsync builds detached indexes so reads and writes can
+// continue against fallback scans. A compact set of primary keys changed while
+// scanning is reconciled under the table lock immediately before the swap.
+func (ti *TableInstance) rebuildFullTextIndexesAsync() {
+	start := time.Now()
+	defer close(ti.indexBuildDone)
+	checkpointGeneration := ti.checkpointGen
+
+	built := make(map[string]*storage.FullTextIndex, len(ti.indexesToRebuild))
+	for indexKey := range ti.indexesToRebuild {
+		built[indexKey] = storage.NewFullTextIndex()
+	}
+	ti.indexBuildDirtyMu.Lock()
+	ti.indexBuildDirty = make(map[string]struct{})
+	ti.indexBuildDirtyMu.Unlock()
+	ti.indexBuildTracking.Store(true)
+	if testDetachedIndexBuildStartHook != nil {
+		testDetachedIndexBuildStartHook()
+	}
+
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
+		if err != nil || !ti.rowVisibleToScans(row) {
+			return true
+		}
+		pk := toString(row[ti.primaryKeyField()])
+		for indexKey, idx := range built {
+			indexDef := ti.indexDefsByKey[indexKey]
+			idx.Index(pk, textValuesForFields(row, indexDef.Fields)...)
+		}
+		return true
+	})
+	if err != nil {
+		ti.finishFailedDetachedIndexBuild(start, err)
+		return
+	}
+	for _, idx := range built {
+		idx.Finalize()
+	}
+
+	// Capture a persistence candidate before the indexes become live. It is
+	// usable only when no row changed during the scan.
+	persisted := make(map[string][]byte, len(built))
+	for indexKey, idx := range built {
+		data, err := storage.MarshalFullTextIndex(idx, ti.wal.CheckpointLSN())
+		if err != nil {
+			ti.finishFailedDetachedIndexBuild(start, err)
+			return
+		}
+		persisted[indexKey] = data
+	}
+
+	for {
+		ti.mu.Lock()
+		if !ti.hasPendingRows() {
+			break
+		}
+		ti.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+
+	ti.indexBuildDirtyMu.Lock()
+	dirty := ti.indexBuildDirty
+	ti.indexBuildDirty = nil
+	ti.indexBuildTracking.Store(false)
+	ti.indexBuildDirtyMu.Unlock()
+	for pk := range dirty {
+		for _, idx := range built {
+			idx.Delete(pk)
+		}
+		row, err := ti.getUnlocked(pk)
+		if err != nil || row == nil || !ti.rowVisibleToScans(row) {
 			continue
 		}
+		for indexKey, idx := range built {
+			indexDef := ti.indexDefsByKey[indexKey]
+			idx.Index(pk, textValuesForFields(row, indexDef.Fields)...)
+		}
+	}
+	for _, idx := range built {
+		idx.Finalize()
+	}
+	for indexKey, idx := range built {
+		ti.secondaryIdxs[indexKey] = idx
+	}
+	ti.indexesToRebuild = make(map[string]bool)
+	ti.setIndexesFresh(true)
+	ti.setIndexesReady(true)
+	ti.mu.Unlock()
+
+	if len(dirty) == 0 {
+		ti.secondaryPersistMu.Lock()
+		canPersist := ti.checkpointGen == checkpointGeneration && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN()
+		if canPersist {
+			for indexKey, data := range persisted {
+				path := secondaryIndexDiskPath(ti.dataDir, ti.Name, indexKey, true)
+				if err := storage.WriteFullTextIndexData(path, data); err != nil {
+					ti.secondaryPersistMu.Unlock()
+					fmt.Fprintf(os.Stderr, "flop: %s: full-text index persist failed in %s: %v\n", ti.Name, time.Since(start).Round(time.Millisecond), err)
+					return
+				}
+			}
+		}
+		ti.secondaryPersistMu.Unlock()
+	}
+	fmt.Fprintf(os.Stderr, "flop: %s: secondary indexes ready in %s\n", ti.Name, time.Since(start).Round(time.Millisecond))
+}
+
+func (ti *TableInstance) finishFailedDetachedIndexBuild(start time.Time, err error) {
+	ti.indexBuildDirtyMu.Lock()
+	ti.indexBuildDirty = nil
+	ti.indexBuildTracking.Store(false)
+	ti.indexBuildDirtyMu.Unlock()
+	fmt.Fprintf(os.Stderr, "flop: %s: secondary index build failed in %s: %v\n", ti.Name, time.Since(start).Round(time.Millisecond), err)
+	ti.setIndexesFresh(false)
+	ti.setIndexesReady(false)
+}
+
+func (ti *TableInstance) markIndexBuildDirty(pk string) {
+	if pk == "" || !ti.indexBuildTracking.Load() {
+		return
+	}
+	ti.indexBuildDirtyMu.Lock()
+	if ti.indexBuildDirty != nil {
+		ti.indexBuildDirty[pk] = struct{}{}
+	}
+	ti.indexBuildDirtyMu.Unlock()
+}
+
+func (ti *TableInstance) hasPendingRows() bool {
+	pending := false
+	ti.pendingRows.Range(func(_, _ any) bool {
+		pending = true
+		return false
+	})
+	return pending
+}
+
+func (ti *TableInstance) persistSecondaryIndexesLocked() error {
+	ti.secondaryPersistMu.Lock()
+	defer ti.secondaryPersistMu.Unlock()
+	for indexKey := range ti.indexDefsByKey {
 		path := secondaryIndexDiskPath(ti.dataDir, ti.Name, indexKey, true)
 		switch idx := ti.secondaryIdxs[indexKey].(type) {
+		case *storage.FullTextIndex:
+			if err := storage.WriteFullTextIndexFile(path, idx, ti.wal.CheckpointLSN()); err != nil {
+				return err
+			}
 		case *storage.HashIndex:
 			if err := storage.WriteMappedIndexFile(path, idx); err != nil {
 				return err
@@ -1512,6 +1708,7 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 			idx.Add(key, pointer)
 		}
 	}
+	ti.markIndexBuildDirty(pk)
 	failpoint.Hit("insert_after_index_update")
 
 	// WAL commit: buffer into transaction or commit immediately
@@ -1804,6 +2001,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 
 	// Apply index changes after successful page write
 	ti.applyIndexChanges(existing, newRow, pointer)
+	ti.markIndexBuildDirty(key)
 	failpoint.Hit("update_after_index_update")
 
 	// WAL commit: buffer into transaction or commit immediately
@@ -1965,6 +2163,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		page.SetPageLSN(recordLSN)
 		ti.tableFile.MarkPageDirty(pointer.PageNumber)
 	}
+	ti.markIndexBuildDirty(key)
 	failpoint.Hit("update_slow_after_page_write")
 
 	if isTx {
@@ -2285,6 +2484,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 			idx.Delete(k, pointer)
 		}
 	}
+	ti.markIndexBuildDirty(key)
 	failpoint.Hit("delete_after_index_update")
 
 	// WAL commit: buffer into transaction or commit immediately
@@ -2420,6 +2620,7 @@ func (ti *TableInstance) Archive(key string, opts ArchiveOptions, txBuf map[stri
 			idx.Delete(k, pointer)
 		}
 	}
+	ti.markIndexBuildDirty(key)
 
 	if isTx {
 		entry := txBuf[ti.Name]
@@ -2474,7 +2675,13 @@ func (ti *TableInstance) RestoreArchived(archiveID string, txBuf map[string]*wal
 	if err := ti.applyWALInsert(archived.RowData, 0); err != nil {
 		return nil, nil, err
 	}
+	restoredPointer, ok := ti.primaryIndex.Get(pk)
+	if !ok {
+		return nil, nil, fmt.Errorf("restored row %s missing primary index entry", pk)
+	}
+	ti.addSecondaryIndexEntries(row, restoredPointer)
 	if err := ti.applyWALArchiveDelete(archiveID); err != nil {
+		ti.removeSecondaryIndexEntries(row, restoredPointer)
 		_ = ti.applyWALDelete(pk, 0)
 		return nil, nil, err
 	}
@@ -2566,6 +2773,11 @@ func (ti *TableInstance) RollbackArchive(record *storage.ArchivedRow) error {
 	if err := ti.applyWALInsert(record.RowData, 0); err != nil {
 		return err
 	}
+	pointer, ok := ti.primaryIndex.Get(pk)
+	if !ok {
+		return fmt.Errorf("rolled back archive row %s missing primary index entry", pk)
+	}
+	ti.addSecondaryIndexEntries(row, pointer)
 	return ti.applyWALArchiveDelete(record.ArchiveID)
 }
 
@@ -2587,6 +2799,9 @@ func (ti *TableInstance) RollbackRestore(record *storage.ArchivedRow) error {
 	if err := ti.applyWALArchiveInsert(mustArchiveBytes(record)); err != nil {
 		return err
 	}
+	if pointer, ok := ti.primaryIndex.Get(pk); ok {
+		ti.removeSecondaryIndexEntries(row, pointer)
+	}
 	return ti.applyWALDelete(pk, 0)
 }
 
@@ -2607,6 +2822,40 @@ func (ti *TableInstance) RollbackRawRow(raw []byte) error {
 		return nil
 	}
 	return ti.applyWALUpdate(raw, 0)
+}
+
+func (ti *TableInstance) addSecondaryIndexEntries(row map[string]interface{}, pointer schema.RowPointer) {
+	pk := toString(row[ti.primaryKeyField()])
+	for _, indexDef := range ti.def.Indexes {
+		indexKey := secondaryIndexKey(indexDef)
+		switch idx := ti.secondaryIdxs[indexKey].(type) {
+		case *storage.FullTextIndex:
+			idx.Index(pk, textValuesForFields(row, indexDef.Fields)...)
+		case *storage.HashIndex:
+			idx.Set(storage.CompositeKeyFromRow(row, indexDef.Fields), pointer)
+		case *storage.MultiIndex:
+			if !allIndexFieldsUnset(row, indexDef.Fields) {
+				idx.Add(storage.CompositeKeyFromRow(row, indexDef.Fields), pointer)
+			}
+		}
+	}
+}
+
+func (ti *TableInstance) removeSecondaryIndexEntries(row map[string]interface{}, pointer schema.RowPointer) {
+	pk := toString(row[ti.primaryKeyField()])
+	for _, indexDef := range ti.def.Indexes {
+		indexKey := secondaryIndexKey(indexDef)
+		switch idx := ti.secondaryIdxs[indexKey].(type) {
+		case *storage.FullTextIndex:
+			idx.Delete(pk)
+		case *storage.HashIndex:
+			idx.Delete(storage.CompositeKeyFromRow(row, indexDef.Fields))
+		case *storage.MultiIndex:
+			if !allIndexFieldsUnset(row, indexDef.Fields) {
+				idx.Delete(storage.CompositeKeyFromRow(row, indexDef.Fields), pointer)
+			}
+		}
+	}
 }
 
 // Count returns the number of rows.
@@ -2932,22 +3181,12 @@ func (ti *TableInstance) FindByIndex(fields []string, value interface{}) (schema
 			matchKey = storage.CompositeKey(anySlice(value))
 		}
 		ptr, ok := hi.Get(matchKey)
-		if ok {
-			matches, err := ti.rowPointerMatchesIndexKey(ptr, fields, matchKey)
-			if err == nil && matches {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "", start)
-				return ptr, true
-			}
-			hi.Delete(matchKey)
-		}
-		ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 1)
-		if err != nil || len(ptrs) == 0 {
-			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "rehydrate scan", start)
+		if !ok {
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "", start)
 			return schema.RowPointer{}, false
 		}
-		hi.Set(matchKey, ptrs[0])
-		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "rehydrate scan", start)
-		return ptrs[0], true
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "", start)
+		return ptr, true
 	}
 	return schema.RowPointer{}, false
 }
@@ -2983,57 +3222,12 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 			matchKey = storage.CompositeKey(anySlice(value))
 		}
 		ptrs := idx.GetAll(matchKey)
-		staleFound := false
-		out := make([]schema.RowPointer, 0, len(ptrs))
-		for _, ptr := range ptrs {
-			matches, err := ti.rowPointerMatchesIndexKey(ptr, fields, matchKey)
-			if err != nil || !matches {
-				staleFound = true
-				idx.Delete(matchKey, ptr)
-				continue
-			}
-			out = append(out, ptr)
+		if len(ptrs) == 0 {
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index empty", start)
+			return nil
 		}
-		if staleFound {
-			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
-			if err != nil {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index repair scan error", start)
-				return out
-			}
-			for _, ptr := range ptrs {
-				found := false
-				for _, existing := range out {
-					if rowPointerEqual(existing, ptr) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					idx.Add(matchKey, ptr)
-					out = append(out, ptr)
-				}
-			}
-			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(out), len(ptrs), "multi-index repair scan", start)
-			return out
-		}
-		if len(out) == 0 {
-			if ti.secondaryIndexesFresh() {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index empty", start)
-				return nil
-			}
-			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 0)
-			if err != nil {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 0, "multi-index fallback scan error", start)
-				return nil
-			}
-			for _, ptr := range ptrs {
-				idx.Add(matchKey, ptr)
-			}
-			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(ptrs), len(ptrs), "multi-index fallback scan", start)
-			return ptrs
-		}
-		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(out), len(out), "multi-index", start)
-		return out
+		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, len(ptrs), len(ptrs), "multi-index", start)
+		return ptrs
 	case *storage.HashIndex:
 		matchKey := toString(value)
 		if len(fields) > 1 {
@@ -3041,18 +3235,8 @@ func (ti *TableInstance) FindAllByIndex(fields []string, value interface{}) []sc
 		}
 		p, ok := idx.Get(matchKey)
 		if ok {
-			matches, err := ti.rowPointerMatchesIndexKey(p, fields, matchKey)
-			if err == nil && matches {
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index", start)
-				return []schema.RowPointer{p}
-			}
-			idx.Delete(matchKey)
-			ptrs, err := ti.scanPointersByIndexKey(fields, matchKey, 1)
-			if err == nil && len(ptrs) > 0 {
-				idx.Set(matchKey, ptrs[0])
-				reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index repair scan", start)
-				return []schema.RowPointer{ptrs[0]}
-			}
+			reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 1, 1, "unique-index", start)
+			return []schema.RowPointer{p}
 		}
 		reqtrace.AddDuration("index_lookup", ti.Name, indexKey, 0, 1, "unique-index", start)
 	}
@@ -3328,6 +3512,8 @@ func (ti *TableInstance) checkpointLocked() error {
 	if ti.wal != nil && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
 		return nil
 	}
+	ti.secondaryPersistMu.Lock()
+	defer ti.secondaryPersistMu.Unlock()
 
 	failpoint.Hit("checkpoint_start")
 	// WAL must reach stable storage before any page containing those changes.
@@ -3368,12 +3554,14 @@ func (ti *TableInstance) checkpointLocked() error {
 		}
 		persistedFiles = append(persistedFiles, archiveMidxPath)
 	}
-	for indexKey, indexDef := range ti.indexDefsByKey {
-		if normalizeIndexType(indexDef.Type) == schema.IndexTypeFullText {
-			continue
-		}
+	for indexKey := range ti.indexDefsByKey {
 		path := secondaryIndexDiskPath(ti.dataDir, ti.Name, indexKey, true)
 		switch idx := ti.secondaryIdxs[indexKey].(type) {
+		case *storage.FullTextIndex:
+			// Full-text snapshots are written on clean close with their own
+			// checkpoint LSN. Rewriting them at every automatic checkpoint makes
+			// sustained ingestion increasingly expensive.
+			continue
 		case *storage.HashIndex:
 			if err := storage.WriteMappedIndexFile(path, idx); err != nil {
 				return err
@@ -3427,6 +3615,12 @@ func (ti *TableInstance) Close() error {
 	if err := ti.Checkpoint(); err != nil {
 		return err
 	}
+	ti.mu.Lock()
+	if err := ti.persistFullTextIndexesLocked(); err != nil {
+		ti.mu.Unlock()
+		return err
+	}
+	ti.mu.Unlock()
 	if ti.archiveFile != nil {
 		if err := ti.archiveFile.Close(); err != nil {
 			return err
@@ -3436,6 +3630,25 @@ func (ti *TableInstance) Close() error {
 		return err
 	}
 	return ti.wal.Close()
+}
+
+func (ti *TableInstance) persistFullTextIndexesLocked() error {
+	ti.secondaryPersistMu.Lock()
+	defer ti.secondaryPersistMu.Unlock()
+	for indexKey, indexDef := range ti.indexDefsByKey {
+		if normalizeIndexType(indexDef.Type) != schema.IndexTypeFullText {
+			continue
+		}
+		idx, ok := ti.secondaryIdxs[indexKey].(*storage.FullTextIndex)
+		if !ok {
+			continue
+		}
+		path := secondaryIndexDiskPath(ti.dataDir, ti.Name, indexKey, true)
+		if err := storage.WriteFullTextIndexFile(path, idx, ti.wal.CheckpointLSN()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // --- Helpers ---

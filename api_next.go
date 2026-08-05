@@ -1422,11 +1422,7 @@ func (h *APIHandler) recordAnalyticsEvent(in analyticsEventInput) {
 	if details == nil {
 		details = map[string]any{}
 	}
-	if spans := in.traceCollector.Spans(); len(spans) > 0 {
-		details["trace"] = spans
-		details["traceSpans"] = len(spans)
-	}
-	analytics.Record(server.AnalyticsEvent{
+	event := server.AnalyticsEvent{
 		Timestamp:    time.Now(),
 		RouteType:    in.routeType,
 		RouteName:    in.routeName,
@@ -1439,7 +1435,9 @@ func (h *APIHandler) recordAnalyticsEvent(in analyticsEventInput) {
 		ErrorMessage: in.errMessage,
 		UserID:       in.userID,
 		Details:      details,
-	})
+	}
+	event.CaptureTrace(in.traceCollector)
+	analytics.Record(event)
 }
 
 func ternaryUserID(auth *AuthContext) string {

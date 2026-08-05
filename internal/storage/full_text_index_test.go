@@ -1,8 +1,12 @@
 package storage
 
 import (
+	"bytes"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -439,5 +443,66 @@ func TestDeleteThenReinsert(t *testing.T) {
 	results = idx.Search("new", 10)
 	if len(results) != 1 || results[0] != "doc1" {
 		t.Fatalf("expected [doc1] for 'new', got %v", results)
+	}
+}
+
+func TestFullTextIndexFileRoundTrip(t *testing.T) {
+	idx := NewFullTextIndex()
+	idx.Index("post-1", "Fast databases need durable indexes")
+	idx.Index("post-2", "Durable search stays fast after restart")
+	idx.Index("deleted", "this document is removed")
+	idx.Delete("deleted")
+	idx.Finalize()
+
+	path := filepath.Join(t.TempDir(), "posts.ftidx")
+	if err := WriteFullTextIndexFile(path, idx, 42); err != nil {
+		t.Fatalf("write full-text index: %v", err)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read written full-text index: %v", err)
+	}
+	marshaled, err := MarshalFullTextIndex(idx, 42)
+	if err != nil {
+		t.Fatalf("marshal full-text index: %v", err)
+	}
+	if !bytes.Equal(written, marshaled) {
+		t.Fatal("streamed and marshaled full-text snapshots differ")
+	}
+	loaded, checkpointLSN, err := ReadFullTextIndexFile(path)
+	if err != nil {
+		t.Fatalf("read full-text index: %v", err)
+	}
+	if checkpointLSN != 42 {
+		t.Fatalf("checkpoint LSN = %d, want 42", checkpointLSN)
+	}
+
+	for _, query := range []string{"durable", "fast", "restart", "removed"} {
+		if got, want := loaded.Search(query, 10), idx.Search(query, 10); !reflect.DeepEqual(got, want) {
+			t.Fatalf("search %q after round trip = %v, want %v", query, got, want)
+		}
+	}
+	if got := loaded.Stats(); got.DocCount != 2 {
+		t.Fatalf("loaded document count = %d, want 2", got.DocCount)
+	}
+}
+
+func TestFullTextIndexFileRejectsCorruption(t *testing.T) {
+	idx := NewFullTextIndex()
+	idx.Index("post-1", "durable search")
+	path := filepath.Join(t.TempDir(), "posts.ftidx")
+	if err := WriteFullTextIndexFile(path, idx, 7); err != nil {
+		t.Fatalf("write full-text index: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[len(data)-1] ^= 0xff
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReadFullTextIndexFile(path); err == nil {
+		t.Fatal("expected corrupted full-text index to be rejected")
 	}
 }

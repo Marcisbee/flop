@@ -100,16 +100,39 @@ func AddDuration(op, table, index string, rows, scanned int, note string, starte
 
 // Spans returns a copy of collected spans.
 func (c *Collector) Spans() []map[string]interface{} {
+	spans, _ := c.Snapshot(0)
+	return SpansToMaps(spans)
+}
+
+// Snapshot returns a copy of the collected spans. When limit is positive, it
+// bounds the copy and reports how many trailing spans were omitted.
+func (c *Collector) Snapshot(limit int) ([]Span, int) {
 	if c == nil {
-		return nil
+		return nil, 0
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.spans) == 0 {
+		return nil, 0
+	}
+	count := len(c.spans)
+	dropped := 0
+	if limit > 0 && count > limit {
+		dropped = count - limit
+		count = limit
+	}
+	out := make([]Span, count)
+	copy(out, c.spans[:count])
+	return out, dropped
+}
+
+// SpansToMaps converts typed trace spans to the analytics/UI representation.
+func SpansToMaps(spans []Span) []map[string]interface{} {
+	if len(spans) == 0 {
 		return nil
 	}
-	out := make([]map[string]interface{}, 0, len(c.spans))
-	for _, s := range c.spans {
+	out := make([]map[string]interface{}, 0, len(spans))
+	for _, s := range spans {
 		entry := map[string]interface{}{
 			"op": s.Op,
 			"ms": s.MS,

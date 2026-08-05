@@ -8,6 +8,15 @@ import (
 
 // writeFileAtomic writes data using temp-file + fsync + rename + directory fsync.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	return writeFileAtomicFunc(path, mode, func(tmp *os.File) error {
+		_, err := tmp.Write(data)
+		return err
+	})
+}
+
+// writeFileAtomicFunc durably replaces path with content written by writeData.
+// The callback may seek within the temporary file before returning.
+func writeFileAtomicFunc(path string, mode os.FileMode, writeData func(*os.File) error) error {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 
@@ -27,7 +36,7 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		}
 	}()
 
-	if _, err := tmp.Write(data); err != nil {
+	if err := writeData(tmp); err != nil {
 		_ = tmp.Close()
 		return err
 	}
