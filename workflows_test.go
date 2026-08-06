@@ -235,7 +235,7 @@ func TestReportedContentWorkflowRequiresApprovalBeforeDelete(t *testing.T) {
 	if _, err := posts.Insert(db, map[string]any{"id": "target", "userId": "u1", "body": "reported post"}); err != nil {
 		t.Fatalf("insert target: %v", err)
 	}
-	_, err = db.SaveWorkflow(Workflow{
+	workflow, err := db.SaveWorkflow(Workflow{
 		Name: "Reports", Enabled: true, Category: "moderation",
 		Trigger: WorkflowTrigger{Type: "report", Table: "reports", Events: []string{"insert"}},
 		Lookups: []WorkflowLookup{{Name: "target", Type: "get", Table: "posts", InputPath: "input.row.postId"}},
@@ -252,8 +252,15 @@ func TestReportedContentWorkflowRequiresApprovalBeforeDelete(t *testing.T) {
 	if run.LookupResults["target"] == nil || !run.ApprovalRequired {
 		t.Fatalf("run lacks lookup or approval state: %+v", run)
 	}
+	if run.ActionEffect == nil || run.ActionEffect.Type != "delete" || run.ActionEffect.Table != "posts" || run.ActionEffect.ID != "target" {
+		t.Fatalf("run action effect = %+v, want delete posts/target", run.ActionEffect)
+	}
 	if row, _ := db.Table("posts").Get("target"); row == nil {
 		t.Fatal("sensitive action ran before approval")
+	}
+	workflow.Actions[0].IDPath = "input.row.id"
+	if _, err := db.SaveWorkflow(workflow); err != nil {
+		t.Fatalf("change workflow after decision: %v", err)
 	}
 	resolved, err := db.ResolveWorkflowRun(run.ID, "approve")
 	if err != nil {
@@ -264,6 +271,38 @@ func TestReportedContentWorkflowRequiresApprovalBeforeDelete(t *testing.T) {
 	}
 	if row, _ := db.Table("posts").Get("target"); row != nil {
 		t.Fatal("approved delete did not remove target")
+	}
+}
+
+func TestWorkflowRunKeepsDecisionWhenActionFails(t *testing.T) {
+	router := httptest.NewServer(workflowResponse(`{"action":"delete","reasoning":"remove the matching post"}`))
+	defer router.Close()
+	app, _, _, _ := workflowTestApp(t, router.URL)
+	db, err := app.Open()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	workflow, err := db.SaveWorkflow(Workflow{
+		Name:    "Manual delete",
+		Enabled: true,
+		Trigger: WorkflowTrigger{Type: "manual"},
+		AI:      WorkflowAIStep{Model: "test/model", Prompt: "review", ResultSchema: defaultWorkflowResultSchema([]string{"delete"})},
+		Actions: []WorkflowAction{{Type: "delete", Table: "posts", IDPath: "input.postId"}},
+	})
+	if err != nil {
+		t.Fatalf("save workflow: %v", err)
+	}
+	if _, err := db.RunWorkflow(workflow.ID, map[string]any{}); err != nil {
+		t.Fatalf("run workflow: %v", err)
+	}
+	run := waitForWorkflowRun(t, db, "error")
+	if run.Reasoning != "remove the matching post" || run.RecommendedAction != "delete" {
+		t.Fatalf("run lost model decision: %+v", run)
+	}
+	if run.ActionEffect == nil || run.ActionEffect.Type != "delete" || run.ActionEffect.Table != "posts" {
+		t.Fatalf("run action effect = %+v, want delete posts", run.ActionEffect)
 	}
 }
 
@@ -360,6 +399,9 @@ func TestDiscordReconciliationSearchesGamesAndCreatesApprovedAlias(t *testing.T)
 	run := waitForWorkflowRun(t, db, "awaiting_approval")
 	if run.WorkflowID != workflow.ID || run.LookupResults["candidates"] == nil {
 		t.Fatalf("unexpected reconciliation run: %+v", run)
+	}
+	if run.ActionEffect == nil || run.ActionEffect.Type != "propose_alias" || run.ActionEffect.Table != "game_aliases" || run.ActionEffect.Data["gameId"] != "g1" || run.ActionEffect.Data["alias"] != "Portal 2 Discord" {
+		t.Fatalf("run action effect = %+v, want resolved alias data", run.ActionEffect)
 	}
 	if _, err := db.ResolveWorkflowRun(run.ID, "approve"); err != nil {
 		t.Fatalf("approve alias: %v", err)

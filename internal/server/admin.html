@@ -250,7 +250,12 @@ tbody tr.selected{background:var(--bg-active)}
 .workflow-checks{display:flex;flex-wrap:wrap;gap:14px}
 .workflow-check{display:flex;align-items:center;gap:6px;color:var(--text)}
 .workflow-warning{padding:10px 12px;border:1px solid rgba(244,135,113,.35);border-radius:6px;background:rgba(244,135,113,.08);color:var(--error)}
-.workflow-run-detail{white-space:normal;line-height:1.35;max-width:440px}
+.workflow-run-detail{white-space:normal;line-height:1.4;min-width:220px;max-width:420px}
+.workflow-run-label{font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);margin-bottom:3px}
+.workflow-run-action-state{font-weight:600;color:var(--text-heading)}
+.workflow-run-effect{margin-top:5px;color:var(--text)}
+.workflow-run-reasoning{white-space:normal;line-height:1.45;min-width:220px;max-width:480px;color:var(--text)}
+.workflow-run-controls{display:flex;flex-wrap:wrap;gap:4px;min-width:110px}
 .workflow-run-source{white-space:normal;min-width:150px}
 .workflow-run-source-name{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;color:var(--text-heading);font-size:11px}
 .workflow-run-source-action{margin-top:6px}
@@ -2875,6 +2880,76 @@ function formatWorkflowRunContent(run) {
   }
 }
 
+function workflowValueAtPath(scope, path) {
+  let current = scope;
+  for (const part of String(path || '').split('.').filter(Boolean)) {
+    if (current == null || typeof current !== 'object') return null;
+    current = current[part];
+  }
+  return current;
+}
+
+function legacyWorkflowActionEffect(run, workflows) {
+  const type = run?.recommendedAction || run?.action || '';
+  const workflow = (workflows || []).find(item => item.id === run?.workflowId);
+  const action = workflow?.actions?.find(item => item.type === type);
+  if (!action) return { type };
+  const scope = { input: run.input || {}, lookups: run.lookupResults || {}, result: run.result || {} };
+  const effect = { type: action.type, table: action.table || '', field: action.field || '' };
+  if (['delete', 'archive', 'block'].includes(action.type)) effect.id = workflowValueAtPath(scope, action.idPath);
+  if (action.type === 'block') effect.value = action.value == null ? true : action.value;
+  if (['create_alias', 'propose_alias'].includes(action.type)) {
+    effect.data = Object.fromEntries(Object.entries(action.data || {}).map(([field, path]) => [field, workflowValueAtPath(scope, path)]));
+  }
+  return effect;
+}
+
+function workflowActionEffectText(run, workflows) {
+  const effect = run?.actionEffect || legacyWorkflowActionEffect(run, workflows);
+  const type = effect?.type || run?.recommendedAction || run?.action || '';
+  const target = effect?.table && effect?.id ? `${effect.table} row ${effect.id}` : (effect?.table || 'the configured target');
+  switch (type) {
+    case 'approve':
+      return run?.holdUntilComplete && run?.table && run?.rowId
+        ? `Release ${run.table} row ${run.rowId} from the workflow hold and make it visible.`
+        : 'Complete the run without changing application data.';
+    case 'queue_review':
+      return 'Complete the review without changing application data.';
+    case 'delete':
+      return `Permanently delete ${target}.`;
+    case 'archive':
+      return `Archive ${target}.`;
+    case 'block': {
+      const value = effect?.value === undefined ? true : effect.value;
+      return `Set ${effect?.table || 'the configured table'} row ${effect?.id || 'the configured target'} field ${effect?.field || 'the configured field'} to ${JSON.stringify(value)}.`;
+    }
+    case 'create_alias':
+    case 'propose_alias': {
+      const fields = Object.entries(effect?.data || {}).map(([field, value]) => `${field}=${JSON.stringify(value)}`).join(', ');
+      return `Create a row in ${effect?.table || 'the configured alias table'}${fields ? ` with ${fields}` : ''}.`;
+    }
+    case 'rejected':
+      return 'No action was taken.';
+    default:
+      return type ? `Run the configured ${type.replaceAll('_', ' ')} action.` : 'No action has been selected yet.';
+  }
+}
+
+function workflowActionOutcome(run, workflows) {
+  const effect = workflowActionEffectText(run, workflows);
+  if (run?.status === 'awaiting_approval') return { state: 'Awaiting admin decision', effect: `Approval will: ${effect}` };
+  if (run?.status === 'error') return { state: 'No action taken', effect: run.error || 'The run failed before an action completed.' };
+  if (run?.status === 'cancelled') return { state: 'No action taken', effect: run.reasoning || 'The run was cancelled.' };
+  if (run?.status === 'pending') return { state: 'No action yet', effect: 'Waiting for model evaluation.' };
+  if (run?.status === 'running') return { state: 'No action yet', effect: 'Model evaluation is in progress.' };
+  if (run?.status === 'completed' && run?.action === 'rejected') return { state: 'Declined by admin', effect: `No action was taken. Declined action: ${effect}` };
+  if (run?.status === 'completed') {
+    const noDataChange = ['approve', 'queue_review'].includes(run?.action);
+    return { state: noDataChange ? 'Completed — no data change' : 'Action taken', effect };
+  }
+  return { state: 'No action yet', effect };
+}
+
 function WorkflowPage({ tables }) {
   const [tab, setTab] = useState(() => window.location.hash.includes('/moderation') ? 'moderation' : 'runs');
   const [workflows, setWorkflows] = useState([]);
@@ -2976,8 +3051,12 @@ function WorkflowPage({ tables }) {
   }, [loadConfig]);
 
   const resolve = useCallback(async (run, action) => {
-    const labels = { approve: 'apply the proposed action', reject: 'reject the proposed action', retry: 'retry this workflow run' };
-    if (action !== 'retry' && !confirm('Confirm: ' + labels[action] + '?')) return;
+    const outcome = workflowActionOutcome(run, workflows);
+    const messages = {
+      approve: `Apply this action?\n\n${outcome.effect}`,
+      reject: `Decline this action?\n\nNo action will be taken.`,
+    };
+    if (action !== 'retry' && !confirm(messages[action])) return;
     try {
       await api('/workflows/runs/' + encodeURIComponent(run.id) + '/resolve', {
         method: 'POST', body: JSON.stringify({ action })
@@ -2987,7 +3066,7 @@ function WorkflowPage({ tables }) {
     } catch (err) {
       showToast(err.message || 'Workflow action failed', 'error');
     }
-  }, [loadRuns]);
+  }, [loadRuns, workflows]);
 
   const runManual = useCallback(async (workflow) => {
     const raw = prompt('Manual input as JSON', '{}');
@@ -3073,10 +3152,11 @@ function WorkflowPage({ tables }) {
         <div class="observe-table-wrap">
           <div class="panel-table-scroll">
             <table>
-              <thead><tr><th>Status</th><th>Workflow / event</th><th>Source</th><th>Result and reasoning</th><th>Action</th></tr></thead>
+              <thead><tr><th>Status</th><th>Workflow / event</th><th>Source</th><th>Action state and effect</th><th>Model reasoning</th><th>Review</th></tr></thead>
               <tbody>
-                ${runs.length === 0 ? html`<tr><td colspan="5" class="empty-row">${loading ? 'Loading workflow runs…' : 'No workflow runs found'}</td></tr>` : runs.map(run => html`
-                  <tr key=${run.id}>
+                ${runs.length === 0 ? html`<tr><td colspan="6" class="empty-row">${loading ? 'Loading workflow runs…' : 'No workflow runs found'}</td></tr>` : runs.map(run => {
+                  const outcome = workflowActionOutcome(run, workflows);
+                  return html`<tr key=${run.id}>
                     <td><span class=${"status-pill " + run.status}>${run.status.replace('_', ' ')}</span><div class="th-type">${run.createdAtUnixMilli ? formatDateTime(run.createdAtUnixMilli) : ''}</div><div class="th-type">attempt ${run.attempt}/${(run.maxRetries || 0) + 1}</div></td>
                     <td><div>${run.workflowName}</div><div class="th-type">${run.trigger}${run.event ? ' · ' + run.event : ''}</div></td>
                     <td class="workflow-run-source">
@@ -3085,17 +3165,23 @@ function WorkflowPage({ tables }) {
                         : html`<div class="th-type">${run.trigger === 'manual' ? 'Manual input' : 'External event input'}</div>`}
                       ${workflowRunContent(run) != null && html`<button class="btn btn-sm workflow-run-source-action" onClick=${() => setInspectingRun(run)}>Inspect content</button>`}
                     </td>
-                    <td class="workflow-run-detail"><div>${run.recommendedAction || 'Awaiting result'}</div><div class="th-type">${run.reasoning || run.error || ''}</div></td>
-                    <td>
-                      <div style="display:flex;flex-wrap:wrap;gap:4px">
-                        ${run.status === 'awaiting_approval' && html`<button class="btn btn-sm" onClick=${() => resolve(run, 'approve')}>Approve</button>`}
-                        ${run.status === 'awaiting_approval' && html`<button class="btn btn-sm" onClick=${() => resolve(run, 'reject')}>Reject</button>`}
-                        ${run.status === 'error' && html`<button class="btn btn-sm" onClick=${() => resolve(run, 'retry')}>Retry</button>`}
-                        ${!['awaiting_approval','error'].includes(run.status) && html`<span class="th-type">${run.action || '-'}</span>`}
-                      </div>
+                    <td class="workflow-run-detail">
+                      <div class="workflow-run-label">Execution</div>
+                      <div class="workflow-run-action-state">${outcome.state}</div>
+                      <div class="workflow-run-effect">${outcome.effect}</div>
                     </td>
-                  </tr>
-                `)}
+                    <td class="workflow-run-reasoning">
+                      <div class="workflow-run-label">Model analysis</div>
+                      <div>${run.reasoning || (run.status === 'error' ? 'No model reasoning was produced.' : 'No model reasoning was recorded.')}</div>
+                      ${(run.model || run.provider) && html`<div class="th-type">${[run.provider, run.model].filter(Boolean).join(' · ')}</div>`}
+                    </td>
+                    <td><div class="workflow-run-controls">
+                        ${run.status === 'awaiting_approval' && html`<button class="btn btn-sm btn-primary" onClick=${() => resolve(run, 'approve')}>Apply action</button>`}
+                        ${run.status === 'awaiting_approval' && html`<button class="btn btn-sm" onClick=${() => resolve(run, 'reject')}>Decline</button>`}
+                        ${run.status === 'error' && html`<button class="btn btn-sm" onClick=${() => resolve(run, 'retry')}>Retry</button>`}
+                      </div></td>
+                  </tr>`;
+                })}
               </tbody>
             </table>
           </div>
