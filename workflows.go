@@ -104,32 +104,45 @@ type Workflow struct {
 
 // WorkflowRun is the durable execution and approval history for a workflow.
 type WorkflowRun struct {
-	ID                  string         `json:"id"`
-	WorkflowID          string         `json:"workflowId"`
-	WorkflowName        string         `json:"workflowName"`
-	Trigger             string         `json:"trigger"`
-	Event               string         `json:"event"`
-	Table               string         `json:"table,omitempty"`
-	RowID               string         `json:"rowId,omitempty"`
-	SubjectID           string         `json:"subjectId,omitempty"`
-	Status              string         `json:"status"`
-	Input               map[string]any `json:"input,omitempty"`
-	LookupResults       map[string]any `json:"lookupResults,omitempty"`
-	Result              map[string]any `json:"result,omitempty"`
-	Reasoning           string         `json:"reasoning,omitempty"`
-	RecommendedAction   string         `json:"recommendedAction,omitempty"`
-	Action              string         `json:"action,omitempty"`
-	ApprovalRequired    bool           `json:"approvalRequired,omitempty"`
-	Attempt             int            `json:"attempt"`
-	MaxRetries          int            `json:"maxRetries"`
-	Errors              []string       `json:"errors,omitempty"`
-	Error               string         `json:"error,omitempty"`
-	Model               string         `json:"model,omitempty"`
-	Provider            string         `json:"provider,omitempty"`
-	HoldUntilComplete   bool           `json:"holdUntilComplete,omitempty"`
-	CreatedAtUnixMilli  int64          `json:"createdAtUnixMilli"`
-	StartedAtUnixMilli  int64          `json:"startedAtUnixMilli,omitempty"`
-	FinishedAtUnixMilli int64          `json:"finishedAtUnixMilli,omitempty"`
+	ID                  string                `json:"id"`
+	WorkflowID          string                `json:"workflowId"`
+	WorkflowName        string                `json:"workflowName"`
+	Trigger             string                `json:"trigger"`
+	Event               string                `json:"event"`
+	Table               string                `json:"table,omitempty"`
+	RowID               string                `json:"rowId,omitempty"`
+	SubjectID           string                `json:"subjectId,omitempty"`
+	Status              string                `json:"status"`
+	Input               map[string]any        `json:"input,omitempty"`
+	LookupResults       map[string]any        `json:"lookupResults,omitempty"`
+	Result              map[string]any        `json:"result,omitempty"`
+	Reasoning           string                `json:"reasoning,omitempty"`
+	RecommendedAction   string                `json:"recommendedAction,omitempty"`
+	Action              string                `json:"action,omitempty"`
+	ActionEffect        *WorkflowActionEffect `json:"actionEffect,omitempty"`
+	ApprovalRequired    bool                  `json:"approvalRequired,omitempty"`
+	Attempt             int                   `json:"attempt"`
+	MaxRetries          int                   `json:"maxRetries"`
+	Errors              []string              `json:"errors,omitempty"`
+	Error               string                `json:"error,omitempty"`
+	Model               string                `json:"model,omitempty"`
+	Provider            string                `json:"provider,omitempty"`
+	HoldUntilComplete   bool                  `json:"holdUntilComplete,omitempty"`
+	CreatedAtUnixMilli  int64                 `json:"createdAtUnixMilli"`
+	StartedAtUnixMilli  int64                 `json:"startedAtUnixMilli,omitempty"`
+	FinishedAtUnixMilli int64                 `json:"finishedAtUnixMilli,omitempty"`
+}
+
+// WorkflowActionEffect is the resolved, durable effect of a workflow action.
+// It records concrete targets and values so approval history remains accurate
+// even when the workflow definition changes after a run.
+type WorkflowActionEffect struct {
+	Type  string         `json:"type"`
+	Table string         `json:"table,omitempty"`
+	ID    string         `json:"id,omitempty"`
+	Field string         `json:"field,omitempty"`
+	Value any            `json:"value,omitempty"`
+	Data  map[string]any `json:"data,omitempty"`
 }
 
 type workflowService struct {
@@ -332,29 +345,28 @@ func (s *workflowService) execute(run WorkflowRun) {
 	run.LookupResults = lookups
 	run.Result = result
 	run.RecommendedAction = actionName
-	if action.RequireApproval || action.Type == "queue_review" || action.Type == "propose_alias" {
-		s.finishRun(run.ID, map[string]any{
-			"status":            "awaiting_approval",
-			"lookupResults":     lookups,
-			"result":            result,
-			"reasoning":         reasoning,
-			"recommendedAction": actionName,
-			"action":            action.Type,
-			"approvalRequired":  true,
-		})
-		return
-	}
-	if err := s.applyAction(run, action); err != nil {
-		s.failRun(run.ID, err)
-		return
-	}
-	s.finishRun(run.ID, map[string]any{
-		"status":            "completed",
+	actionEffect := resolveWorkflowActionEffect(run, action)
+	decisionFields := map[string]any{
 		"lookupResults":     lookups,
 		"result":            result,
 		"reasoning":         reasoning,
 		"recommendedAction": actionName,
 		"action":            action.Type,
+		"actionEffect":      jsonValue(actionEffect),
+	}
+	if action.RequireApproval || action.Type == "queue_review" || action.Type == "propose_alias" {
+		decisionFields["status"] = "awaiting_approval"
+		decisionFields["approvalRequired"] = true
+		s.finishRun(run.ID, decisionFields)
+		return
+	}
+	s.updateRun(run.ID, decisionFields)
+	if err := s.applyAction(run, action); err != nil {
+		s.failRun(run.ID, err)
+		return
+	}
+	s.finishRun(run.ID, map[string]any{
+		"status": "completed",
 	})
 }
 
@@ -630,60 +642,78 @@ func (s *workflowService) runLookups(workflow Workflow, input map[string]any) (m
 }
 
 func (s *workflowService) applyAction(run WorkflowRun, action WorkflowAction) error {
+	return s.applyActionEffect(resolveWorkflowActionEffect(run, action))
+}
+
+func resolveWorkflowActionEffect(run WorkflowRun, action WorkflowAction) WorkflowActionEffect {
 	scope := map[string]any{"input": run.Input, "lookups": run.LookupResults, "result": run.Result}
-	switch action.Type {
+	effect := WorkflowActionEffect{
+		Type:  action.Type,
+		Table: action.Table,
+		Field: action.Field,
+	}
+	switch effect.Type {
+	case "delete", "archive", "block":
+		effect.ID = strings.TrimSpace(toString(valueAtPath(scope, action.IDPath)))
+	}
+	if effect.Type == "block" {
+		effect.Value = action.Value
+		if effect.Value == nil {
+			effect.Value = true
+		}
+	}
+	if effect.Type == "create_alias" || effect.Type == "propose_alias" {
+		effect.Data = make(map[string]any, len(action.Data))
+		for field, path := range action.Data {
+			effect.Data[field] = valueAtPath(scope, path)
+		}
+	}
+	return effect
+}
+
+func (s *workflowService) applyActionEffect(effect WorkflowActionEffect) error {
+	switch effect.Type {
 	case "approve", "queue_review":
 		return nil
 	case "delete":
-		table := s.db.Table(action.Table)
+		table := s.db.Table(effect.Table)
 		if table == nil {
-			return fmt.Errorf("workflow delete table %q not found", action.Table)
+			return fmt.Errorf("workflow delete table %q not found", effect.Table)
 		}
-		id := strings.TrimSpace(toString(valueAtPath(scope, action.IDPath)))
-		if id == "" {
+		if effect.ID == "" {
 			return errors.New("workflow delete action resolved an empty ID")
 		}
-		_, err := table.Delete(id)
+		_, err := table.Delete(effect.ID)
 		return err
 	case "archive":
-		table := s.db.Table(action.Table)
+		table := s.db.Table(effect.Table)
 		if table == nil {
-			return fmt.Errorf("workflow archive table %q not found", action.Table)
+			return fmt.Errorf("workflow archive table %q not found", effect.Table)
 		}
-		id := strings.TrimSpace(toString(valueAtPath(scope, action.IDPath)))
-		if id == "" {
+		if effect.ID == "" {
 			return errors.New("workflow archive action resolved an empty ID")
 		}
-		_, err := table.Archive(id)
+		_, err := table.Archive(effect.ID)
 		return err
 	case "block":
-		table := s.db.db.GetTable(action.Table)
+		table := s.db.db.GetTable(effect.Table)
 		if table == nil {
-			return fmt.Errorf("workflow block table %q not found", action.Table)
+			return fmt.Errorf("workflow block table %q not found", effect.Table)
 		}
-		id := strings.TrimSpace(toString(valueAtPath(scope, action.IDPath)))
-		if id == "" {
+		if effect.ID == "" {
 			return errors.New("workflow block action resolved an empty ID")
 		}
-		value := action.Value
-		if value == nil {
-			value = true
-		}
-		_, err := table.Update(id, map[string]any{action.Field: value}, nil)
+		_, err := table.Update(effect.ID, map[string]any{effect.Field: effect.Value}, nil)
 		return err
 	case "create_alias", "propose_alias":
-		table := s.db.db.GetTable(action.Table)
+		table := s.db.db.GetTable(effect.Table)
 		if table == nil {
-			return fmt.Errorf("workflow alias table %q not found", action.Table)
+			return fmt.Errorf("workflow alias table %q not found", effect.Table)
 		}
-		data := make(map[string]any, len(action.Data))
-		for field, path := range action.Data {
-			data[field] = valueAtPath(scope, path)
-		}
-		_, err := table.Insert(data, nil)
+		_, err := table.Insert(effect.Data, nil)
 		return err
 	default:
-		return fmt.Errorf("unsupported workflow action %q", action.Type)
+		return fmt.Errorf("unsupported workflow action %q", effect.Type)
 	}
 }
 
@@ -715,10 +745,6 @@ func (s *workflowService) failRun(id string, err error) {
 }
 
 func (s *workflowService) finishRun(id string, fields map[string]any) {
-	table := s.db.db.GetTable(systemWorkflowRunTableName)
-	if table == nil {
-		return
-	}
 	switch toString(fields["status"]) {
 	case "completed", "cancelled":
 		fields["finishedAt"] = time.Now().UnixMilli()
@@ -726,6 +752,14 @@ func (s *workflowService) finishRun(id string, fields map[string]any) {
 		fields["activeRowKey"] = ""
 	case "error":
 		fields["finishedAt"] = time.Now().UnixMilli()
+	}
+	s.updateRun(id, fields)
+}
+
+func (s *workflowService) updateRun(id string, fields map[string]any) {
+	table := s.db.db.GetTable(systemWorkflowRunTableName)
+	if table == nil {
+		return
 	}
 	_, _ = table.Update(id, fields, nil)
 }
@@ -1038,6 +1072,7 @@ func (d *Database) ResolveWorkflowRun(id, action string) (WorkflowRun, error) {
 			"startedAt":        nil,
 			"finishedAt":       nil,
 			"action":           "",
+			"actionEffect":     nil,
 			"approvalRequired": false,
 			"visibilityTable":  workflowRunVisibilityTable(run),
 			"activeRowKey":     workflowRunActiveRowKey(run),
@@ -1062,28 +1097,34 @@ func (d *Database) ResolveWorkflowRun(id, action string) (WorkflowRun, error) {
 		}
 		return workflowRunFromRow(updated), nil
 	case "approve":
-		workflow, err := d.workflow.getWorkflow(run.WorkflowID)
-		if err != nil {
-			return WorkflowRun{}, err
+		var effect WorkflowActionEffect
+		if run.ActionEffect != nil {
+			effect = *run.ActionEffect
+		} else {
+			workflow, err := d.workflow.getWorkflow(run.WorkflowID)
+			if err != nil {
+				return WorkflowRun{}, err
+			}
+			configured, ok := workflowAction(workflow, run.RecommendedAction)
+			if !ok {
+				configured, ok = workflowAction(workflow, run.Action)
+			}
+			if !ok {
+				return WorkflowRun{}, fmt.Errorf("workflow action %q is no longer configured", run.Action)
+			}
+			effect = resolveWorkflowActionEffect(run, configured)
 		}
-		configured, ok := workflowAction(workflow, run.RecommendedAction)
-		if !ok {
-			configured, ok = workflowAction(workflow, run.Action)
+		if effect.Type == "propose_alias" {
+			effect.Type = "create_alias"
 		}
-		if !ok {
-			return WorkflowRun{}, fmt.Errorf("workflow action %q is no longer configured", run.Action)
-		}
-		if configured.Type == "propose_alias" {
-			configured.Type = "create_alias"
-		}
-		if configured.Type != "queue_review" {
-			if err := d.workflow.applyAction(run, configured); err != nil {
+		if effect.Type != "queue_review" {
+			if err := d.workflow.applyActionEffect(effect); err != nil {
 				return WorkflowRun{}, err
 			}
 		}
 		updated, err := table.Update(run.ID, map[string]any{
 			"status":           "completed",
-			"action":           configured.Type,
+			"action":           effect.Type,
 			"approvalRequired": false,
 			"error":            "",
 			"finishedAt":       time.Now().UnixMilli(),
@@ -1139,6 +1180,7 @@ func workflowSystemTableDefs() map[string]*schema.TableDef {
 		{Name: "reasoning", Kind: schema.KindString},
 		{Name: "recommendedAction", Kind: schema.KindString},
 		{Name: "action", Kind: schema.KindString},
+		{Name: "actionEffect", Kind: schema.KindJson},
 		{Name: "approvalRequired", Kind: schema.KindBoolean, Required: true},
 		{Name: "attempt", Kind: schema.KindInteger, Required: true},
 		{Name: "maxRetries", Kind: schema.KindInteger, Required: true},
@@ -1232,9 +1274,15 @@ func workflowRunFromRow(row map[string]any) WorkflowRun {
 	input := map[string]any{}
 	lookups := map[string]any{}
 	result := map[string]any{}
+	var actionEffect *WorkflowActionEffect
 	decodeJSONValue(row["input"], &input)
 	decodeJSONValue(row["lookupResults"], &lookups)
 	decodeJSONValue(row["result"], &result)
+	if row["actionEffect"] != nil {
+		var effect WorkflowActionEffect
+		decodeJSONValue(row["actionEffect"], &effect)
+		actionEffect = &effect
+	}
 	return WorkflowRun{
 		ID:                  toString(row["id"]),
 		WorkflowID:          toString(row["workflowId"]),
@@ -1251,6 +1299,7 @@ func workflowRunFromRow(row map[string]any) WorkflowRun {
 		Reasoning:           toString(row["reasoning"]),
 		RecommendedAction:   toString(row["recommendedAction"]),
 		Action:              toString(row["action"]),
+		ActionEffect:        actionEffect,
 		ApprovalRequired:    truthy(row["approvalRequired"]),
 		Attempt:             int(anyInt64(row["attempt"])),
 		MaxRetries:          int(anyInt64(row["maxRetries"])),
