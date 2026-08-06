@@ -93,6 +93,162 @@ func TestOpenRouterDataCollectionPolicy(t *testing.T) {
 	}
 }
 
+func TestOpenRouterSendsWorkflowImagesToVisionModels(t *testing.T) {
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Path != "/model/test/vision" {
+				t.Errorf("model metadata path = %q", r.URL.Path)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"architecture": map[string]any{"input_modalities": []string{"text", "image"}},
+				},
+			})
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode OpenRouter request: %v", err)
+			}
+			workflowResponse(`{"action":"approve","reasoning":"ok"}`).ServeHTTP(w, r)
+		default:
+			t.Errorf("unexpected request method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	app := New(Config{
+		DataDir: t.TempDir(),
+		Workflow: &WorkflowConfig{
+			OpenRouterAPIKey: "test-key",
+			OpenRouterURL:    server.URL,
+			HTTPClient:       server.Client(),
+			Workers:          1,
+		},
+	})
+	Define(app, "assets", func(s *SchemaBuilder) {
+		s.String("id").Primary().Required()
+		s.FileMulti("images", "image/png")
+	})
+	db, err := app.Open()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	ref, err := db.StoreFileForField("assets", "asset-1", "images", "sample.png", []byte("image-bytes"), "image/png")
+	if err != nil {
+		t.Fatalf("store image: %v", err)
+	}
+	content := map[string]any{
+		"body": "inspect this image",
+		"images": []any{
+			map[string]any{"path": ref.Path, "mime": ref.Mime, "name": ref.Name},
+			map[string]any{"path": ref.Path, "mime": ref.Mime, "name": ref.Name},
+		},
+	}
+	_, err = db.workflow.askOpenRouter(Workflow{
+		AI:      WorkflowAIStep{Model: "test/vision", Prompt: "review"},
+		Actions: []WorkflowAction{{Type: "approve"}},
+	}, content)
+	if err != nil {
+		t.Fatalf("ask OpenRouter: %v", err)
+	}
+
+	messages, ok := request["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("messages = %#v", request["messages"])
+	}
+	userMessage, ok := messages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("user message = %#v", messages[1])
+	}
+	parts, ok := userMessage["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("user content = %#v, want one text and one deduplicated image", userMessage["content"])
+	}
+	textPart, _ := parts[0].(map[string]any)
+	wantText, _ := json.Marshal(content)
+	if textPart["type"] != "text" || textPart["text"] != string(wantText) {
+		t.Fatalf("text part = %#v, want original JSON content", textPart)
+	}
+	imagePart, _ := parts[1].(map[string]any)
+	imageURL, _ := imagePart["image_url"].(map[string]any)
+	if imagePart["type"] != "image_url" || imageURL["url"] != "data:image/png;base64,aW1hZ2UtYnl0ZXM=" {
+		t.Fatalf("image part = %#v", imagePart)
+	}
+}
+
+func TestOpenRouterKeepsTextOnlyContentWhenModelCannotAcceptImages(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		metadataStatus int
+	}{
+		{name: "text-only model", metadataStatus: http.StatusOK},
+		{name: "model metadata unavailable", metadataStatus: http.StatusBadGateway},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var userContent any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.WriteHeader(test.metadataStatus)
+					if test.metadataStatus == http.StatusOK {
+						_ = json.NewEncoder(w).Encode(map[string]any{
+							"data": map[string]any{
+								"architecture": map[string]any{"input_modalities": []string{"text"}},
+							},
+						})
+					}
+					return
+				}
+				var body struct {
+					Messages []struct {
+						Role    string `json:"role"`
+						Content any    `json:"content"`
+					} `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode OpenRouter request: %v", err)
+				} else if len(body.Messages) == 2 {
+					userContent = body.Messages[1].Content
+				}
+				workflowResponse(`{"action":"approve","reasoning":"ok"}`).ServeHTTP(w, r)
+			}))
+			defer server.Close()
+
+			service := &workflowService{
+				config: WorkflowConfig{OpenRouterAPIKey: "test-key", OpenRouterURL: server.URL},
+				client: server.Client(),
+				ctx:    context.Background(),
+			}
+			content := map[string]any{
+				"body":  "text remains available",
+				"image": map[string]any{"path": "_files/posts/p1/images/photo.png", "mime": "image/png"},
+			}
+			_, err := service.askOpenRouter(Workflow{
+				AI:      WorkflowAIStep{Model: "test/text", Prompt: "review"},
+				Actions: []WorkflowAction{{Type: "approve"}},
+			}, content)
+			if err != nil {
+				t.Fatalf("ask OpenRouter: %v", err)
+			}
+			want, _ := json.Marshal(content)
+			if userContent != string(want) {
+				t.Fatalf("user content = %#v, want unchanged text %q", userContent, want)
+			}
+		})
+	}
+}
+
+func TestOpenRouterModelEndpoint(t *testing.T) {
+	endpoint, ok := openRouterModelEndpoint("https://openrouter.ai/api/v1/chat/completions?ignored=true", "openai/gpt-4o:free")
+	if !ok || endpoint != "https://openrouter.ai/api/v1/model/openai/gpt-4o:free" {
+		t.Fatalf("model endpoint = %q, ok=%t", endpoint, ok)
+	}
+	if _, ok := openRouterModelEndpoint("https://openrouter.ai/api/v1/chat/completions", "invalid"); ok {
+		t.Fatal("model without author unexpectedly produced a metadata endpoint")
+	}
+}
+
 func waitForWorkflowRun(t *testing.T, db *Database, status string) WorkflowRun {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

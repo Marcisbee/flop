@@ -3,12 +3,15 @@ package flop
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -402,11 +405,29 @@ func (s *workflowService) askOpenRouter(workflow Workflow, content map[string]an
 	if workflow.AI.DataCollection == "allow" {
 		dataCollection = "allow"
 	}
+	userContent := any(string(contentJSON))
+	imageRefs := workflowImageRefs(content)
+	if len(imageRefs) > 0 && s.openRouterModelSupportsImages(workflow.AI.Model) {
+		parts := []any{map[string]any{"type": "text", "text": string(contentJSON)}}
+		for _, ref := range imageRefs {
+			dataURL, ok := s.workflowImageDataURL(ref)
+			if !ok {
+				continue
+			}
+			parts = append(parts, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": dataURL},
+			})
+		}
+		if len(parts) > 1 {
+			userContent = parts
+		}
+	}
 	requestBody := map[string]any{
 		"model": workflow.AI.Model,
-		"messages": []map[string]string{
+		"messages": []map[string]any{
 			{"role": "system", "content": workflow.AI.Prompt},
-			{"role": "user", "content": string(contentJSON)},
+			{"role": "user", "content": userContent},
 		},
 		"temperature": 0,
 		"response_format": map[string]any{
@@ -487,6 +508,155 @@ func (s *workflowService) askOpenRouter(workflow Workflow, content map[string]an
 		return nil, fmt.Errorf("OpenRouter returned an invalid structured result: %w", err)
 	}
 	return result, nil
+}
+
+func workflowImageRefs(content any) []schema.FileRef {
+	seen := map[string]bool{}
+	refs := make([]schema.FileRef, 0)
+	var collect func(any)
+	collect = func(value any) {
+		if ref, ok := workflowImageRefFromAny(value); ok {
+			if !seen[ref.Path] {
+				seen[ref.Path] = true
+				refs = append(refs, ref)
+			}
+			return
+		}
+		switch typed := value.(type) {
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				collect(typed[key])
+			}
+		case []any:
+			for _, item := range typed {
+				collect(item)
+			}
+		case []map[string]any:
+			for _, item := range typed {
+				collect(item)
+			}
+		}
+	}
+	collect(content)
+	return refs
+}
+
+func workflowImageRefFromAny(value any) (schema.FileRef, bool) {
+	var ref schema.FileRef
+	switch typed := value.(type) {
+	case map[string]any:
+		path, _ := typed["path"].(string)
+		mime, _ := typed["mime"].(string)
+		name, _ := typed["name"].(string)
+		ref = schema.FileRef{Path: path, Mime: mime, Name: name}
+	case schema.FileRef:
+		ref = typed
+	case *schema.FileRef:
+		if typed == nil {
+			return schema.FileRef{}, false
+		}
+		ref = *typed
+	case FileRef:
+		ref = schema.FileRef{Path: typed.Path, Mime: typed.Mime, Name: typed.Name}
+	case *FileRef:
+		if typed == nil {
+			return schema.FileRef{}, false
+		}
+		ref = schema.FileRef{Path: typed.Path, Mime: typed.Mime, Name: typed.Name}
+	default:
+		return schema.FileRef{}, false
+	}
+	ref.Path = filepath.ToSlash(strings.TrimSpace(ref.Path))
+	if !strings.HasPrefix(ref.Path, "_files/") || filepath.ToSlash(filepath.Clean(ref.Path)) != ref.Path {
+		return schema.FileRef{}, false
+	}
+	ref.Mime = strings.ToLower(strings.TrimSpace(ref.Mime))
+	if !strings.HasPrefix(ref.Mime, "image/") {
+		return schema.FileRef{}, false
+	}
+	return ref, true
+}
+
+func (s *workflowService) openRouterModelSupportsImages(model string) bool {
+	endpoint, ok := openRouterModelEndpoint(s.config.OpenRouterURL, model)
+	if !ok {
+		return false
+	}
+	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+s.config.OpenRouterAPIKey)
+	req.Header.Set("X-Title", "Flop Workflow")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	var response struct {
+		Data struct {
+			Architecture struct {
+				InputModalities []string `json:"input_modalities"`
+			} `json:"architecture"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&response); err != nil {
+		return false
+	}
+	for _, modality := range response.Data.Architecture.InputModalities {
+		if modality == "image" {
+			return true
+		}
+	}
+	return false
+}
+
+func openRouterModelEndpoint(chatEndpoint, model string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(chatEndpoint))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+	segments := strings.Split(strings.Trim(strings.TrimSpace(model), "/"), "/")
+	if len(segments) < 2 {
+		return "", false
+	}
+	for _, segment := range segments {
+		if segment == "" {
+			return "", false
+		}
+	}
+	basePath := strings.TrimSuffix(parsed.Path, "/")
+	basePath = strings.TrimSuffix(basePath, "/chat/completions")
+	parsed.Path = strings.TrimSuffix(basePath, "/") + "/model/" + strings.Join(segments, "/")
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), true
+}
+
+func (s *workflowService) workflowImageDataURL(ref schema.FileRef) (string, bool) {
+	if s == nil || s.db == nil || s.db.db == nil {
+		return "", false
+	}
+	dataDir := s.db.db.GetDataDir()
+	fullPath := filepath.Join(dataDir, filepath.FromSlash(ref.Path))
+	relative, err := filepath.Rel(dataDir, fullPath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", false
+	}
+	return "data:" + ref.Mime + ";base64," + base64.StdEncoding.EncodeToString(data), true
 }
 
 func (s *workflowService) enqueueMutation(tableName, event string, row map[string]any) error {
