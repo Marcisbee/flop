@@ -22,5 +22,8 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: true
+          # Resolve the latest patch release so govulncheck does not fail on
+          # stdlib vulnerabilities that are already fixed upstream.
+          check-latest: true
       - name: Run production qualification
         run: make release-check
