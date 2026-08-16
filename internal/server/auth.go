@@ -71,9 +71,12 @@ const jwtCacheMax = 10000
 
 // VerifyJWT verifies and decodes a JWT token.
 func VerifyJWT(token, secret string) *JWTPayload {
-	// Check cache
+	// Check cache. The key includes the secret so that a token verified under
+	// one secret (or one Database instance) is never replayed from cache under
+	// a different secret.
+	cacheKey := secret + "\x00" + token
 	jwtCacheMu.RLock()
-	if entry, ok := jwtCache[token]; ok {
+	if entry, ok := jwtCache[cacheKey]; ok {
 		if entry.expireAt > time.Now().UnixMilli() {
 			jwtCacheMu.RUnlock()
 			return entry.payload
@@ -123,7 +126,7 @@ func VerifyJWT(token, secret string) *JWTPayload {
 			break
 		}
 	}
-	jwtCache[token] = &jwtCacheEntry{payload: &payload, expireAt: expireAt}
+	jwtCache[cacheKey] = &jwtCacheEntry{payload: &payload, expireAt: expireAt}
 	jwtCacheMu.Unlock()
 
 	return &payload
@@ -693,6 +696,8 @@ func (as *AuthService) RequestPasswordReset(email string) (string, error) {
 }
 
 // ConfirmPasswordReset verifies the token and sets a new password.
+// All existing sessions for the user are revoked so that a session captured
+// before the reset cannot be used afterwards.
 func (as *AuthService) ConfirmPasswordReset(token, newPassword string) error {
 	payload := VerifyPurposeJWT(token, as.secret)
 	if payload == nil || payload.Purpose != "password-reset" {
@@ -705,7 +710,43 @@ func (as *AuthService) ConfirmPasswordReset(token, newPassword string) error {
 	_, err = as.authTable.Update(payload.Sub, map[string]interface{}{
 		"password": hashed,
 	}, nil)
-	return err
+	if err != nil {
+		return err
+	}
+	as.revokeSessionsForPrincipal(payload.Sub, "password_reset")
+	return nil
+}
+
+// revokeSessionsForPrincipal revokes every active session belonging to a
+// user principal, e.g. after a password reset. Failures are swallowed: the
+// sessions still expire on their own and validation re-checks the user row.
+func (as *AuthService) revokeSessionsForPrincipal(principalID, reason string) {
+	if as.sessionTable == nil || principalID == "" {
+		return
+	}
+	now := time.Now().Unix()
+	const chunkSize = 512
+	for offset := 0; ; offset += chunkSize {
+		rows, err := as.sessionTable.Scan(chunkSize, offset)
+		if err != nil || len(rows) == 0 {
+			return
+		}
+		for _, row := range rows {
+			if toString(row["principal_type"]) != principalTypeUser || toString(row["principal_id"]) != principalID {
+				continue
+			}
+			if int64(authNumber(row["revoked_at"])) > 0 {
+				continue
+			}
+			_, _ = as.sessionTable.Update(toString(row["id"]), map[string]interface{}{
+				"revoked_at": now,
+				"reason":     reason,
+			}, nil)
+		}
+		if len(rows) < chunkSize {
+			return
+		}
+	}
 }
 
 func (as *AuthService) findByEmail(email string) map[string]interface{} {
@@ -756,7 +797,11 @@ func sanitizeRegisterExtraFields(extraFields map[string]interface{}) map[string]
 	out := make(map[string]interface{}, len(extraFields))
 	for key, value := range extraFields {
 		switch key {
-		case "", "id", "email", "password", "roles", "verified", "default_role", "createdAt", "updatedAt":
+		case "", "id", "email", "password", "roles", "role", "verified", "default_role", "createdAt", "updatedAt",
+			// Account-state fields read by validatePrincipalRow must never be
+			// self-assigned at registration time.
+			"banned", "deleted", "archived", "disabled", "suspended", "status", "active",
+			"deleted_at", "archived_at", "disabled_at", "banned_at":
 			continue
 		default:
 			out[key] = value

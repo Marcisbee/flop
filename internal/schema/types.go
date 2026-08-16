@@ -133,10 +133,14 @@ type StoredTableMeta struct {
 
 // StoredMeta is the top-level JSON payload of _meta.flop.
 type StoredMeta struct {
-	Version        int                         `json:"version"`
-	Created        string                      `json:"created"`
-	AuthInstanceID string                      `json:"authInstanceId,omitempty"`
-	Tables         map[string]*StoredTableMeta `json:"tables"`
+	Version        int    `json:"version"`
+	Created        string `json:"created"`
+	AuthInstanceID string `json:"authInstanceId,omitempty"`
+	// AuthSecret is the random HMAC secret used to sign auth tokens. It is
+	// generated once and stored here so it is never derivable from any value
+	// exposed to clients (unlike AuthInstanceID, which appears in JWT claims).
+	AuthSecret string                      `json:"authSecret,omitempty"`
+	Tables     map[string]*StoredTableMeta `json:"tables"`
 }
 
 // RowPointer locates a row within a table file.

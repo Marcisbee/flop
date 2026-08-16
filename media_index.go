@@ -397,7 +397,13 @@ func ensureMediaIndexRecord(idx *mediaIndex, d *Database, ref schema.FileRef, in
 	if ref.Path == "" || !strings.HasPrefix(ref.Path, "_files/") {
 		return nil, nil
 	}
-	fullPath := filepath.Join(d.db.GetDataDir(), filepath.FromSlash(ref.Path))
+	// Reject refs whose path is not a clean, contained "_files/" path so a
+	// crafted row value cannot make the indexer stat or decode files outside
+	// the file storage directory.
+	fullPath, err := storage.ResolveContained(d.db.GetDataDir(), ref.Path)
+	if err != nil {
+		return nil, nil
+	}
 	stat, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
