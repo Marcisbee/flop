@@ -141,6 +141,16 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	if strings.TrimSpace(db.meta.AuthInstanceID) == "" {
 		db.meta.AuthInstanceID = randomHex(16)
 	}
+	if strings.TrimSpace(db.meta.AuthSecret) == "" {
+		// The auth secret signs auth tokens and must never be predictable, so
+		// a randomness failure here is fatal rather than falling back.
+		secret, err := randomHexStrict(32)
+		if err != nil {
+			db.opened = false
+			return fmt.Errorf("generate auth secret: %w", err)
+		}
+		db.meta.AuthSecret = secret
+	}
 
 	for name, def := range tableDefs {
 		instance, err := newTableInstance(name, def, db)
@@ -190,6 +200,16 @@ func randomHex(n int) string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+// randomHexStrict is randomHex for security-sensitive values: it reports
+// randomness failures instead of falling back to a predictable value.
+func randomHexStrict(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 func (db *Database) GetTable(name string) *TableInstance {
@@ -1583,6 +1603,11 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 
 	// Check unique constraints
 	pk := toString(row[ti.primaryKeyField()])
+	if pk != "" && !storage.IsSafePathSegment(pk) {
+		// The primary key is used to derive on-disk file/archive paths for the
+		// row, so it must never be able to escape its storage directory.
+		return nil, fmt.Errorf("primary key %q contains characters that are not allowed", pk)
+	}
 	var rowLock *sync.Mutex
 	if pk != "" {
 		rowLock = ti.rowLockForKey(pk)

@@ -235,6 +235,10 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 		}
 	}
 
+	// Throttle admin login attempts (per client IP + account) against
+	// online brute force.
+	adminLoginLimit := server.NewRateLimiter(20, time.Minute)
+
 	getAnalytics := func() *server.RequestAnalytics {
 		if !analyticsCapable {
 			return nil
@@ -285,6 +289,11 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			}
 			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
 				adminJSONError(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if adminLoginLimit != nil && !adminLoginLimit.Allow(server.ClientIP(r)+"|"+strings.ToLower(strings.TrimSpace(body.Email))) {
+				w.Header().Set("Retry-After", "60")
+				adminJSONError(w, "too many attempts, try again later", http.StatusTooManyRequests)
 				return
 			}
 			token, refresh, err := authProvider.AdminLogin(body.Email, body.Password)
@@ -357,6 +366,10 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			setupMu.Unlock()
 			if !setupCapable || tok == "" {
 				adminJSONError(w, "setup not available", http.StatusBadRequest)
+				return
+			}
+			if r.URL.Query().Get("token") != tok {
+				adminJSONError(w, "invalid setup token", http.StatusForbidden)
 				return
 			}
 			var fields []SetupField

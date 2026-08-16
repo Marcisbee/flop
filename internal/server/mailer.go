@@ -392,6 +392,13 @@ func newSMTPClient(cfg SMTPConfig) (*smtp.Client, net.Conn, error) {
 			_ = client.Close()
 			_ = conn.Close()
 			return nil, nil, fmt.Errorf("smtp server does not support STARTTLS")
+		} else if cfg.Username != "" && cfg.AuthMethod != "none" {
+			// TLS "auto" without STARTTLS support would silently send
+			// credentials over plaintext. Refuse instead; an explicit
+			// TLS "none" remains available for credential-free local relays.
+			_ = client.Close()
+			_ = conn.Close()
+			return nil, nil, fmt.Errorf("smtp server does not support STARTTLS; refusing to send credentials over plaintext (set TLS to \"none\" only for relays that need no authentication)")
 		}
 	}
 	return client, conn, nil

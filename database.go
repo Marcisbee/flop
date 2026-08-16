@@ -232,7 +232,13 @@ func (a *App) Open() (*Database, error) {
 		d.tableNameToID[name] = i
 	}
 
-	secret := "flop-" + d.authInstanceID
+	// The default JWT secret is a random value persisted in _meta.flop. It is
+	// deliberately independent of the auth instance ID, which is embedded in
+	// every issued token and must therefore stay useless to a forger.
+	secret := strings.TrimSpace(db.GetMeta().AuthSecret)
+	if secret == "" {
+		return nil, fmt.Errorf("flop: auth secret is not initialized")
+	}
 	d.jwtSecret = secret
 	sessionTable := db.GetTable(systemAuthSessionTableName)
 	if authTable := db.GetAuthTable(); authTable != nil {
@@ -778,9 +784,28 @@ func (d *Database) FileHandler() http.Handler {
 	})
 }
 
+// inlineSafeMediaMimes are the only content types served inline from the
+// file storage. Everything else — notably HTML, SVG, and JavaScript, which
+// would execute script in the application origin — is forced to download.
+var inlineSafeMediaMimes = map[string]bool{
+	"image/png":       true,
+	"image/jpeg":      true,
+	"image/gif":       true,
+	"image/webp":      true,
+	"video/mp4":       true,
+	"audio/mpeg":      true,
+	"audio/wav":       true,
+	"text/plain":      true,
+	"application/pdf": true,
+}
+
 func serveMediaFile(w http.ResponseWriter, r *http.Request, filePath string) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if !inlineSafeMediaMimes[storage.MimeFromExtension(filePath)] {
+		name := storage.SanitizeFilename(filepath.Base(filePath))
+		w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+	}
 	http.ServeFile(w, r, filePath)
 }
 
@@ -2614,11 +2639,7 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 
 	// Redact bcrypt fields
 	for _, row := range rows {
-		for _, f := range def.CompiledSchema.Fields {
-			if f.Kind == schema.KindBcrypt && row[f.Name] != nil {
-				row[f.Name] = "[REDACTED]"
-			}
-		}
+		redactAdminBcryptFields(row, def.CompiledSchema.Fields)
 		normalizeAdminFileFields(row, def.CompiledSchema.Fields)
 	}
 
@@ -2658,6 +2679,7 @@ func (p *EngineAdminProvider) AdminArchiveRows(table string, limit, offset int) 
 		row["_deletedBy"] = record.DeletedBy
 		row["_cascadeGroupId"] = record.CascadeGroupID
 		row["_cascadeDepth"] = record.CascadeDepth
+		redactAdminBcryptFields(row, ti.GetDef().CompiledSchema.Fields)
 		normalizeAdminFileFields(row, ti.GetDef().CompiledSchema.Fields)
 		rows = append(rows, row)
 	}
@@ -2782,11 +2804,7 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 		if used {
 			// Redact bcrypt fields on the page of results
 			for _, row := range rows {
-				for _, f := range def.CompiledSchema.Fields {
-					if f.Kind == schema.KindBcrypt && row[f.Name] != nil {
-						row[f.Name] = "[REDACTED]"
-					}
-				}
+				redactAdminBcryptFields(row, def.CompiledSchema.Fields)
 			}
 			return rows, total, true, nil
 		}
@@ -2796,11 +2814,7 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 	// ScanFilter handles pagination internally — counts all matches but only
 	// collects rows within the [offset, offset+limit) window.
 	matched, total, err := ti.ScanFilter(func(row map[string]any) bool {
-		for _, f := range def.CompiledSchema.Fields {
-			if f.Kind == schema.KindBcrypt && row[f.Name] != nil {
-				row[f.Name] = "[REDACTED]"
-			}
-		}
+		redactAdminBcryptFields(row, def.CompiledSchema.Fields)
 		return match(row)
 	}, limit, offset)
 	if err != nil {
@@ -2834,8 +2848,21 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 		if err := prepareSuperadminWrite(data, true); err != nil {
 			return nil, err
 		}
+	} else if err := hashAdminBcryptFields(ti.ti.GetDef(), data); err != nil {
+		return nil, err
 	}
-	return ti.Insert(data)
+	row, err := ti.Insert(data)
+	if err != nil {
+		return nil, err
+	}
+	// Never echo password hashes back to the admin client. Redact a copy:
+	// the returned row map is shared with the published change event.
+	out := make(map[string]any, len(row))
+	for k, v := range row {
+		out[k] = v
+	}
+	redactAdminBcryptFields(out, ti.ti.GetDef().CompiledSchema.Fields)
+	return out, nil
 }
 
 func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string]any) error {
@@ -2853,6 +2880,8 @@ func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string
 		if err := prepareSuperadminWrite(fields, false); err != nil {
 			return err
 		}
+	} else if err := hashAdminBcryptFields(ti.ti.GetDef(), fields); err != nil {
+		return err
 	}
 	_, err := ti.Update(pk, fields)
 	return err
@@ -3754,6 +3783,50 @@ func (p *EngineAdminProvider) AdminSetupExtraFields() []SetupField {
 	return nil
 }
 
+// hashAdminBcryptFields hashes plaintext values of bcrypt-kind fields before
+// an admin write is stored. Empty strings and the "[REDACTED]" placeholder
+// sent back by the admin UI are dropped so they never overwrite a stored
+// hash. Without this, passwords entered through the admin panel were
+// persisted in plaintext for every table except _superadmin.
+func hashAdminBcryptFields(def *schema.TableDef, data map[string]any) error {
+	if def == nil || data == nil {
+		return nil
+	}
+	for _, f := range def.CompiledSchema.Fields {
+		if f.Kind != schema.KindBcrypt {
+			continue
+		}
+		raw, ok := data[f.Name]
+		if !ok {
+			continue
+		}
+		password := strings.TrimSpace(fmt.Sprintf("%v", raw))
+		if password == "" || password == "[REDACTED]" {
+			delete(data, f.Name)
+			continue
+		}
+		hashed, err := server.HashPassword(password)
+		if err != nil {
+			return err
+		}
+		data[f.Name] = hashed
+	}
+	return nil
+}
+
+// redactAdminBcryptFields replaces bcrypt-kind field values with a
+// placeholder so password hashes never leave the engine through admin APIs.
+func redactAdminBcryptFields(row map[string]any, fields []schema.CompiledField) {
+	if row == nil {
+		return
+	}
+	for _, f := range fields {
+		if f.Kind == schema.KindBcrypt && row[f.Name] != nil {
+			row[f.Name] = "[REDACTED]"
+		}
+	}
+}
+
 func prepareSuperadminWrite(data map[string]any, create bool) error {
 	if data == nil {
 		return nil
@@ -3837,14 +3910,46 @@ func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {
 		case <-done:
 			return
 		case event := <-changeCh:
-			data, _ := jsonx.Marshal(event)
+			data, _ := jsonx.Marshal(scrubAdminChangeEvent(p.DB, event))
 			fmt.Fprintf(w, "event: change\ndata: %s\n\n", data)
 			flusher.Flush()
 		case <-heartbeat.C:
-			fmt.Fprintf(w, ": heartbeat\n\n")
+			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}
 	}
+}
+
+// scrubAdminChangeEvent returns a copy of the event with bcrypt field values
+// (password hashes) redacted, so the admin realtime stream follows the same
+// redaction invariant as the row-listing endpoints. The input is not mutated
+// because other subscribers share it.
+func scrubAdminChangeEvent(d *Database, event engine.ChangeEvent) engine.ChangeEvent {
+	if d == nil || d.db == nil || event.Data == nil {
+		return event
+	}
+	ti := d.db.GetTable(event.Table)
+	if ti == nil {
+		return event
+	}
+	fields := ti.GetDef().CompiledSchema.Fields
+	hasBcrypt := false
+	for _, f := range fields {
+		if f.Kind == schema.KindBcrypt {
+			hasBcrypt = true
+			break
+		}
+	}
+	if !hasBcrypt {
+		return event
+	}
+	scrubbed := engine.ChangeEvent{Table: event.Table, Op: event.Op, RowID: event.RowID}
+	scrubbed.Data = make(map[string]interface{}, len(event.Data))
+	for k, v := range event.Data {
+		scrubbed.Data[k] = v
+	}
+	redactAdminBcryptFields(scrubbed.Data, fields)
+	return scrubbed
 }
 
 func adminSortValueLess(a, b any, kind schema.FieldKind) bool {

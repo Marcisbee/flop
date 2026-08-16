@@ -1241,6 +1241,13 @@ type AuthContext struct {
 	InstanceID    string
 }
 
+// Principal types issued by the built-in auth services. They mirror the
+// unexported constants in internal/server.
+const (
+	principalTypeUser       = "user"
+	principalTypeSuperadmin = "superadmin"
+)
+
 func (a *AuthContext) HasRole(role string) bool {
 	if a == nil {
 		return false

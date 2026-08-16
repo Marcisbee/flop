@@ -11,6 +11,10 @@ func archiveFilesDir(dataDir, tableName, archiveID string) string {
 
 // ArchiveRowFiles moves row files to archive storage.
 func ArchiveRowFiles(dataDir, tableName, rowID, archiveID string) error {
+	if !IsSafePathSegment(tableName) || !IsSafePathSegment(rowID) || !IsSafePathSegment(archiveID) {
+		// Refuse to derive directories from unsafe names.
+		return nil
+	}
 	src := filepath.Join(dataDir, "_files", tableName, rowID)
 	if _, err := os.Stat(src); err != nil {
 		if os.IsNotExist(err) {
@@ -27,6 +31,10 @@ func ArchiveRowFiles(dataDir, tableName, rowID, archiveID string) error {
 
 // RestoreArchivedRowFiles moves archived row files back to live storage.
 func RestoreArchivedRowFiles(dataDir, tableName, archiveID, rowID string) error {
+	if !IsSafePathSegment(tableName) || !IsSafePathSegment(archiveID) || !IsSafePathSegment(rowID) {
+		// Refuse to derive directories from unsafe names.
+		return nil
+	}
 	src := archiveFilesDir(dataDir, tableName, archiveID)
 	if _, err := os.Stat(src); err != nil {
 		if os.IsNotExist(err) {
@@ -43,5 +51,9 @@ func RestoreArchivedRowFiles(dataDir, tableName, archiveID, rowID string) error 
 
 // DeleteArchivedRowFiles removes archived file assets permanently.
 func DeleteArchivedRowFiles(dataDir, tableName, archiveID string) error {
+	if !IsSafePathSegment(tableName) || !IsSafePathSegment(archiveID) {
+		// Refuse to derive directories from unsafe names.
+		return nil
+	}
 	return os.RemoveAll(archiveFilesDir(dataDir, tableName, archiveID))
 }

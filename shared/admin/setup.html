@@ -108,7 +108,8 @@ function toLabel(name) {
 
 async function loadExtraFields() {
   try {
-    const res = await fetch('/_/api/setup-schema');
+    const token = new URLSearchParams(window.location.search).get('token') || '';
+    const res = await fetch('/_/api/setup-schema?token=' + encodeURIComponent(token));
     const data = await res.json();
     if (!data.fields || !data.fields.length) return;
     const container = document.getElementById('extra-fields');

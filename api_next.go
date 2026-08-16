@@ -367,12 +367,21 @@ func (a *DBAccessor) Table(name string) *TableInstance {
 type APIHandler struct {
 	app *App
 	db  *Database
+	// authRateLimit throttles unauthenticated credential endpoints (per
+	// client IP, or IP+account for logins) against brute force and
+	// reset-email bombing.
+	authRateLimit *server.RateLimiter
 }
 
 const (
 	apiSSEEventBufferSize = 1024
 	apiSSEHeartbeat       = 15 * time.Second
 )
+
+// authRateLimitPerMinute bounds each credential endpoint bucket per minute
+// per key. Generous enough for real users (including shared-NAT logins,
+// which are keyed per account), far too slow for online guessing.
+const authRateLimitPerMinute = 20
 
 func (a *App) APIHandler(db *Database) *APIHandler {
 	if a == nil {
@@ -381,7 +390,24 @@ func (a *App) APIHandler(db *Database) *APIHandler {
 	if db == nil {
 		panic("flop: database is nil")
 	}
-	return &APIHandler{app: a, db: db}
+	return &APIHandler{
+		app:           a,
+		db:            db,
+		authRateLimit: server.NewRateLimiter(authRateLimitPerMinute, time.Minute),
+	}
+}
+
+// allowAuthAttempt enforces the credential-endpoint rate limit.
+func (h *APIHandler) allowAuthAttempt(w http.ResponseWriter, r *http.Request, bucket string) bool {
+	if h.authRateLimit == nil {
+		return true
+	}
+	if h.authRateLimit.Allow(server.ClientIP(r) + "|" + bucket) {
+		return true
+	}
+	w.Header().Set("Retry-After", "60")
+	jsonError(w, "too many attempts, try again later", http.StatusTooManyRequests)
+	return false
 }
 
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -436,6 +462,21 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 		tables = append([]string(nil), h.db.tableNames...)
 	}
 	auth := h.authFromRequest(r)
+	// System tables (auth sessions, superadmin accounts, workflow internals)
+	// are never exposed over the public change stream. Their row IDs double
+	// as session identifiers, so streaming them anonymously would leak live
+	// credential material. A session-validated superadmin may subscribe.
+	isSuperadmin := auth != nil && auth.PrincipalType == principalTypeSuperadmin
+	if !isSuperadmin {
+		filtered := tables[:0]
+		for _, tableName := range tables {
+			if strings.HasPrefix(tableName, "_") {
+				continue
+			}
+			filtered = append(filtered, tableName)
+		}
+		tables = filtered
+	}
 	accessor := h.db.trackedAccessor(nil, auth)
 	rowFilterTables := make(map[string]bool, len(tables))
 	for _, tableName := range tables {
@@ -667,6 +708,9 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "email and password required", http.StatusBadRequest)
 			return
 		}
+		if !h.allowAuthAttempt(w, r, "register") {
+			return
+		}
 		extraFields := map[string]any{}
 		for key, value := range body {
 			switch key {
@@ -720,6 +764,11 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.TrimSpace(in.Email) == "" || in.Password == "" {
 			jsonError(w, "email and password required", http.StatusBadRequest)
+			return
+		}
+		// Keyed per account as well so shared-NAT users do not starve each
+		// other, while guessing against one account stays slow per client.
+		if !h.allowAuthAttempt(w, r, "login|"+strings.ToLower(strings.TrimSpace(in.Email))) {
 			return
 		}
 		token, refresh, auth, err := h.db.authService.Login(in.Email, in.Password)
@@ -909,9 +958,17 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "email required", http.StatusBadRequest)
 			return
 		}
+		if !h.allowAuthAttempt(w, r, "request-password-reset") {
+			return
+		}
 		resetToken, _ := h.db.authService.RequestPasswordReset(in.Email)
 		if resetToken != "" {
-			_ = h.db.sendAuthTemplateEmail("password-reset", in.Email, in.Email, resetToken)
+			// Send asynchronously so the response time does not reveal
+			// whether the email address is registered (SMTP round-trips are
+			// far slower than a failed lookup).
+			go func() {
+				_ = h.db.sendAuthTemplateEmail("password-reset", in.Email, in.Email, resetToken)
+			}()
 		}
 		jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true})
 	case "/api/auth/confirm-password-reset":
@@ -929,6 +986,9 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.TrimSpace(in.Token) == "" || in.Password == "" {
 			jsonError(w, "token and password required", http.StatusBadRequest)
+			return
+		}
+		if !h.allowAuthAttempt(w, r, "confirm-password-reset") {
 			return
 		}
 		if err := h.db.authService.ConfirmPasswordReset(in.Token, in.Password); err != nil {
