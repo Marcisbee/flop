@@ -22,6 +22,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	s3transfer "github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/marcisbee/flop/internal/cron"
@@ -32,6 +33,9 @@ const (
 	emailSettingsBackupRelPath = "_system/email.json"
 	localBackupsDirName        = "backups"
 	backupSecretMask           = "******"
+	backupS3UploadPartSize     = 8 * 1024 * 1024
+	backupS3UploadConcurrency  = 3
+	backupS3HeaderTimeout      = 30 * time.Second
 )
 
 var protectedBackupRestorePaths = []string{
@@ -1154,21 +1158,11 @@ func (s *s3BackupStorage) Save(ctx context.Context, key, localPath string) error
 		return err
 	}
 	defer file.Close()
-	_, err = s.client.PutObject(ctx, &awss3.PutObjectInput{
-		Bucket:      aws.String(s.bucket),
-		Key:         aws.String(key),
-		Body:        file,
-		ContentType: aws.String("application/zip"),
-	})
+	err = uploadS3Backup(ctx, s.client, s.bucket, key, file)
 	if err != nil && s.shouldRetryPathStyle(err) {
 		log.Printf("flop backup upload: s3 save retry with path-style key=%q err=%v", key, err)
 		if _, retryErr := file.Seek(0, io.SeekStart); retryErr == nil {
-			_, err = s.pathClient.PutObject(ctx, &awss3.PutObjectInput{
-				Bucket:      aws.String(s.bucket),
-				Key:         aws.String(key),
-				Body:        file,
-				ContentType: aws.String("application/zip"),
-			})
+			err = uploadS3Backup(ctx, s.pathClient, s.bucket, key, file)
 		} else {
 			log.Printf("flop backup upload: s3 save seek retry failed key=%q err=%v", key, retryErr)
 		}
@@ -1178,6 +1172,21 @@ func (s *s3BackupStorage) Save(ctx context.Context, key, localPath string) error
 		return err
 	}
 	log.Printf("flop backup upload: s3 save complete key=%q dur=%s", key, time.Since(startedAt))
+	return err
+}
+
+func uploadS3Backup(ctx context.Context, client s3transfer.S3APIClient, bucket, key string, body io.Reader) error {
+	uploader := s3transfer.New(client, func(o *s3transfer.Options) {
+		o.PartSizeBytes = backupS3UploadPartSize
+		o.MultipartUploadThreshold = backupS3UploadPartSize
+		o.Concurrency = backupS3UploadConcurrency
+	})
+	_, err := uploader.UploadObject(ctx, &s3transfer.UploadObjectInput{
+		Bucket:      aws.String(bucket),
+		Key:         aws.String(key),
+		Body:        body,
+		ContentType: aws.String("application/zip"),
+	})
 	return err
 }
 
@@ -1285,7 +1294,7 @@ func newS3Client(cfg BackupS3Config, forcePathStyle bool) *awss3.Client {
 	awsCfg := aws.Config{
 		Region:      cfg.Region,
 		Credentials: credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.Secret, ""),
-		HTTPClient:  &http.Client{Timeout: 30 * time.Second},
+		HTTPClient:  newS3HTTPClient(),
 	}
 	return awss3.NewFromConfig(awsCfg, func(o *awss3.Options) {
 		o.UsePathStyle = forcePathStyle
@@ -1293,4 +1302,10 @@ func newS3Client(cfg BackupS3Config, forcePathStyle bool) *awss3.Client {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
 		}
 	})
+}
+
+func newS3HTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = backupS3HeaderTimeout
+	return &http.Client{Transport: transport}
 }
