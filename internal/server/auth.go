@@ -290,12 +290,13 @@ func VerifyPurposeJWT(token, secret string) *PurposePayload {
 
 // AuthService handles user registration, login, and token management.
 type AuthService struct {
-	authTable       *engine.TableInstance
-	sessionTable    *engine.TableInstance
-	secret          string
-	instanceID      string
-	accessTokenTTL  int64 // seconds
-	refreshTokenTTL int64 // seconds
+	authTable             *engine.TableInstance
+	sessionTable          *engine.TableInstance
+	secret                string
+	instanceID            string
+	accessTokenTTL        int64 // seconds
+	refreshTokenTTL       int64 // seconds
+	providerSessionLocker sync.Locker
 }
 
 // NewAuthService creates a new AuthService.
@@ -307,6 +308,14 @@ func NewAuthService(authTable, sessionTable *engine.TableInstance, secret, insta
 		instanceID:      instanceID,
 		accessTokenTTL:  900,     // 15 min
 		refreshTokenTTL: 2592000, // 30 days
+	}
+}
+
+// SetProviderSessionLocker coordinates provider-derived refresh rotation with
+// identity unlink. The owning database installs the locker during setup.
+func (as *AuthService) SetProviderSessionLocker(locker sync.Locker) {
+	if as != nil {
+		as.providerSessionLocker = locker
 	}
 }
 
@@ -362,7 +371,7 @@ func (as *AuthService) Register(email, password, name string, extraFields map[st
 
 	pk := as.getPK(row)
 	roles := toStringSlice(row["roles"])
-	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, "register")
+	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, "register", "password", "", nil)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -399,7 +408,7 @@ func (as *AuthService) Login(email, password string) (token, refreshToken string
 		return "", "", nil, err
 	}
 	roles := toStringSlice(user["roles"])
-	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, "login")
+	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, "login", "password", "", nil)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -428,6 +437,16 @@ func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 	session, err := as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
 	if err != nil {
 		return "", "", err
+	}
+	if toString(session["auth_identity_id"]) != "" && as.providerSessionLocker != nil {
+		as.providerSessionLocker.Lock()
+		defer as.providerSessionLocker.Unlock()
+		// Unlink may have won the race after the first read. Revalidate while
+		// holding the shared lock before creating a replacement session.
+		session, err = as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
+		if err != nil {
+			return "", "", err
+		}
 	}
 	user, err := as.authTable.Get(payload.Sub)
 	if err != nil || user == nil {
@@ -618,7 +637,7 @@ func (as *AuthService) ConfirmEmailChange(token string) (string, string, *schema
 	if err != nil || user == nil {
 		return "", "", nil, fmt.Errorf("user not found")
 	}
-	return as.createUserSession(user, "email_change_confirm")
+	return as.createUserSession(user, "email_change_confirm", "", "", nil)
 }
 
 // RequestVerification generates a token to confirm a user's email address.
@@ -674,7 +693,7 @@ func (as *AuthService) ConfirmVerification(token string) (string, string, *schem
 	if err != nil || user == nil {
 		return "", "", nil, fmt.Errorf("user not found")
 	}
-	return as.createUserSession(user, "verification_confirm")
+	return as.createUserSession(user, "verification_confirm", "", "", nil)
 }
 
 // RequestPasswordReset generates a token for resetting a user's password.
@@ -853,7 +872,7 @@ func (as *AuthService) issueRefreshToken(id, sessionID string) string {
 	}, as.secret)
 }
 
-func (as *AuthService) createUserSession(user map[string]interface{}, reason string) (string, string, *schema.AuthContext, error) {
+func (as *AuthService) createUserSession(user map[string]interface{}, reason, authMethod, identityID string, txBuf map[string]*engine.WalBufEntry) (string, string, *schema.AuthContext, error) {
 	pk := as.getPK(user)
 	user, err := as.normalizeVerifiedUser(user)
 	if err != nil {
@@ -863,7 +882,7 @@ func (as *AuthService) createUserSession(user map[string]interface{}, reason str
 		return "", "", nil, err
 	}
 	roles := toStringSlice(user["roles"])
-	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, reason)
+	sessionID, err := as.createSession(principalTypeUser, pk, as.refreshTokenTTL, reason, authMethod, identityID, txBuf)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -877,6 +896,74 @@ func (as *AuthService) createUserSession(user map[string]interface{}, reason str
 		SessionID:     sessionID,
 		InstanceID:    as.instanceID,
 	}, nil
+}
+
+// CreateProviderSession validates an existing Flop user and appends a standard
+// provider-authenticated session to txBuf. The caller commits the coordinated
+// transaction before returning the generated tokens to the client.
+func (as *AuthService) CreateProviderSession(principalID, identityID string, txBuf map[string]*engine.WalBufEntry) (token, refreshToken string, auth *schema.AuthContext, sessionID string, err error) {
+	if as == nil || as.authTable == nil || strings.TrimSpace(principalID) == "" || strings.TrimSpace(identityID) == "" {
+		return "", "", nil, "", fmt.Errorf("provider session unavailable")
+	}
+	user, err := as.authTable.Get(principalID)
+	if err != nil || user == nil {
+		return "", "", nil, "", fmt.Errorf("user not found")
+	}
+	token, refreshToken, auth, err = as.createUserSession(user, "provider_login", "provider", identityID, txBuf)
+	if err != nil {
+		return "", "", nil, "", err
+	}
+	return token, refreshToken, auth, auth.SessionID, nil
+}
+
+// ValidateUserSession checks that a captured user session is still active and
+// belongs to the same principal.
+func (as *AuthService) ValidateUserSession(principalID, sessionID string) error {
+	_, err := as.requireActiveSession(sessionID, principalTypeUser, principalID)
+	return err
+}
+
+// HasUsablePassword reports whether the user currently has a hash handled by
+// one of the installed password verifiers.
+func (as *AuthService) HasUsablePassword(principalID string) bool {
+	if as == nil || as.authTable == nil || principalID == "" {
+		return false
+	}
+	user, err := as.authTable.Get(principalID)
+	if err != nil || user == nil {
+		return false
+	}
+	hash := strings.TrimSpace(toString(user["password"]))
+	if hash == "" {
+		return false
+	}
+	passwordVerifiersMu.RLock()
+	defer passwordVerifiersMu.RUnlock()
+	for _, verifier := range passwordVerifiers {
+		prefix := verifier.Prefix()
+		if prefix == "" || !strings.HasPrefix(hash, prefix) {
+			continue
+		}
+		switch verifier.(type) {
+		case *pbkdf2Verifier:
+			parts := strings.Split(hash, "$")
+			if len(parts) != 4 || parts[1] != "pbkdf2" {
+				continue
+			}
+			salt, saltErr := hex.DecodeString(parts[2])
+			digest, digestErr := hex.DecodeString(parts[3])
+			if saltErr == nil && digestErr == nil && len(salt) >= 16 && len(digest) == 32 {
+				return true
+			}
+		case *bcryptVerifier:
+			if _, err := bcrypt.Cost([]byte(hash)); err == nil {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func (as *AuthService) normalizeVerifiedUser(user map[string]interface{}) (map[string]interface{}, error) {
@@ -973,12 +1060,12 @@ const (
 	principalTypeSuperadmin = "superadmin"
 )
 
-func (as *AuthService) createSession(principalType, principalID string, ttl int64, reason string) (string, error) {
+func (as *AuthService) createSession(principalType, principalID string, ttl int64, reason, authMethod, identityID string, txBuf map[string]*engine.WalBufEntry) (string, error) {
 	if as.sessionTable == nil {
 		return "", fmt.Errorf("auth sessions not configured")
 	}
 	now := time.Now().Unix()
-	row, err := as.sessionTable.Insert(map[string]interface{}{
+	data := map[string]interface{}{
 		"principal_type": principalType,
 		"principal_id":   principalID,
 		"instance_id":    as.instanceID,
@@ -986,7 +1073,14 @@ func (as *AuthService) createSession(principalType, principalID string, ttl int6
 		"last_used_at":   now,
 		"expires_at":     now + ttl,
 		"reason":         reason,
-	}, nil)
+	}
+	if authMethod != "" {
+		data["auth_method"] = authMethod
+	}
+	if identityID != "" {
+		data["auth_identity_id"] = identityID
+	}
+	row, err := as.sessionTable.Insert(data, txBuf)
 	if err != nil {
 		return "", err
 	}
@@ -1015,7 +1109,7 @@ func (as *AuthService) requireActiveSession(sessionID, principalType, principalI
 }
 
 func (as *AuthService) rotateSession(session map[string]interface{}, principalType, principalID string) (string, error) {
-	newID, err := as.createSession(principalType, principalID, as.refreshTokenTTL, "refresh")
+	newID, err := as.createSession(principalType, principalID, as.refreshTokenTTL, "refresh", toString(session["auth_method"]), toString(session["auth_identity_id"]), nil)
 	if err != nil {
 		return "", err
 	}
