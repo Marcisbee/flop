@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,27 @@ type fakeAuthProvider struct {
 	callbacks  []AuthProviderCallbackRequest
 	identities map[string]AuthProviderIdentity
 	errors     map[string]error
+}
+
+type blockingExchangeProvider struct {
+	base    *fakeAuthProvider
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (p *blockingExchangeProvider) AuthorizationURL(ctx context.Context, request AuthProviderAuthorizationRequest) (string, error) {
+	return p.base.AuthorizationURL(ctx, request)
+}
+
+func (p *blockingExchangeProvider) Exchange(ctx context.Context, request AuthProviderCallbackRequest) (AuthProviderIdentity, error) {
+	p.once.Do(func() { close(p.started) })
+	select {
+	case <-p.release:
+		return p.base.Exchange(ctx, request)
+	case <-ctx.Done():
+		return AuthProviderIdentity{}, ctx.Err()
+	}
 }
 
 func (f *fakeAuthProvider) AuthorizationURL(_ context.Context, request AuthProviderAuthorizationRequest) (string, error) {
@@ -385,6 +407,161 @@ func TestProviderFlowRedirectAllowlistAndSecretPersistence(t *testing.T) {
 	if location.Query().Get("code") != "" || strings.Contains(callback.Header().Get("Location"), "Bearer") {
 		t.Fatalf("callback redirect leaked authorization material: %s", callback.Header().Get("Location"))
 	}
+}
+
+func TestCompletedProviderCallbackCannotFollowIdentityOwnershipChanges(t *testing.T) {
+	for _, relink := range []bool{false, true} {
+		name := "unlink"
+		if relink {
+			name = "relink"
+		}
+		t.Run(name, func(t *testing.T) {
+			adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+				"link-a": {Provider: "fake", Issuer: "https://issuer.example", Subject: "moving-subject"},
+				"link-b": {Provider: "fake", Issuer: "https://issuer.example", Subject: "moving-subject"},
+				"login":  {Provider: "fake", Issuer: "https://issuer.example", Subject: "moving-subject"},
+			}}
+			_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
+			ownerToken, ownerID := registerProviderTestUser(t, handler, "owner@example.com")
+			otherToken, otherID := registerProviderTestUser(t, handler, "other@example.com")
+
+			state, _ := startProviderFlow(t, handler, "fake", "link", ownerToken, "")
+			linkCode := callbackProviderFlow(t, handler, "fake", state, "link-a")
+			if rec := completeProviderFlow(t, handler, linkCode, ownerToken, true); rec.Code != http.StatusOK {
+				t.Fatalf("initial link status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			identityRows, err := db.Table(systemAuthIdentityTableName).FindByIndex("principal_id", ownerID)
+			if err != nil || len(identityRows) != 1 {
+				t.Fatalf("owner identities=%#v err=%v", identityRows, err)
+			}
+
+			state, _ = startProviderFlow(t, handler, "fake", "sign_in", "", "")
+			staleCompletion := callbackProviderFlow(t, handler, "fake", state, "login")
+			removed := providerRequest(t, handler, http.MethodDelete, "/api/auth/provider/identities/"+toString(identityRows[0]["id"]), "", ownerToken)
+			if removed.Code != http.StatusOK {
+				t.Fatalf("unlink status=%d body=%s", removed.Code, removed.Body.String())
+			}
+
+			if relink {
+				state, _ = startProviderFlow(t, handler, "fake", "link", otherToken, "")
+				otherLinkCode := callbackProviderFlow(t, handler, "fake", state, "link-b")
+				if rec := completeProviderFlow(t, handler, otherLinkCode, otherToken, true); rec.Code != http.StatusOK {
+					t.Fatalf("relink status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				otherRows, err := db.Table(systemAuthIdentityTableName).FindByIndex("principal_id", otherID)
+				if err != nil || len(otherRows) != 1 {
+					t.Fatalf("new owner identities=%#v err=%v", otherRows, err)
+				}
+			}
+
+			sessionsBefore := db.Table(systemAuthSessionTableName).Count()
+			stale := completeProviderFlow(t, handler, staleCompletion, "", false)
+			if stale.Code != http.StatusUnauthorized || decodeProviderResponse(t, stale)["code"] != "principal_unavailable" {
+				t.Fatalf("stale completion status=%d body=%s", stale.Code, stale.Body.String())
+			}
+			if got := db.Table(systemAuthSessionTableName).Count(); got != sessionsBefore {
+				t.Fatalf("stale completion created a session: before=%d after=%d", sessionsBefore, got)
+			}
+		})
+	}
+}
+
+func TestBlockedProviderExchangeDoesNotBlockUnrelatedStart(t *testing.T) {
+	blockedBase := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"wait": {Provider: "blocked", Issuer: "https://blocked.example", Subject: "subject"},
+	}}
+	blocked := &blockingExchangeProvider{base: blockedBase, started: make(chan struct{}), release: make(chan struct{})}
+	fast := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{}}
+	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{
+		"blocked": fakeProviderConfig(blocked, "blocked", "https://blocked.example"),
+		"fast":    fakeProviderConfig(fast, "fast", "https://fast.example"),
+	})
+	state, _ := startProviderFlow(t, handler, "blocked", "sign_in", "", "")
+	callbackDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		path := "/api/auth/provider/callback?provider=blocked&state=" + url.QueryEscape(state) + "&code=wait"
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		callbackDone <- rec
+	}()
+	select {
+	case <-blocked.started:
+	case <-time.After(time.Second):
+		t.Fatal("blocked provider exchange did not start")
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := db.providerAuth.start(context.Background(), "fast", "sign_in", "", nil)
+		startDone <- err
+	}()
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("unrelated provider start failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked exchange held the provider mutation boundary")
+	}
+	close(blocked.release)
+	select {
+	case rec := <-callbackDone:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("blocked callback status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked callback did not finish after release")
+	}
+}
+
+func TestProviderStartIsRateLimitedAndOutstandingFlowsAreBounded(t *testing.T) {
+	t.Run("request rate", func(t *testing.T) {
+		adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{}}
+		_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
+		for i := 0; i < authRateLimitPerMinute; i++ {
+			rec := providerRequest(t, handler, http.MethodPost, "/api/auth/provider/start", `{"provider":"fake","intent":"sign_in"}`, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("allowed start %d status=%d body=%s", i, rec.Code, rec.Body.String())
+			}
+		}
+		limited := providerRequest(t, handler, http.MethodPost, "/api/auth/provider/start", `{"provider":"fake","intent":"sign_in"}`, "")
+		if limited.Code != http.StatusTooManyRequests {
+			t.Fatalf("rate-limited start status=%d body=%s", limited.Code, limited.Body.String())
+		}
+		if got := db.Table(systemAuthProviderFlowTableName).Count(); got != authRateLimitPerMinute {
+			t.Fatalf("rate limiter persisted %d flows, want %d", got, authRateLimitPerMinute)
+		}
+	})
+
+	t.Run("persistent bound recovers after expiry", func(t *testing.T) {
+		adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{}}
+		_, db, _ := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
+		base := time.Unix(1_800_000_000, 0)
+		db.providerAuth.now = func() time.Time { return base }
+		db.providerAuth.maxFlows = 2
+		for i := 0; i < 2; i++ {
+			if _, err := db.providerAuth.start(context.Background(), "fake", "sign_in", "", nil); err != nil {
+				t.Fatalf("start within bound %d: %v", i, err)
+			}
+		}
+		_, err := db.providerAuth.start(context.Background(), "fake", "sign_in", "", nil)
+		var authErr *AuthProviderError
+		if !errors.As(err, &authErr) || authErr.Code != "provider_flow_limit" || authErr.Status != http.StatusServiceUnavailable {
+			t.Fatalf("flow limit error=%#v", err)
+		}
+		if got := db.Table(systemAuthProviderFlowTableName).Count(); got != 2 {
+			t.Fatalf("flow count at bound=%d", got)
+		}
+
+		base = base.Add(providerFlowTTL + time.Second)
+		if _, err := db.providerAuth.start(context.Background(), "fake", "sign_in", "", nil); err != nil {
+			t.Fatalf("start after expiry: %v", err)
+		}
+		if got := db.Table(systemAuthProviderFlowTableName).Count(); got != 1 {
+			t.Fatalf("expired flows were not reclaimed before admission: %d", got)
+		}
+	})
 }
 
 func TestProviderIdentityPersistsAcrossReopenAndExpiredFlowsAreCleaned(t *testing.T) {

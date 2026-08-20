@@ -2460,6 +2460,7 @@ func systemAuthProviderFlowTableDef() *schema.TableDef {
 		{Name: "return_to", Kind: schema.KindString, Required: false},
 		{Name: "created_at", Kind: schema.KindTimestamp, Required: true},
 		{Name: "expires_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "phase", Kind: schema.KindString, Required: true},
 		{Name: "callback_consumed_at", Kind: schema.KindTimestamp, Required: false},
 		{Name: "completion_hash", Kind: schema.KindString, Required: false},
 		{Name: "completion_expires_at", Kind: schema.KindTimestamp, Required: false},
@@ -2471,6 +2472,7 @@ func systemAuthProviderFlowTableDef() *schema.TableDef {
 		{Name: "result_email", Kind: schema.KindString, Required: false},
 		{Name: "result_email_verified", Kind: schema.KindBoolean, Required: false},
 		{Name: "result_error_code", Kind: schema.KindString, Required: false},
+		{Name: "resolved_principal_id", Kind: schema.KindString, Required: false},
 	}
 	return &schema.TableDef{
 		Name:           systemAuthProviderFlowTableName,

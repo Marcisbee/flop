@@ -24,8 +24,15 @@ import (
 )
 
 const (
-	providerFlowTTL       = 10 * time.Minute
-	providerCompletionTTL = 5 * time.Minute
+	providerFlowTTL              = 10 * time.Minute
+	providerCompletionTTL        = 5 * time.Minute
+	providerOutstandingFlowLimit = 1024
+
+	providerFlowPhaseAuthorizationProcessing = "authorization_processing"
+	providerFlowPhaseStarted                 = "started"
+	providerFlowPhaseCallbackProcessing      = "callback_processing"
+	providerFlowPhaseResultReady             = "result_ready"
+	providerFlowPhaseConsumed                = "consumed"
 )
 
 // AuthProviderError is a stable provider-auth failure. Cause is retained for
@@ -68,6 +75,7 @@ type providerAuthService struct {
 	aead      cipher.AEAD
 	now       func() time.Time
 	random    io.Reader
+	maxFlows  int
 	mu        sync.Mutex
 }
 
@@ -124,6 +132,7 @@ func newProviderAuthService(db *Database, providers map[string]AuthProviderConfi
 		aead:      aead,
 		now:       time.Now,
 		random:    rand.Reader,
+		maxFlows:  providerOutstandingFlowLimit,
 	}
 }
 
@@ -238,16 +247,6 @@ func (s *providerAuthService) start(ctx context.Context, provider, intent, retur
 		method = "S256"
 	}
 
-	authorizationURL, err := config.Adapter.AuthorizationURL(ctx, AuthProviderAuthorizationRequest{
-		Provider: provider, State: state, Nonce: nonce, RedirectURI: config.RedirectURI,
-		CodeChallenge: challenge, CodeChallengeMethod: method,
-	})
-	if err != nil {
-		return nil, providerError("provider_unavailable", "provider authentication unavailable", 502, err)
-	}
-	if err := validateConfiguredURL(authorizationURL, false); err != nil {
-		return nil, providerError("provider_unavailable", "provider authentication unavailable", 502, err)
-	}
 	sealed, err := s.sealSecrets(providerFlowSecrets{Nonce: nonce, PKCEVerifier: verifier})
 	if err != nil {
 		return nil, providerError("provider_flow_failed", "could not start provider authentication", 500, err)
@@ -264,12 +263,56 @@ func (s *providerAuthService) start(ctx context.Context, provider, intent, retur
 		"return_to":          returnTo,
 		"created_at":         now,
 		"expires_at":         now + int64(providerFlowTTL/time.Second),
+		"phase":              providerFlowPhaseAuthorizationProcessing,
 	}
 	if intent == "link" {
 		row["link_principal_id"] = auth.ID
 		row["link_session_id"] = auth.SessionID
 	}
-	if _, err := s.db.Table(systemAuthProviderFlowTableName).Insert(row); err != nil {
+	flows := s.db.Table(systemAuthProviderFlowTableName)
+	s.mu.Lock()
+	if s.maxFlows > 0 && flows.Count() >= s.maxFlows {
+		if _, err := cleanupExpiredProviderFlowRows(flows, s.now()); err != nil {
+			s.mu.Unlock()
+			return nil, providerError("provider_flow_failed", "could not start provider authentication", 500, err)
+		}
+		if flows.Count() >= s.maxFlows {
+			s.mu.Unlock()
+			return nil, providerError("provider_flow_limit", "provider authentication is temporarily unavailable", 503)
+		}
+	}
+	inserted, err := flows.Insert(row)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, providerError("provider_flow_failed", "could not start provider authentication", 500, err)
+	}
+	flowID := toString(inserted["id"])
+	authorizationURL, adapterErr := config.Adapter.AuthorizationURL(ctx, AuthProviderAuthorizationRequest{
+		Provider: provider, State: state, Nonce: nonce, RedirectURI: config.RedirectURI,
+		CodeChallenge: challenge, CodeChallengeMethod: method,
+	})
+	var authorizationURLErr error
+	if adapterErr == nil {
+		authorizationURLErr = validateConfiguredURL(authorizationURL, false)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	flow, getErr := flows.Get(flowID)
+	if getErr != nil || flow == nil || toString(flow["phase"]) != providerFlowPhaseAuthorizationProcessing {
+		return nil, providerError("provider_flow_gone", "provider flow is invalid or expired", 410, getErr)
+	}
+	if providerUnix(flow["expires_at"]) <= s.now().Unix() {
+		_, _ = flows.Delete(flowID)
+		return nil, providerError("provider_flow_expired", "provider flow expired", 410)
+	}
+	if adapterErr != nil || authorizationURLErr != nil {
+		_, _ = flows.Delete(flowID)
+		if adapterErr != nil {
+			return nil, providerError("provider_unavailable", "provider authentication unavailable", 502, adapterErr)
+		}
+		return nil, providerError("provider_unavailable", "provider authentication unavailable", 502, authorizationURLErr)
+	}
+	if _, err := flows.Update(flowID, map[string]any{"phase": providerFlowPhaseStarted}); err != nil {
 		return nil, providerError("provider_flow_failed", "could not start provider authentication", 500, err)
 	}
 	return &providerStartResult{AuthorizationURL: authorizationURL}, nil
@@ -280,71 +323,107 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 		return nil, providerError("invalid_callback", "invalid provider callback", 400)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	flows := s.db.Table(systemAuthProviderFlowTableName)
 	flow, ok := flows.FindByUniqueIndex("state_hash", hashProviderToken(state))
 	if !ok {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_gone", "provider flow is invalid or expired", 410)
 	}
 	now := s.now().Unix()
-	if providerUnix(flow["callback_consumed_at"]) > 0 {
+	if toString(flow["phase"]) != providerFlowPhaseStarted || providerUnix(flow["callback_consumed_at"]) > 0 {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_consumed", "provider flow already consumed", 410)
 	}
 	if providerUnix(flow["expires_at"]) <= now {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_expired", "provider flow expired", 410)
 	}
 	if toString(flow["provider"]) != provider {
+		s.mu.Unlock()
 		return nil, providerError("provider_mismatch", "provider callback does not match flow", 400)
 	}
 	config, err := s.providerConfig(provider)
 	if err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
 	if toString(flow["redirect_uri"]) != config.RedirectURI {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400)
 	}
 	secrets, err := s.openSecrets(toString(flow["secrets_ciphertext"]))
 	if err != nil {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400, err)
 	}
 	flowID := toString(flow["id"])
-	if _, err := flows.Update(flowID, map[string]any{"callback_consumed_at": now}); err != nil {
+	if _, err := flows.Update(flowID, map[string]any{
+		"phase": providerFlowPhaseCallbackProcessing, "callback_consumed_at": now,
+	}); err != nil {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_failed", "provider callback could not be completed", 500, err)
 	}
+	if providerFailure != "" {
+		result, finalizeErr := s.finalizeCallbackLocked(flows, flowID, "provider_denied", nil)
+		s.mu.Unlock()
+		return result, finalizeErr
+	}
+	if code == "" {
+		result, finalizeErr := s.finalizeCallbackLocked(flows, flowID, "invalid_callback", nil)
+		s.mu.Unlock()
+		return result, finalizeErr
+	}
+	exchangeRequest := AuthProviderCallbackRequest{
+		Provider: provider, Code: code, RedirectURI: config.RedirectURI,
+		CodeVerifier: secrets.PKCEVerifier, Nonce: secrets.Nonce, Parameters: cloneURLValues(params),
+	}
+	s.mu.Unlock()
 
+	identity, exchangeErr := config.Adapter.Exchange(ctx, exchangeRequest)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if exchangeErr != nil {
+		return s.finalizeCallbackLocked(flows, flowID, "provider_exchange_failed", nil)
+	}
+	if identity.Provider != provider || identity.Issuer != config.Issuer || identity.Subject == "" || identity.Subject != strings.TrimSpace(identity.Subject) {
+		return s.finalizeCallbackLocked(flows, flowID, "provider_identity_invalid", nil)
+	}
+	return s.finalizeCallbackLocked(flows, flowID, "", &identity)
+}
+
+func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowID, failureCode string, identity *AuthProviderIdentity) (*providerCallbackResult, error) {
+	flow, err := flows.Get(flowID)
+	if err != nil || flow == nil || toString(flow["phase"]) != providerFlowPhaseCallbackProcessing {
+		return nil, providerError("provider_flow_gone", "provider flow is invalid or expired", 410, err)
+	}
+	now := s.now().Unix()
+	if providerUnix(flow["expires_at"]) <= now {
+		_, _ = flows.Delete(flowID)
+		return nil, providerError("provider_flow_expired", "provider flow expired", 410)
+	}
 	completionCode, err := s.randomToken(32)
 	if err != nil {
 		return nil, providerError("provider_flow_failed", "provider callback could not be completed", 500, err)
 	}
 	updates := map[string]any{
-		"completion_hash":       hashProviderToken(completionCode),
+		"phase": providerFlowPhaseResultReady, "completion_hash": hashProviderToken(completionCode),
 		"completion_expires_at": now + int64(providerCompletionTTL/time.Second),
+		"secrets_ciphertext":    "completed", "result_error_code": failureCode,
 	}
 	status := "success"
-	if providerFailure != "" {
+	if failureCode != "" {
 		status = "failure"
-		updates["result_error_code"] = "provider_denied"
-	} else if code == "" {
-		status = "failure"
-		updates["result_error_code"] = "invalid_callback"
-	} else {
-		identity, exchangeErr := config.Adapter.Exchange(ctx, AuthProviderCallbackRequest{
-			Provider: provider, Code: code, RedirectURI: config.RedirectURI,
-			CodeVerifier: secrets.PKCEVerifier, Nonce: secrets.Nonce, Parameters: cloneURLValues(params),
-		})
-		if exchangeErr != nil {
-			status = "failure"
-			updates["result_error_code"] = "provider_exchange_failed"
-		} else if identity.Provider != provider || identity.Issuer != config.Issuer || identity.Subject == "" || identity.Subject != strings.TrimSpace(identity.Subject) {
-			status = "failure"
-			updates["result_error_code"] = "provider_identity_invalid"
-		} else {
-			updates["result_provider"] = identity.Provider
-			updates["result_issuer"] = identity.Issuer
-			updates["result_subject"] = identity.Subject
-			updates["result_display_name"] = identity.DisplayName
-			updates["result_email"] = identity.Email
-			updates["result_email_verified"] = identity.EmailVerified
+	} else if identity != nil {
+		updates["result_provider"] = identity.Provider
+		updates["result_issuer"] = identity.Issuer
+		updates["result_subject"] = identity.Subject
+		updates["result_display_name"] = identity.DisplayName
+		updates["result_email"] = identity.Email
+		updates["result_email_verified"] = identity.EmailVerified
+		if toString(flow["intent"]) == "sign_in" {
+			if linked, ok := s.db.Table(systemAuthIdentityTableName).FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject); ok {
+				updates["resolved_principal_id"] = toString(linked["principal_id"])
+			}
 		}
 	}
 	if _, err := flows.Update(flowID, updates); err != nil {
@@ -365,6 +444,9 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 		return nil, providerError("completion_gone", "completion code is invalid or expired", 410)
 	}
 	now := s.now().Unix()
+	if toString(flow["phase"]) != providerFlowPhaseResultReady {
+		return nil, providerError("completion_consumed", "completion code already consumed", 410)
+	}
 	if providerUnix(flow["completion_consumed_at"]) > 0 {
 		return nil, providerError("completion_consumed", "completion code already consumed", 410)
 	}
@@ -372,7 +454,7 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 		return nil, providerError("completion_expired", "completion code expired", 410)
 	}
 	if failureCode := toString(flow["result_error_code"]); failureCode != "" {
-		_, _ = flows.Update(toString(flow["id"]), map[string]any{"completion_consumed_at": now})
+		_, _ = flows.Update(toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now})
 		switch failureCode {
 		case "provider_denied":
 			return nil, providerError(failureCode, "provider authorization was denied", 401)
@@ -402,13 +484,18 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 
 func (s *providerAuthService) completeSignIn(flow map[string]any, identity AuthProviderIdentity, now int64) (*providerCompleteResult, error) {
 	identities := s.db.Table(systemAuthIdentityTableName)
+	expectedPrincipalID := toString(flow["resolved_principal_id"])
 	linked, ok := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject)
-	if !ok {
-		_, _ = s.db.Table(systemAuthProviderFlowTableName).Update(toString(flow["id"]), map[string]any{"completion_consumed_at": now})
+	if expectedPrincipalID == "" {
+		_, _ = s.db.Table(systemAuthProviderFlowTableName).Update(toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now})
 		return nil, providerError("link_required", "provider identity must be linked to an authenticated account", 409)
 	}
+	if !ok || toString(linked["principal_id"]) != expectedPrincipalID {
+		_, _ = s.db.Table(systemAuthProviderFlowTableName).Update(toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now})
+		return nil, providerError("principal_unavailable", "account is unavailable", 401)
+	}
 	tx := newProviderTxn(s.db)
-	if err := tx.update(s.db.Table(systemAuthProviderFlowTableName), toString(flow["id"]), map[string]any{"completion_consumed_at": now}); err != nil {
+	if err := tx.update(s.db.Table(systemAuthProviderFlowTableName), toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now}); err != nil {
 		tx.abort()
 		return nil, providerError("provider_flow_failed", "provider authentication failed", 500, err)
 	}
@@ -445,11 +532,11 @@ func (s *providerAuthService) completeLink(flow map[string]any, identity AuthPro
 	}
 	identities := s.db.Table(systemAuthIdentityTableName)
 	if _, exists := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject); exists {
-		_, _ = s.db.Table(systemAuthProviderFlowTableName).Update(toString(flow["id"]), map[string]any{"completion_consumed_at": now})
+		_, _ = s.db.Table(systemAuthProviderFlowTableName).Update(toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now})
 		return nil, providerError("identity_already_linked", "provider identity is already linked", 409)
 	}
 	tx := newProviderTxn(s.db)
-	if err := tx.update(s.db.Table(systemAuthProviderFlowTableName), toString(flow["id"]), map[string]any{"completion_consumed_at": now}); err != nil {
+	if err := tx.update(s.db.Table(systemAuthProviderFlowTableName), toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now}); err != nil {
 		tx.abort()
 		return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 	}
@@ -741,6 +828,14 @@ func (d *Database) cleanupExpiredProviderFlows(now time.Time) (int, error) {
 	if flows == nil {
 		return 0, nil
 	}
+	if d.providerAuth != nil {
+		d.providerAuth.mu.Lock()
+		defer d.providerAuth.mu.Unlock()
+	}
+	return cleanupExpiredProviderFlowRows(flows, now)
+}
+
+func cleanupExpiredProviderFlowRows(flows *TableInstance, now time.Time) (int, error) {
 	total := flows.Count()
 	rows, err := flows.Scan(total, 0)
 	if err != nil {
