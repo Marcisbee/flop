@@ -35,7 +35,15 @@ type Config struct {
 	RequireAuthEmail      bool                          `json:"-"`
 	AuthPayloads          *AuthPayloadConfig            `json:"-"`
 	AuthProviders         map[string]AuthProviderConfig `json:"-"`
-	Workflow              *WorkflowConfig               `json:"-"`
+	// AuthProviderApps configures app-isolated provider registrations. The map
+	// key is the stable public app ID used by browser and backend requests.
+	AuthProviderApps map[string]AuthProviderAppConfig `json:"-"`
+	// ProviderSecretKeys is a versioned keyring used only for provider
+	// credentials and token material. Keys must be exactly 32 bytes and must
+	// not be stored in DataDir or reused as the JWT secret.
+	ProviderSecretKeys      map[string][]byte `json:"-"`
+	ActiveProviderSecretKey string            `json:"-"`
+	Workflow                *WorkflowConfig   `json:"-"`
 }
 
 type AuthPayloadConfig struct {

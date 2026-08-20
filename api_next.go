@@ -638,6 +638,9 @@ func (h *APIHandler) handleSchema(w http.ResponseWriter) {
 			endpoint{Name: "auth_provider_complete", Method: http.MethodPost, Path: "/api/auth/provider/complete", Type: "auth", Access: Public()},
 			endpoint{Name: "auth_provider_identities", Method: http.MethodGet, Path: "/api/auth/provider/identities", Type: "auth", Access: Authenticated()},
 			endpoint{Name: "auth_provider_unlink", Method: http.MethodDelete, Path: "/api/auth/provider/identities/{identityId}", Type: "auth", Access: Authenticated()},
+			endpoint{Name: "auth_provider_grants", Method: http.MethodGet, Path: "/api/auth/provider/grants", Type: "auth", Access: Authenticated()},
+			endpoint{Name: "auth_provider_revoke", Method: http.MethodDelete, Path: "/api/auth/provider/grants/{grantId}", Type: "auth", Access: Authenticated()},
+			endpoint{Name: "auth_provider_backend_token", Method: http.MethodPost, Path: "/api/auth/provider/backend/token", Type: "auth", Access: Public()},
 		)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -704,31 +707,68 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		h.handleProviderIdentityDelete(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/auth/provider/grants/") {
+		h.handleProviderGrantDelete(w, r)
+		return
+	}
 	switch r.URL.Path {
 	case "/api/auth/providers":
 		if r.Method != http.MethodGet {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		jsonResponse(w, http.StatusOK, map[string]any{"providers": h.db.providerAuth.descriptors()})
+		appID := r.URL.Query().Get("appID")
+		if appID == "" {
+			appID = r.URL.Query().Get("appId")
+		}
+		if appID == "" && len(h.db.providerAuth.apps) == 0 {
+			jsonResponse(w, http.StatusOK, map[string]any{"providers": h.db.providerAuth.descriptors()})
+			return
+		}
+		if appID == "" && len(h.db.providerAuth.apps) == 1 {
+			for key := range h.db.providerAuth.apps {
+				appID = key
+			}
+		}
+		if appID == "legacy" {
+			jsonResponse(w, http.StatusOK, map[string]any{"providers": h.db.providerAuth.descriptors()})
+			return
+		}
+		if appID == "" {
+			providerJSONError(w, providerError("app_required", "provider app ID required", http.StatusBadRequest))
+			return
+		}
+		descriptors, err := h.db.providerAuth.descriptorsForApp(appID)
+		if err != nil {
+			providerJSONError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"appID": appID, "providers": descriptors})
 	case "/api/auth/provider/start":
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var in struct {
-			Provider string `json:"provider"`
-			Intent   string `json:"intent"`
-			ReturnTo string `json:"returnTo"`
+			AppID       string   `json:"appID"`
+			LegacyAppID string   `json:"appId"`
+			Provider    string   `json:"provider"`
+			Intent      string   `json:"intent"`
+			ReturnTo    string   `json:"returnTo"`
+			Scopes      []string `json:"scopes"`
+			GrantID     string   `json:"grantId"`
 		}
 		if err := decodeStrictJSONBody(r, &in); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if in.AppID == "" {
+			in.AppID = in.LegacyAppID
+		}
 		if !h.allowAuthAttempt(w, r, "provider-start") {
 			return
 		}
-		result, err := h.db.providerAuth.start(r.Context(), in.Provider, in.Intent, in.ReturnTo, h.authFromRequest(r))
+		result, err := h.db.providerAuth.startForApp(r.Context(), in.AppID, in.Provider, in.Intent, in.ReturnTo, in.Scopes, in.GrantID, h.authFromRequest(r))
 		if err != nil {
 			providerJSONError(w, err)
 			return
@@ -790,7 +830,11 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if result.Linked != nil {
-			jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "identity": result.Linked})
+			jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "identity": result.Linked, "grant": result.Grant})
+			return
+		}
+		if result.Auth == nil {
+			jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "grant": result.Grant})
 			return
 		}
 		appAuth := authContextFromSchema(result.Auth)
@@ -805,7 +849,7 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, http.StatusOK, map[string]any{
-			"token": result.Token, "refreshToken": result.RefreshToken, "user": userPayload, "me": mePayload,
+			"token": result.Token, "refreshToken": result.RefreshToken, "user": userPayload, "me": mePayload, "grant": result.Grant,
 		})
 	case "/api/auth/provider/identities":
 		if r.Method != http.MethodGet {
@@ -823,6 +867,55 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, http.StatusOK, map[string]any{"identities": identities})
+	case "/api/auth/provider/grants":
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth := h.authFromRequest(r)
+		if auth == nil {
+			providerJSONError(w, providerError("authentication_required", "authentication required", 401))
+			return
+		}
+		appID := r.URL.Query().Get("appID")
+		if appID == "" {
+			appID = r.URL.Query().Get("appId")
+		}
+		grants, err := h.db.providerAuth.listGrants(auth.ID, appID)
+		if err != nil {
+			providerJSONError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"grants": grants})
+	case "/api/auth/provider/backend/token":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		var in struct {
+			AppID          string   `json:"appID"`
+			LegacyAppID    string   `json:"appId"`
+			GrantID        string   `json:"grantId"`
+			RequiredScopes []string `json:"requiredScopes"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if in.AppID == "" {
+			in.AppID = in.LegacyAppID
+		}
+		credential := r.Header.Get("X-Flop-Backend-Credential")
+		if credential == "" {
+			credential = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		}
+		lease, err := h.db.ProviderToken(r.Context(), in.AppID, credential, in.GrantID, in.RequiredScopes...)
+		if err != nil {
+			providerJSONError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, lease)
 	case "/api/auth/register":
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1191,6 +1284,34 @@ func (h *APIHandler) handleProviderIdentityDelete(w http.ResponseWriter, r *http
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *APIHandler) handleProviderGrantDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	auth := h.authFromRequest(r)
+	if auth == nil {
+		providerJSONError(w, providerError("authentication_required", "authentication required", http.StatusUnauthorized))
+		return
+	}
+	grantID := strings.TrimPrefix(r.URL.Path, "/api/auth/provider/grants/")
+	if grantID == "" || strings.Contains(grantID, "/") {
+		providerJSONError(w, providerError("grant_required", "grant required", http.StatusBadRequest))
+		return
+	}
+	err := h.db.providerAuth.revokeGrant(r.Context(), auth.ID, grantID)
+	if err != nil {
+		var providerErr *AuthProviderError
+		if errors.As(err, &providerErr) && providerErr.Status == http.StatusAccepted {
+			jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true, "status": "revocation_pending"})
+			return
+		}
+		providerJSONError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "status": "revoked"})
 }
 
 func providerJSONError(w http.ResponseWriter, err error) {
