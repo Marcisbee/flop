@@ -15,12 +15,16 @@ import (
 )
 
 type fakeGrantProvider struct {
-	mu          sync.Mutex
-	issuer      string
-	tokens      map[string]AuthProviderTokenSet
-	refreshes   int
-	revocations int
-	revokeErr   error
+	mu             sync.Mutex
+	issuer         string
+	tokens         map[string]AuthProviderTokenSet
+	refreshes      int
+	refreshScopes  []string
+	refreshStarted chan struct{}
+	refreshRelease <-chan struct{}
+	revocations    int
+	lastRevoke     AuthProviderRevokeRequest
+	revokeErr      error
 }
 
 func (p *fakeGrantProvider) AuthorizationURL(_ context.Context, request AuthProviderAuthorizationRequest) (string, error) {
@@ -48,14 +52,29 @@ func (p *fakeGrantProvider) ExchangeGrant(_ context.Context, request AuthProvide
 }
 func (p *fakeGrantProvider) RefreshGrant(_ context.Context, request AuthProviderRefreshRequest) (AuthProviderTokenSet, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.refreshes++
-	return AuthProviderTokenSet{AccessToken: request.AppID + "-refreshed", RefreshToken: request.RefreshToken + "-rotated", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: request.Scopes}, nil
+	scopes := append([]string(nil), request.Scopes...)
+	if p.refreshScopes != nil {
+		scopes = append([]string(nil), p.refreshScopes...)
+	}
+	started, release := p.refreshStarted, p.refreshRelease
+	p.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		<-release
+	}
+	return AuthProviderTokenSet{AccessToken: request.AppID + "-refreshed", RefreshToken: request.RefreshToken + "-rotated", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: scopes}, nil
 }
-func (p *fakeGrantProvider) RevokeGrant(_ context.Context, _ AuthProviderRevokeRequest) error {
+func (p *fakeGrantProvider) RevokeGrant(_ context.Context, request AuthProviderRevokeRequest) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.revocations++
+	p.lastRevoke = request
 	return p.revokeErr
 }
 
@@ -73,6 +92,34 @@ func defineGrantTestUsers(app *App) {
 		s.Roles("roles")
 		s.Boolean("disabled").Default(false)
 	})
+}
+
+func openGrantTestDatabase(t *testing.T, dataDir string, provider *fakeGrantProvider, clientID string) (*Database, http.Handler) {
+	t.Helper()
+	app := New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": appGrantTestConfig(provider, clientID, "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db, app.APIHandler(db)
+}
+
+func linkGrantForTest(t *testing.T, db *Database, handler http.Handler, providerCode, email string, scopes ...string) (string, string, string, string) {
+	t.Helper()
+	token, principalID := registerProviderTestUser(t, handler, email)
+	state := startAppFlow(t, handler, "app", "link", token, "", scopes...)
+	completion := callbackProviderFlow(t, handler, "shared", state, providerCode)
+	response := completeProviderFlow(t, handler, completion, token, true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("link status=%d body=%s", response.Code, response.Body.String())
+	}
+	grantID := decodeProviderResponse(t, response)["grant"].(map[string]any)["id"].(string)
+	grant, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || grant == nil {
+		t.Fatalf("grant lookup=%#v err=%v", grant, err)
+	}
+	return token, principalID, grantID, toString(grant["identity_id"])
 }
 
 func startAppFlow(t *testing.T, handler http.Handler, appID, intent, bearer, grantID string, scopes ...string) string {
@@ -240,6 +287,167 @@ func TestProviderGrantRefreshIsSerialized(t *testing.T) {
 	provider.mu.Unlock()
 	if refreshes != 1 {
 		t.Fatalf("refreshes=%d want 1", refreshes)
+	}
+}
+
+func TestProviderExchangeRejectsAllowedButUnrequestedScope(t *testing.T) {
+	provider := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{
+		"escalated": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity", "read"}},
+	}}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	token, _ := registerProviderTestUser(t, handler, "exchange-scope@example.com")
+	state := startAppFlow(t, handler, "app", "link", token, "", "identity")
+	completion := callbackProviderFlow(t, handler, "shared", state, "escalated")
+	response := completeProviderFlow(t, handler, completion, token, true)
+	if response.Code != http.StatusBadRequest || decodeProviderResponse(t, response)["code"] != "provider_scope_invalid" {
+		t.Fatalf("escalated exchange status=%d body=%s", response.Code, response.Body.String())
+	}
+	if db.Table(systemAuthProviderGrantTableName).Count() != 0 {
+		t.Fatal("escalated exchange persisted a grant")
+	}
+}
+
+func TestProviderRefreshRejectsScopeEscalation(t *testing.T) {
+	provider := &fakeGrantProvider{
+		issuer:        "https://issuer.example",
+		refreshScopes: []string{"identity", "read"},
+		tokens: map[string]AuthProviderTokenSet{
+			"expired": {AccessToken: "expired", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Second), Scopes: []string{"identity"}},
+		},
+	}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	_, _, grantID, _ := linkGrantForTest(t, db, handler, "expired", "refresh-scope@example.com", "identity")
+	before, _ := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if _, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity"); err == nil {
+		t.Fatal("scope-escalating refresh returned a token")
+	}
+	after, _ := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if !scopeSubset(storedStrings(after["granted_scopes"]), []string{"identity"}) || scopeSubset([]string{"read"}, storedStrings(after["granted_scopes"])) {
+		t.Fatalf("refresh persisted escalated scopes: %v", storedStrings(after["granted_scopes"]))
+	}
+	if toString(after["token_ciphertext"]) != toString(before["token_ciphertext"]) {
+		t.Fatal("refresh persisted token material after scope escalation")
+	}
+}
+
+func TestProviderRefreshAndUnlinkShareGrantSerialization(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	provider := &fakeGrantProvider{
+		issuer:         "https://issuer.example",
+		refreshStarted: started,
+		refreshRelease: release,
+		tokens: map[string]AuthProviderTokenSet{
+			"expired": {AccessToken: "expired", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Second), Scopes: []string{"identity"}},
+		},
+	}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	_, principalID, grantID, identityID := linkGrantForTest(t, db, handler, "expired", "refresh-unlink@example.com", "identity")
+	leaseDone := make(chan error, 1)
+	go func() {
+		_, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity")
+		leaseDone <- err
+	}()
+	<-started
+	unlinkDone := make(chan error, 1)
+	go func() { unlinkDone <- db.providerAuth.unlink(principalID, identityID) }()
+	select {
+	case err := <-unlinkDone:
+		t.Fatalf("unlink bypassed in-flight grant refresh: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-leaseDone; err != nil {
+		t.Fatalf("serialized lease failed: %v", err)
+	}
+	if err := <-unlinkDone; err != nil {
+		t.Fatalf("serialized unlink failed: %v", err)
+	}
+	if _, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity"); err == nil {
+		t.Fatal("unlinked grant returned a token")
+	}
+}
+
+func TestProviderRefreshAndIncrementalConsentShareGrantSerialization(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	provider := &fakeGrantProvider{
+		issuer:         "https://issuer.example",
+		refreshStarted: started,
+		refreshRelease: release,
+		tokens: map[string]AuthProviderTokenSet{
+			"expired":     {AccessToken: "expired", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Second), Scopes: []string{"identity"}},
+			"incremental": {AccessToken: "incremental", RefreshToken: "incremental-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity", "read"}},
+		},
+	}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	token, _, grantID, _ := linkGrantForTest(t, db, handler, "expired", "refresh-consent@example.com", "identity")
+	state := startAppFlow(t, handler, "app", "consent", token, grantID, "read")
+	completion := callbackProviderFlow(t, handler, "shared", state, "incremental")
+	leaseDone := make(chan error, 1)
+	go func() {
+		_, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity")
+		leaseDone <- err
+	}()
+	<-started
+	consentDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() { consentDone <- completeProviderFlow(t, handler, completion, token, true) }()
+	select {
+	case response := <-consentDone:
+		t.Fatalf("incremental consent bypassed in-flight grant refresh: status=%d body=%s", response.Code, response.Body.String())
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-leaseDone; err != nil {
+		t.Fatalf("serialized lease failed: %v", err)
+	}
+	response := <-consentDone
+	if response.Code != http.StatusOK {
+		t.Fatalf("serialized consent status=%d body=%s", response.Code, response.Body.String())
+	}
+	lease, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "read")
+	if err != nil || lease.AccessToken != "incremental" {
+		t.Fatalf("incremental lease=%+v err=%v", lease, err)
+	}
+}
+
+func TestProviderClientRotationPreservesRevocationCredentials(t *testing.T) {
+	for _, operation := range []string{"revoke", "unlink"} {
+		t.Run(operation, func(t *testing.T) {
+			dataDir := t.TempDir()
+			provider := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{
+				"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+			}}
+			db, handler := openGrantTestDatabase(t, dataDir, provider, "old-client")
+			_, principalID, grantID, identityID := linkGrantForTest(t, db, handler, "code", operation+"-rotation@example.com", "identity")
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, _ = openGrantTestDatabase(t, dataDir, provider, "new-client")
+			defer db.Close()
+			grant, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+			if err != nil || toString(grant["state"]) != "reconnect_required" {
+				t.Fatalf("rotated grant=%#v err=%v", grant, err)
+			}
+			if operation == "revoke" {
+				err = db.providerAuth.revokeGrant(context.Background(), principalID, grantID)
+			} else {
+				err = db.providerAuth.unlink(principalID, identityID)
+			}
+			if err != nil {
+				t.Fatalf("%s after rotation: %v", operation, err)
+			}
+			provider.mu.Lock()
+			revoke := provider.lastRevoke
+			provider.mu.Unlock()
+			if revoke.ClientID != "old-client" || revoke.ClientSecret != "old-client-secret" {
+				t.Fatalf("revocation credentials client=%q secret=%q", revoke.ClientID, revoke.ClientSecret)
+			}
+		})
 	}
 }
 

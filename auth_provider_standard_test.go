@@ -102,13 +102,30 @@ func TestSteamOpenIDProtocolFixture(t *testing.T) {
 	if returnTo.Query().Get("state") != "state" {
 		t.Fatalf("return_to=%s", returnTo)
 	}
-	parameters := url.Values{"openid.mode": {"id_res"}, "openid.claimed_id": {"https://steamcommunity.com/openid/id/76561198000000000"}, "openid.identity": {"https://steamcommunity.com/openid/id/76561198000000000"}}
-	identity, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", Parameters: parameters})
+	parameters := url.Values{
+		"state":              {"state"},
+		"openid.mode":        {"id_res"},
+		"openid.op_endpoint": {server.URL},
+		"openid.return_to":   {returnTo.String()},
+		"openid.claimed_id":  {"http://steamcommunity.com/openid/id/76561198000000000"},
+		"openid.identity":    {"http://steamcommunity.com/openid/id/76561198000000000"},
+	}
+	identity, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: parameters})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if identity.Subject != "76561198000000000" || identity.Issuer != "https://steamcommunity.com/openid" {
 		t.Fatalf("identity=%+v", identity)
+	}
+	badReturnTo := cloneURLValues(parameters)
+	badReturnTo.Set("openid.return_to", "https://attacker.example/callback?state=state")
+	if _, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: badReturnTo}); err == nil {
+		t.Fatal("Steam accepted an assertion bound to another return URL")
+	}
+	badEndpoint := cloneURLValues(parameters)
+	badEndpoint.Set("openid.op_endpoint", "https://attacker.example/openid")
+	if _, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: badEndpoint}); err == nil {
+		t.Fatal("Steam accepted an assertion from another OpenID endpoint")
 	}
 }
 
@@ -126,5 +143,7 @@ func TestBuiltinProviderCatalog(t *testing.T) {
 	}
 	if config, err := BuiltinAuthProviderConfig("draugiem", BuiltinAuthProviderOptions{ClientID: "app", ClientSecret: "key", RedirectURI: "https://flop.example/callback"}); err != nil || config.Issuer != "https://www.draugiem.lv" {
 		t.Fatalf("Draugiem built-in config=%+v err=%v", config, err)
+	} else if capabilities := config.Adapter.(AuthProviderCapabilityAdapter).ProviderCapabilities(); capabilities.Revocation {
+		t.Fatal("Draugiem advertised unsupported remote revocation")
 	}
 }

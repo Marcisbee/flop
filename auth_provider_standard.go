@@ -399,7 +399,7 @@ type DraugiemPassportProvider struct {
 
 func (p *DraugiemPassportProvider) CallbackCodeOptional() bool { return true }
 func (p *DraugiemPassportProvider) ProviderCapabilities() AuthProviderCapabilities {
-	return AuthProviderCapabilities{Refresh: false, Revocation: true}
+	return AuthProviderCapabilities{Refresh: false, Revocation: false}
 }
 func (p *DraugiemPassportProvider) authorizationEndpoint() string {
 	if p.AuthorizationEndpoint != "" {
@@ -496,7 +496,7 @@ func (p *DraugiemPassportProvider) RefreshGrant(context.Context, AuthProviderRef
 	return AuthProviderTokenSet{}, &AuthProviderUpstreamError{Code: "reauthorization_required", Terminal: true}
 }
 func (p *DraugiemPassportProvider) RevokeGrant(context.Context, AuthProviderRevokeRequest) error {
-	return nil
+	return fmt.Errorf("Draugiem Passport does not support remote revocation")
 }
 
 func (p *SteamOpenIDProvider) endpoint() string {
@@ -525,8 +525,22 @@ func (p *SteamOpenIDProvider) AuthorizationURL(_ context.Context, request AuthPr
 func (p *SteamOpenIDProvider) Exchange(ctx context.Context, request AuthProviderCallbackRequest) (AuthProviderIdentity, error) {
 	values := cloneURLValues(request.Parameters)
 	claimed := values.Get("openid.claimed_id")
-	if !strings.HasPrefix(claimed, "https://steamcommunity.com/openid/id/") {
+	const claimedPrefix = "http://steamcommunity.com/openid/id/"
+	if !strings.HasPrefix(claimed, claimedPrefix) || values.Get("openid.identity") != claimed {
 		return AuthProviderIdentity{}, fmt.Errorf("invalid Steam claimed identity")
+	}
+	if values.Get("openid.op_endpoint") != p.endpoint() {
+		return AuthProviderIdentity{}, fmt.Errorf("invalid Steam OpenID endpoint")
+	}
+	expectedReturnTo, err := url.Parse(request.RedirectURI)
+	if err != nil {
+		return AuthProviderIdentity{}, fmt.Errorf("invalid Steam return URL")
+	}
+	expectedQuery := expectedReturnTo.Query()
+	expectedQuery.Set("state", request.Parameters.Get("state"))
+	expectedReturnTo.RawQuery = expectedQuery.Encode()
+	if values.Get("openid.return_to") != expectedReturnTo.String() {
+		return AuthProviderIdentity{}, fmt.Errorf("invalid Steam return URL")
 	}
 	values.Set("openid.mode", "check_authentication")
 	values.Del("state")
@@ -546,7 +560,7 @@ func (p *SteamOpenIDProvider) Exchange(ctx context.Context, request AuthProvider
 	if response.StatusCode != 200 || !strings.Contains(string(body), "is_valid:true") {
 		return AuthProviderIdentity{}, fmt.Errorf("Steam OpenID assertion rejected")
 	}
-	subject := strings.TrimPrefix(claimed, "https://steamcommunity.com/openid/id/")
+	subject := strings.TrimPrefix(claimed, claimedPrefix)
 	if _, err := strconv.ParseUint(subject, 10, 64); err != nil {
 		return AuthProviderIdentity{}, fmt.Errorf("invalid Steam subject")
 	}

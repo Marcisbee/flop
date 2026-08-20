@@ -647,6 +647,9 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 	if !scopeSubset(exchange.GrantedScopes, config.AllowedScopes) {
 		return s.finalizeCallbackLocked(flows, flowID, "provider_scope_invalid", nil, nil)
 	}
+	if !scopeSubset(exchange.GrantedScopes, requested) {
+		return s.finalizeCallbackLocked(flows, flowID, "provider_scope_invalid", nil, nil)
+	}
 	if len(requested) > 0 && !scopeSubset(config.RequiredScopes, exchange.GrantedScopes) {
 		return s.finalizeCallbackLocked(flows, flowID, "required_scope_denied", nil, nil)
 	}
@@ -946,6 +949,12 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 	grants, _ := s.db.Table(systemAuthProviderGrantTableName).FindByIndex("identity_id", identityID)
 	retryIDs := make([]string, 0, len(grants))
 	for _, grant := range grants {
+		tx.lockGrant(s, toString(grant["id"]))
+		grant, err = s.db.Table(systemAuthProviderGrantTableName).Get(toString(grant["id"]))
+		if err != nil || grant == nil || toString(grant["identity_id"]) != identityID || toString(grant["principal_id"]) != principalID {
+			tx.abort()
+			return providerError("provider_identity_failed", "linked identity could not be removed", 500, err)
+		}
 		if toString(grant["state"]) == "revoked" && toString(grant["token_ciphertext"]) == "" {
 			continue
 		}
@@ -1092,11 +1101,34 @@ type providerTxn struct {
 	db     *Database
 	txBuf  map[string]*engine.WalBufEntry
 	undo   []func()
+	locked map[string]struct{}
+	unlock []func()
 	closed bool
 }
 
 func newProviderTxn(db *Database) *providerTxn {
-	return &providerTxn{db: db, txBuf: make(map[string]*engine.WalBufEntry)}
+	return &providerTxn{db: db, txBuf: make(map[string]*engine.WalBufEntry), locked: make(map[string]struct{})}
+}
+
+func (tx *providerTxn) lockGrant(service *providerAuthService, grantID string) {
+	if tx == nil || service == nil || grantID == "" {
+		return
+	}
+	if _, ok := tx.locked[grantID]; ok {
+		return
+	}
+	lockValue, _ := service.grantLocks.LoadOrStore(grantID, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	tx.locked[grantID] = struct{}{}
+	tx.unlock = append(tx.unlock, lock.Unlock)
+}
+
+func (tx *providerTxn) releaseLocks() {
+	for i := len(tx.unlock) - 1; i >= 0; i-- {
+		tx.unlock[i]()
+	}
+	tx.unlock = nil
 }
 
 func (tx *providerTxn) insert(table *TableInstance, data map[string]any) (map[string]any, error) {
@@ -1155,6 +1187,7 @@ func (tx *providerTxn) commit() error {
 		return fmt.Errorf("provider transaction closed")
 	}
 	tx.closed = true
+	defer tx.releaseLocks()
 	if err := tx.db.db.EnqueueCommit(tx.txBuf); err != nil {
 		tx.rollback()
 		return err
@@ -1167,6 +1200,7 @@ func (tx *providerTxn) abort() {
 		return
 	}
 	tx.closed = true
+	defer tx.releaseLocks()
 	tx.rollback()
 }
 

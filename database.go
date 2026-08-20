@@ -2554,6 +2554,8 @@ func systemAuthProviderGrantTableDef() *schema.TableDef {
 		{Name: "principal_id", Kind: schema.KindString, Required: true}, {Name: "identity_id", Kind: schema.KindString, Required: true},
 		{Name: "registration_id", Kind: schema.KindString, Required: true}, {Name: "app_id", Kind: schema.KindString, Required: true},
 		{Name: "provider", Kind: schema.KindString, Required: true}, {Name: "granted_scopes", Kind: schema.KindJson, Required: true},
+		{Name: "client_id", Kind: schema.KindString, Required: false},
+		{Name: "credential_ciphertext", Kind: schema.KindString, Required: false}, {Name: "credential_key_version", Kind: schema.KindString, Required: false},
 		{Name: "token_ciphertext", Kind: schema.KindString, Required: false}, {Name: "token_key_version", Kind: schema.KindString, Required: false},
 		{Name: "access_expires_at", Kind: schema.KindTimestamp, Required: false}, {Name: "state", Kind: schema.KindString, Required: true},
 		{Name: "consented_at", Kind: schema.KindTimestamp, Required: true}, {Name: "refreshed_at", Kind: schema.KindTimestamp, Required: false},
@@ -2567,6 +2569,8 @@ func systemAuthProviderRevocationTableDef() *schema.TableDef {
 		{Name: "grant_id", Kind: schema.KindString, Required: true}, {Name: "app_id", Kind: schema.KindString, Required: true},
 		{Name: "registration_id", Kind: schema.KindString, Required: true}, {Name: "token_ciphertext", Kind: schema.KindString, Required: true},
 		{Name: "token_key_version", Kind: schema.KindString, Required: true}, {Name: "attempts", Kind: schema.KindInteger, Required: true},
+		{Name: "client_id", Kind: schema.KindString, Required: false},
+		{Name: "credential_ciphertext", Kind: schema.KindString, Required: false}, {Name: "credential_key_version", Kind: schema.KindString, Required: false},
 		{Name: "next_attempt_at", Kind: schema.KindTimestamp, Required: true}, {Name: "last_error_code", Kind: schema.KindString, Required: false},
 	}, []schema.IndexDef{{Fields: []string{"grant_id"}, Unique: true, Type: schema.IndexTypeHash}})
 }
