@@ -593,6 +593,7 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	if tableMeta == nil {
 		// New table
 		tableMeta = storage.CreateTableMeta(currentStored)
+		tableMeta.SystemOwner = ti.def.SystemOwner
 		meta.Tables[ti.Name] = tableMeta
 
 		tf, err := storage.CreateTableFile(flopPath, 1, maxCachePages)
@@ -606,6 +607,9 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		}
 		ti.archiveFile = archiveTF
 	} else {
+		if ti.def.SystemOwner != "" && tableMeta.SystemOwner != ti.def.SystemOwner {
+			return fmt.Errorf("existing user table %q conflicts with reserved system table owner %q; rename or migrate that table before opening this database", ti.Name, ti.def.SystemOwner)
+		}
 		// Existing table — check for schema changes
 		latestVersion := tableMeta.CurrentSchemaVersion
 		latestSchema := tableMeta.Schemas[latestVersion]

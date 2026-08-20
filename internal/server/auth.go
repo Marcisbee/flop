@@ -292,6 +292,8 @@ func VerifyPurposeJWT(token, secret string) *PurposePayload {
 type AuthService struct {
 	authTable       *engine.TableInstance
 	sessionTable    *engine.TableInstance
+	providerAuth    *providerAuthRuntime
+	mutationMu      sync.Mutex
 	secret          string
 	instanceID      string
 	accessTokenTTL  int64 // seconds
@@ -418,6 +420,8 @@ func (as *AuthService) Login(email, password string) (token, refreshToken string
 
 // Refresh issues a new access token from a refresh token.
 func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
+	as.mutationMu.Lock()
+	defer as.mutationMu.Unlock()
 	payload := VerifyJWT(refreshToken, as.secret)
 	if payload == nil {
 		return "", "", fmt.Errorf("invalid refresh token")
@@ -699,6 +703,8 @@ func (as *AuthService) RequestPasswordReset(email string) (string, error) {
 // All existing sessions for the user are revoked so that a session captured
 // before the reset cannot be used afterwards.
 func (as *AuthService) ConfirmPasswordReset(token, newPassword string) error {
+	as.mutationMu.Lock()
+	defer as.mutationMu.Unlock()
 	payload := VerifyPurposeJWT(token, as.secret)
 	if payload == nil || payload.Purpose != "password-reset" {
 		return fmt.Errorf("invalid or expired token")

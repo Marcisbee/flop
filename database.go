@@ -46,6 +46,7 @@ type Database struct {
 	requestLogRetention  time.Duration
 	authSessionRetention time.Duration
 	authSessionCleanup   time.Duration
+	providerFlowCleanup  time.Duration
 	enablePprof          bool
 	analyticsMu          sync.Mutex
 	analytics            *server.RequestAnalytics
@@ -86,9 +87,16 @@ type AnalyticsEvent struct {
 
 const systemSuperadminTableName = "_superadmin"
 const systemAuthSessionTableName = "_auth_sessions"
+const systemProviderIdentityTableName = "_provider_identities"
+const systemProviderFlowTableName = "_provider_flows"
 
 const defaultAuthSessionRetention = 30 * 24 * time.Hour
 const defaultAuthSessionCleanupInterval = time.Hour
+const defaultProviderFlowCleanupInterval = 5 * time.Minute
+
+func isAdminHiddenSystemTable(name string) bool {
+	return isWorkflowSystemTable(name) || name == systemProviderIdentityTableName || name == systemProviderFlowTableName
+}
 
 type materializedRuntime struct {
 	spec        *materializedSpec
@@ -162,6 +170,9 @@ func (a *App) Open() (*Database, error) {
 		return nil, fmt.Errorf("flop: app is nil")
 	}
 
+	if err := server.ValidateProviderConfiguration(a.config.Providers, a.config.ProviderCallbackURL, a.config.ProviderReturnURLs); err != nil {
+		return nil, fmt.Errorf("flop: invalid provider configuration: %w", err)
+	}
 	tableDefs := a.buildTableDefs()
 
 	db := engine.NewDatabase(engine.DatabaseConfig{
@@ -184,6 +195,7 @@ func (a *App) Open() (*Database, error) {
 		requestLogRetention:  retention,
 		authSessionRetention: a.config.AuthSessionRetention,
 		authSessionCleanup:   a.config.AuthSessionCleanup,
+		providerFlowCleanup:  a.config.ProviderFlowCleanup,
 		enablePprof:          a.config.EnablePprof,
 		backgroundStop:       make(chan struct{}),
 		tableNameToID:        make(map[string]int),
@@ -197,6 +209,9 @@ func (a *App) Open() (*Database, error) {
 	}
 	if d.authSessionCleanup <= 0 {
 		d.authSessionCleanup = defaultAuthSessionCleanupInterval
+	}
+	if d.providerFlowCleanup <= 0 {
+		d.providerFlowCleanup = defaultProviderFlowCleanupInterval
 	}
 	if a.config.AuthPayloads != nil {
 		d.buildAuthUser = a.config.AuthPayloads.BuildUser
@@ -243,6 +258,16 @@ func (a *App) Open() (*Database, error) {
 	sessionTable := db.GetTable(systemAuthSessionTableName)
 	if authTable := db.GetAuthTable(); authTable != nil {
 		d.authService = server.NewAuthService(authTable, sessionTable, secret, d.authInstanceID)
+		if err := d.authService.ConfigureProviderAuth(
+			db.GetTable(systemProviderIdentityTableName), db.GetTable(systemProviderFlowTableName),
+			a.config.Providers, a.config.ProviderCallbackURL, a.config.ProviderReturnURLs, a.config.ProviderFlowTTL,
+		); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("flop: configure provider authentication: %w", err)
+		}
+	} else if len(a.config.Providers) > 0 {
+		_ = db.Close()
+		return nil, fmt.Errorf("flop: provider authentication requires an auth table")
 	}
 	if superadminTable := db.GetTable(systemSuperadminTableName); superadminTable != nil {
 		d.superadminService = server.NewSuperadminService(superadminTable, sessionTable, secret, d.authInstanceID)
@@ -375,6 +400,10 @@ func (d *Database) SetJWTSecret(secret string) {
 	d.jwtSecret = secret
 	if d.authService != nil {
 		d.authService = server.NewAuthService(d.db.GetAuthTable(), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
+		_ = d.authService.ConfigureProviderAuth(
+			d.db.GetTable(systemProviderIdentityTableName), d.db.GetTable(systemProviderFlowTableName),
+			d.app.config.Providers, d.app.config.ProviderCallbackURL, d.app.config.ProviderReturnURLs, d.app.config.ProviderFlowTTL,
+		)
 	}
 	if d.superadminService != nil {
 		d.superadminService = server.NewSuperadminService(d.db.GetTable(systemSuperadminTableName), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
@@ -575,6 +604,7 @@ func (d *Database) reopen() (*Database, error) {
 	d.requestLogRetention = reopened.requestLogRetention
 	d.authSessionRetention = reopened.authSessionRetention
 	d.authSessionCleanup = reopened.authSessionCleanup
+	d.providerFlowCleanup = reopened.providerFlowCleanup
 	d.enablePprof = reopened.enablePprof
 	d.analytics = reopened.analytics
 	d.mediaIndexRebuild = reopened.mediaIndexRebuild
@@ -613,6 +643,30 @@ func (d *Database) startBackgroundWorkers() {
 			defer d.backgroundWG.Done()
 			d.runAuthSessionCleanupLoop(stop)
 		}(stop)
+	}
+	if d.authService != nil && d.authService.HasProviderAuth() {
+		d.backgroundWG.Add(1)
+		go func(stop <-chan struct{}) {
+			defer d.backgroundWG.Done()
+			d.runProviderFlowCleanupLoop(stop)
+		}(stop)
+	}
+}
+
+func (d *Database) runProviderFlowCleanupLoop(stop <-chan struct{}) {
+	if d == nil || d.authService == nil || d.providerFlowCleanup <= 0 {
+		return
+	}
+	_, _ = d.authService.CleanupExpiredProviderFlows(time.Now(), 512)
+	ticker := time.NewTicker(d.providerFlowCleanup)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_, _ = d.authService.CleanupExpiredProviderFlows(time.Now(), 512)
+		case <-stop:
+			return
+		}
 	}
 }
 
@@ -2203,13 +2257,19 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	if _, exists := a.tables[systemAuthSessionTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemAuthSessionTableName)
 	}
+	if _, exists := a.tables[systemProviderIdentityTableName]; exists {
+		panic("flop: table name reserved for system use: " + systemProviderIdentityTableName)
+	}
+	if _, exists := a.tables[systemProviderFlowTableName]; exists {
+		panic("flop: table name reserved for system use: " + systemProviderFlowTableName)
+	}
 	if _, exists := a.tables[systemWorkflowTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemWorkflowTableName)
 	}
 	if _, exists := a.tables[systemWorkflowRunTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemWorkflowRunTableName)
 	}
-	defs := make(map[string]*schema.TableDef, len(a.tables)+4)
+	defs := make(map[string]*schema.TableDef, len(a.tables)+6)
 
 	for name, ts := range a.tables {
 		fields := make([]schema.CompiledField, 0, len(ts.Fields))
@@ -2316,6 +2376,8 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 
 	defs[systemSuperadminTableName] = systemSuperadminTableDef()
 	defs[systemAuthSessionTableName] = systemAuthSessionTableDef()
+	defs[systemProviderIdentityTableName] = systemProviderIdentityTableDef()
+	defs[systemProviderFlowTableName] = systemProviderFlowTableDef()
 	for name, def := range workflowSystemTableDefs() {
 		defs[name] = def
 	}
@@ -2402,6 +2464,67 @@ func systemAuthSessionTableDef() *schema.TableDef {
 	}
 }
 
+func systemProviderIdentityTableDef() *schema.TableDef {
+	fields := []schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true},
+		{Name: "provider_key", Kind: schema.KindString, Required: true},
+		{Name: "issuer", Kind: schema.KindString, Required: true},
+		{Name: "subject", Kind: schema.KindString, Required: true},
+		{Name: "principal_id", Kind: schema.KindString, Required: true},
+		{Name: "display_name", Kind: schema.KindString, Required: false},
+		{Name: "email", Kind: schema.KindString, Required: false},
+		{Name: "email_verified", Kind: schema.KindBoolean, Required: false},
+		{Name: "claims", Kind: schema.KindString, Required: false},
+		{Name: "created_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "updated_at", Kind: schema.KindTimestamp, Required: true},
+	}
+	return &schema.TableDef{
+		Name: systemProviderIdentityTableName, CompiledSchema: schema.NewCompiledSchema(fields), SystemOwner: "provider_auth",
+		Indexes: []schema.IndexDef{
+			{Fields: []string{"issuer", "subject"}, Unique: true, Type: schema.IndexTypeHash},
+			{Fields: []string{"principal_id"}, Unique: false, Type: schema.IndexTypeHash},
+		},
+	}
+}
+
+func systemProviderFlowTableDef() *schema.TableDef {
+	fields := []schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true},
+		{Name: "intent", Kind: schema.KindString, Required: true},
+		{Name: "provider_key", Kind: schema.KindString, Required: true},
+		{Name: "expected_issuer", Kind: schema.KindString, Required: true},
+		{Name: "initiating_principal_id", Kind: schema.KindString, Required: false},
+		{Name: "initiating_session_id", Kind: schema.KindString, Required: false},
+		{Name: "resolved_principal_id", Kind: schema.KindString, Required: false},
+		{Name: "return_url", Kind: schema.KindString, Required: false},
+		{Name: "callback_uri", Kind: schema.KindString, Required: true},
+		{Name: "state_digest", Kind: schema.KindString, Required: false},
+		{Name: "verifier_ciphertext", Kind: schema.KindString, Required: false},
+		{Name: "nonce_ciphertext", Kind: schema.KindString, Required: false},
+		{Name: "expires_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "phase", Kind: schema.KindString, Required: true},
+		{Name: "outcome", Kind: schema.KindString, Required: false},
+		{Name: "result_digest", Kind: schema.KindString, Required: false},
+		{Name: "identity_issuer", Kind: schema.KindString, Required: false},
+		{Name: "identity_subject", Kind: schema.KindString, Required: false},
+		{Name: "identity_display_name", Kind: schema.KindString, Required: false},
+		{Name: "identity_email", Kind: schema.KindString, Required: false},
+		{Name: "identity_email_verified", Kind: schema.KindBoolean, Required: false},
+		{Name: "identity_claims", Kind: schema.KindString, Required: false},
+		{Name: "created_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "callback_consumed_at", Kind: schema.KindTimestamp, Required: false},
+		{Name: "result_consumed_at", Kind: schema.KindTimestamp, Required: false},
+	}
+	return &schema.TableDef{
+		Name: systemProviderFlowTableName, CompiledSchema: schema.NewCompiledSchema(fields), SystemOwner: "provider_auth",
+		Indexes: []schema.IndexDef{
+			{Fields: []string{"state_digest"}, Unique: false, Type: schema.IndexTypeHash},
+			{Fields: []string{"result_digest"}, Unique: false, Type: schema.IndexTypeHash},
+			{Fields: []string{"expires_at"}, Unique: false, Type: schema.IndexTypeHash},
+		},
+	}
+}
+
 func mapKind(kind string) schema.FieldKind {
 	switch kind {
 	case "string":
@@ -2449,7 +2572,7 @@ type EngineAdminProvider struct {
 func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
 	for name, t := range p.DB.db.Tables {
-		if isWorkflowSystemTable(name) {
+		if isAdminHiddenSystemTable(name) {
 			continue
 		}
 		def := t.GetDef()
@@ -2511,7 +2634,7 @@ func (p *EngineAdminProvider) AdminWorkflowAPIKeyConfigured() bool {
 func (p *EngineAdminProvider) AdminArchiveTables() ([]AdminTable, error) {
 	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
 	for name, t := range p.DB.db.Tables {
-		if isWorkflowSystemTable(name) {
+		if isAdminHiddenSystemTable(name) {
 			continue
 		}
 		records, total, err := t.ScanArchived(1, 0)
@@ -2609,7 +2732,7 @@ func marshalArchiveSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 }
 
 func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return AdminRowsPage{}, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2653,7 +2776,7 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 }
 
 func (p *EngineAdminProvider) AdminArchiveRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return AdminRowsPage{}, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2783,7 +2906,7 @@ func adminFileLabelFromString(s string) string {
 }
 
 func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int, indexField, indexValue string) ([]map[string]any, int, bool, error) {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return nil, 0, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2834,7 +2957,7 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 }
 
 func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) (map[string]any, error) {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return nil, errors.New("workflow system tables are managed through the workflow API")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
@@ -2866,7 +2989,7 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 }
 
 func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string]any) error {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return errors.New("workflow system tables are managed through the workflow API")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
@@ -2888,7 +3011,7 @@ func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string
 }
 
 func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return errors.New("workflow system tables are managed through the workflow API")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
@@ -2909,7 +3032,7 @@ func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
 }
 
 func (p *EngineAdminProvider) AdminArchiveRow(table, pk string) error {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return errors.New("workflow system tables are managed through the workflow API")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
@@ -2930,7 +3053,7 @@ func (p *EngineAdminProvider) AdminArchiveRow(table, pk string) error {
 }
 
 func (p *EngineAdminProvider) AdminRestoreRow(table, archiveID string) error {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return errors.New("workflow system tables are managed through the workflow API")
 	}
 	ti := p.DB.Table(table)
@@ -2941,7 +3064,7 @@ func (p *EngineAdminProvider) AdminRestoreRow(table, archiveID string) error {
 }
 
 func (p *EngineAdminProvider) AdminDeleteArchivedRow(table, archiveID string) error {
-	if isWorkflowSystemTable(table) {
+	if isAdminHiddenSystemTable(table) {
 		return errors.New("workflow system tables are managed through the workflow API")
 	}
 	ti := p.DB.Table(table)

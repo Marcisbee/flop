@@ -129,6 +129,7 @@ type StoredSchema struct {
 type StoredTableMeta struct {
 	CurrentSchemaVersion int                   `json:"currentSchemaVersion"`
 	Schemas              map[int]*StoredSchema `json:"schemas"`
+	SystemOwner          string                `json:"systemOwner,omitempty"`
 }
 
 // StoredMeta is the top-level JSON payload of _meta.flop.
@@ -177,6 +178,7 @@ type TableDef struct {
 	Indexes        []IndexDef
 	Auth           bool
 	Migrations     []MigrationStep
+	SystemOwner    string
 }
 
 // AccessPolicy controls endpoint access.

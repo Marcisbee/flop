@@ -35,6 +35,11 @@ type Config struct {
 	RequireAuthEmail      bool               `json:"-"`
 	AuthPayloads          *AuthPayloadConfig `json:"-"`
 	Workflow              *WorkflowConfig    `json:"-"`
+	Providers             []ProviderAdapter  `json:"-"`
+	ProviderCallbackURL   string             `json:"-"`
+	ProviderReturnURLs    []string           `json:"-"`
+	ProviderFlowTTL       time.Duration      `json:"-"`
+	ProviderFlowCleanup   time.Duration      `json:"-"`
 }
 
 type AuthPayloadConfig struct {

@@ -630,6 +630,17 @@ func (h *APIHandler) handleSchema(w http.ResponseWriter) {
 			Name: rd.Name, Method: http.MethodPost, Path: "/api/reduce/" + rd.Name, Type: "reducer", Access: rd.Access,
 		})
 	}
+	if h.db != nil && h.db.authService != nil && h.db.authService.HasProviderAuth() {
+		out = append(out,
+			endpoint{Name: "auth_provider_discovery", Method: http.MethodGet, Path: "/api/auth/providers", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_start", Method: http.MethodPost, Path: "/api/auth/provider/start", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_callback", Method: http.MethodGet, Path: "/api/auth/provider/callback", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_result", Method: http.MethodPost, Path: "/api/auth/provider/result", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_link_confirm", Method: http.MethodPost, Path: "/api/auth/provider/link/confirm", Type: "auth", Access: Authenticated()},
+			endpoint{Name: "auth_provider_identities", Method: http.MethodGet, Path: "/api/auth/provider/identities", Type: "auth", Access: Authenticated()},
+			endpoint{Name: "auth_provider_unlink", Method: http.MethodPost, Path: "/api/auth/provider/unlink", Type: "auth", Access: Authenticated()},
+		)
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type == out[j].Type {
 			return out[i].Name < out[j].Name
@@ -691,6 +702,157 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/auth/providers":
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"providers": h.db.authService.ProviderDescriptors()})
+	case "/api/auth/provider/start":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var in struct {
+			Provider  string `json:"provider"`
+			Intent    string `json:"intent"`
+			ReturnURL string `json:"returnUrl"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonProviderError(w, ProviderOutcomeInvalidFlow, http.StatusBadRequest)
+			return
+		}
+		auth := h.authFromRequest(r)
+		start, err := h.db.authService.BeginProviderFlow(r.Context(), in.Provider, in.Intent, in.ReturnURL, schemaAuthContext(auth))
+		if err != nil {
+			writeProviderServiceError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, start)
+	case "/api/auth/provider/callback":
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		result, err := h.db.authService.HandleProviderCallback(r.Context(), server.ProviderCallbackInput{
+			State: r.URL.Query().Get("state"), Code: r.URL.Query().Get("code"),
+			Error: r.URL.Query().Get("error"), Issuer: r.URL.Query().Get("iss"),
+		})
+		if err != nil {
+			writeProviderServiceError(w, err)
+			return
+		}
+		if result.ReturnURL == "" {
+			jsonResponse(w, http.StatusOK, map[string]any{"resultCode": result.ResultCode})
+			return
+		}
+		target, parseErr := url.Parse(result.ReturnURL)
+		if parseErr != nil {
+			jsonProviderError(w, ProviderOutcomeInvalidFlow, http.StatusBadRequest)
+			return
+		}
+		query := target.Query()
+		query.Set("result", result.ResultCode)
+		target.RawQuery = query.Encode()
+		http.Redirect(w, r, target.String(), http.StatusSeeOther)
+	case "/api/auth/provider/result":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var in struct {
+			ResultCode string `json:"resultCode"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonProviderError(w, ProviderOutcomeInvalidFlow, http.StatusBadRequest)
+			return
+		}
+		result, err := h.db.authService.RedeemProviderResult(in.ResultCode)
+		if err != nil {
+			writeProviderServiceError(w, err)
+			return
+		}
+		payload := map[string]any{"outcome": result.Outcome, "provider": result.Provider}
+		if result.ConfirmationCode != "" {
+			payload["confirmationCode"] = result.ConfirmationCode
+		}
+		if result.Auth != nil && result.Token != "" {
+			appAuth := authContextFromSchema(result.Auth)
+			userPayload, buildErr := h.db.BuildAuthUserPayload(appAuth)
+			if buildErr != nil {
+				jsonError(w, buildErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			mePayload, buildErr := h.db.BuildAuthMePayload(appAuth)
+			if buildErr != nil {
+				jsonError(w, buildErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			payload["token"], payload["refreshToken"] = result.Token, result.RefreshToken
+			payload["user"], payload["me"] = userPayload, mePayload
+		}
+		jsonResponse(w, http.StatusOK, payload)
+	case "/api/auth/provider/link/confirm":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth := h.authFromRequest(r)
+		if auth == nil {
+			jsonProviderError(w, "authentication_required", http.StatusUnauthorized)
+			return
+		}
+		var in struct {
+			ConfirmationCode string `json:"confirmationCode"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonProviderError(w, ProviderOutcomeInvalidFlow, http.StatusBadRequest)
+			return
+		}
+		identity, err := h.db.authService.ConfirmProviderLink(in.ConfirmationCode, schemaAuthContext(auth))
+		if err != nil {
+			writeProviderServiceError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "identity": identity})
+	case "/api/auth/provider/identities":
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth := h.authFromRequest(r)
+		if auth == nil {
+			jsonProviderError(w, "authentication_required", http.StatusUnauthorized)
+			return
+		}
+		identities, err := h.db.authService.ListProviderIdentities(schemaAuthContext(auth))
+		if err != nil {
+			writeProviderServiceError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"identities": identities})
+	case "/api/auth/provider/unlink":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		auth := h.authFromRequest(r)
+		if auth == nil {
+			jsonProviderError(w, "authentication_required", http.StatusUnauthorized)
+			return
+		}
+		var in struct {
+			IdentityID string `json:"identityId"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonProviderError(w, ProviderOutcomeInvalidFlow, http.StatusBadRequest)
+			return
+		}
+		if err := h.db.authService.UnlinkProviderIdentity(in.IdentityID, schemaAuthContext(auth)); err != nil {
+			writeProviderServiceError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 	case "/api/auth/register":
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1658,6 +1820,34 @@ func jsonResponse(w http.ResponseWriter, status int, payload any) {
 
 func jsonError(w http.ResponseWriter, message string, status int) {
 	jsonResponse(w, status, map[string]any{"error": message})
+}
+
+func jsonProviderError(w http.ResponseWriter, code string, status int) {
+	jsonResponse(w, status, map[string]any{"error": code, "code": code})
+}
+
+func writeProviderServiceError(w http.ResponseWriter, err error) {
+	code := server.ProviderAuthErrorCode(err)
+	status := http.StatusBadRequest
+	switch code {
+	case "authentication_required":
+		status = http.StatusUnauthorized
+	case ProviderOutcomeIdentityConflict, ProviderOutcomeLastMethod:
+		status = http.StatusConflict
+	case "provider_internal_error":
+		status = http.StatusInternalServerError
+	}
+	jsonProviderError(w, code, status)
+}
+
+func schemaAuthContext(auth *AuthContext) *schema.AuthContext {
+	if auth == nil {
+		return nil
+	}
+	return &schema.AuthContext{
+		ID: auth.ID, Email: auth.Email, Roles: append([]string(nil), auth.Roles...),
+		PrincipalType: auth.PrincipalType, SessionID: auth.SessionID, InstanceID: auth.InstanceID,
+	}
 }
 
 func parseCSVQuery(raw string) []string {
