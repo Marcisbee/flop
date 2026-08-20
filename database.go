@@ -37,6 +37,7 @@ type Database struct {
 	app                  *App
 	db                   *engine.Database
 	authService          *server.AuthService
+	providerAuth         *providerAuthService
 	superadminService    *server.SuperadminService
 	emailMu              sync.RWMutex
 	emailSettings        EmailSettings
@@ -86,6 +87,8 @@ type AnalyticsEvent struct {
 
 const systemSuperadminTableName = "_superadmin"
 const systemAuthSessionTableName = "_auth_sessions"
+const systemAuthIdentityTableName = "_auth_identities"
+const systemAuthProviderFlowTableName = "_auth_provider_flows"
 
 const defaultAuthSessionRetention = 30 * 24 * time.Hour
 const defaultAuthSessionCleanupInterval = time.Hour
@@ -160,6 +163,9 @@ type AutocompleteIndex struct {
 func (a *App) Open() (*Database, error) {
 	if a == nil {
 		return nil, fmt.Errorf("flop: app is nil")
+	}
+	if err := validateAuthProviderConfigs(a.config.AuthProviders); err != nil {
+		return nil, err
 	}
 
 	tableDefs := a.buildTableDefs()
@@ -243,6 +249,7 @@ func (a *App) Open() (*Database, error) {
 	sessionTable := db.GetTable(systemAuthSessionTableName)
 	if authTable := db.GetAuthTable(); authTable != nil {
 		d.authService = server.NewAuthService(authTable, sessionTable, secret, d.authInstanceID)
+		d.providerAuth = newProviderAuthService(d, a.config.AuthProviders, secret)
 	}
 	if superadminTable := db.GetTable(systemSuperadminTableName); superadminTable != nil {
 		d.superadminService = server.NewSuperadminService(superadminTable, sessionTable, secret, d.authInstanceID)
@@ -375,6 +382,7 @@ func (d *Database) SetJWTSecret(secret string) {
 	d.jwtSecret = secret
 	if d.authService != nil {
 		d.authService = server.NewAuthService(d.db.GetAuthTable(), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
+		d.providerAuth = newProviderAuthService(d, d.app.config.AuthProviders, secret)
 	}
 	if d.superadminService != nil {
 		d.superadminService = server.NewSuperadminService(d.db.GetTable(systemSuperadminTableName), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
@@ -567,6 +575,7 @@ func (d *Database) reopen() (*Database, error) {
 	d.app = reopened.app
 	d.db = reopened.db
 	d.authService = reopened.authService
+	d.providerAuth = newProviderAuthService(d, reopened.app.config.AuthProviders, reopened.jwtSecret)
 	d.superadminService = reopened.superadminService
 	d.emailSettings = reopened.emailSettings
 	d.mailer = reopened.mailer
@@ -621,12 +630,14 @@ func (d *Database) runAuthSessionCleanupLoop(stop <-chan struct{}) {
 		return
 	}
 	d.cleanupExpiredAuthSessions(time.Now())
+	d.cleanupExpiredProviderFlows(time.Now())
 	ticker := time.NewTicker(d.authSessionCleanup)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			d.cleanupExpiredAuthSessions(time.Now())
+			d.cleanupExpiredProviderFlows(time.Now())
 		case <-stop:
 			return
 		}
@@ -2203,6 +2214,12 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	if _, exists := a.tables[systemAuthSessionTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemAuthSessionTableName)
 	}
+	if _, exists := a.tables[systemAuthIdentityTableName]; exists {
+		panic("flop: table name reserved for system use: " + systemAuthIdentityTableName)
+	}
+	if _, exists := a.tables[systemAuthProviderFlowTableName]; exists {
+		panic("flop: table name reserved for system use: " + systemAuthProviderFlowTableName)
+	}
 	if _, exists := a.tables[systemWorkflowTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemWorkflowTableName)
 	}
@@ -2316,6 +2333,8 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 
 	defs[systemSuperadminTableName] = systemSuperadminTableDef()
 	defs[systemAuthSessionTableName] = systemAuthSessionTableDef()
+	defs[systemAuthIdentityTableName] = systemAuthIdentityTableDef()
+	defs[systemAuthProviderFlowTableName] = systemAuthProviderFlowTableDef()
 	for name, def := range workflowSystemTableDefs() {
 		defs[name] = def
 	}
@@ -2391,6 +2410,8 @@ func systemAuthSessionTableDef() *schema.TableDef {
 		{Name: "user_agent", Kind: schema.KindString, Required: false},
 		{Name: "ip", Kind: schema.KindString, Required: false},
 		{Name: "reason", Kind: schema.KindString, Required: false},
+		{Name: "auth_method", Kind: schema.KindString, Required: false},
+		{Name: "auth_identity_id", Kind: schema.KindString, Required: false},
 	}
 	return &schema.TableDef{
 		Name:           systemAuthSessionTableName,
@@ -2398,6 +2419,65 @@ func systemAuthSessionTableDef() *schema.TableDef {
 		Indexes: []schema.IndexDef{
 			{Fields: []string{"principal_id"}, Unique: false, Type: schema.IndexTypeHash},
 			{Fields: []string{"instance_id"}, Unique: false, Type: schema.IndexTypeHash},
+			{Fields: []string{"auth_identity_id"}, Unique: false, Type: schema.IndexTypeHash},
+		},
+	}
+}
+
+func systemAuthIdentityTableDef() *schema.TableDef {
+	fields := []schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
+		{Name: "principal_id", Kind: schema.KindString, Required: true},
+		{Name: "provider", Kind: schema.KindString, Required: true},
+		{Name: "issuer", Kind: schema.KindString, Required: true},
+		{Name: "subject", Kind: schema.KindString, Required: true},
+		{Name: "display_name", Kind: schema.KindString, Required: false},
+		{Name: "email", Kind: schema.KindString, Required: false},
+		{Name: "email_verified", Kind: schema.KindBoolean, Required: false},
+		{Name: "linked_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "last_authenticated_at", Kind: schema.KindTimestamp, Required: true},
+	}
+	return &schema.TableDef{
+		Name:           systemAuthIdentityTableName,
+		CompiledSchema: schema.NewCompiledSchema(fields),
+		Indexes: []schema.IndexDef{
+			{Fields: []string{"issuer", "subject"}, Unique: true, Type: schema.IndexTypeHash},
+			{Fields: []string{"principal_id"}, Unique: false, Type: schema.IndexTypeHash},
+		},
+	}
+}
+
+func systemAuthProviderFlowTableDef() *schema.TableDef {
+	fields := []schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
+		{Name: "state_hash", Kind: schema.KindString, Required: true},
+		{Name: "provider", Kind: schema.KindString, Required: true},
+		{Name: "intent", Kind: schema.KindString, Required: true},
+		{Name: "link_principal_id", Kind: schema.KindString, Required: false},
+		{Name: "link_session_id", Kind: schema.KindString, Required: false},
+		{Name: "secrets_ciphertext", Kind: schema.KindString, Required: true},
+		{Name: "redirect_uri", Kind: schema.KindString, Required: true},
+		{Name: "return_to", Kind: schema.KindString, Required: false},
+		{Name: "created_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "expires_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "callback_consumed_at", Kind: schema.KindTimestamp, Required: false},
+		{Name: "completion_hash", Kind: schema.KindString, Required: false},
+		{Name: "completion_expires_at", Kind: schema.KindTimestamp, Required: false},
+		{Name: "completion_consumed_at", Kind: schema.KindTimestamp, Required: false},
+		{Name: "result_provider", Kind: schema.KindString, Required: false},
+		{Name: "result_issuer", Kind: schema.KindString, Required: false},
+		{Name: "result_subject", Kind: schema.KindString, Required: false},
+		{Name: "result_display_name", Kind: schema.KindString, Required: false},
+		{Name: "result_email", Kind: schema.KindString, Required: false},
+		{Name: "result_email_verified", Kind: schema.KindBoolean, Required: false},
+		{Name: "result_error_code", Kind: schema.KindString, Required: false},
+	}
+	return &schema.TableDef{
+		Name:           systemAuthProviderFlowTableName,
+		CompiledSchema: schema.NewCompiledSchema(fields),
+		Indexes: []schema.IndexDef{
+			{Fields: []string{"state_hash"}, Unique: true, Type: schema.IndexTypeHash},
+			{Fields: []string{"completion_hash"}, Unique: true, Type: schema.IndexTypeHash},
 		},
 	}
 }
@@ -2449,7 +2529,7 @@ type EngineAdminProvider struct {
 func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
 	for name, t := range p.DB.db.Tables {
-		if isWorkflowSystemTable(name) {
+		if isWorkflowSystemTable(name) || name == systemAuthProviderFlowTableName {
 			continue
 		}
 		def := t.GetDef()
@@ -2511,7 +2591,7 @@ func (p *EngineAdminProvider) AdminWorkflowAPIKeyConfigured() bool {
 func (p *EngineAdminProvider) AdminArchiveTables() ([]AdminTable, error) {
 	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
 	for name, t := range p.DB.db.Tables {
-		if isWorkflowSystemTable(name) {
+		if isWorkflowSystemTable(name) || name == systemAuthProviderFlowTableName {
 			continue
 		}
 		records, total, err := t.ScanArchived(1, 0)
@@ -2609,7 +2689,7 @@ func marshalArchiveSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 }
 
 func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
-	if isWorkflowSystemTable(table) {
+	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
 		return AdminRowsPage{}, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2653,7 +2733,7 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 }
 
 func (p *EngineAdminProvider) AdminArchiveRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
-	if isWorkflowSystemTable(table) {
+	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
 		return AdminRowsPage{}, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2783,7 +2863,7 @@ func adminFileLabelFromString(s string) string {
 }
 
 func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int, indexField, indexValue string) ([]map[string]any, int, bool, error) {
-	if isWorkflowSystemTable(table) {
+	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
 		return nil, 0, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2834,7 +2914,7 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 }
 
 func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) (map[string]any, error) {
-	if isWorkflowSystemTable(table) {
+	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
 		return nil, errors.New("workflow system tables are managed through the workflow API")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
@@ -2866,7 +2946,7 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 }
 
 func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string]any) error {
-	if isWorkflowSystemTable(table) {
+	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
 		return errors.New("workflow system tables are managed through the workflow API")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
@@ -2888,7 +2968,7 @@ func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string
 }
 
 func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
-	if isWorkflowSystemTable(table) {
+	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
 		return errors.New("workflow system tables are managed through the workflow API")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
@@ -2909,7 +2989,7 @@ func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
 }
 
 func (p *EngineAdminProvider) AdminArchiveRow(table, pk string) error {
-	if isWorkflowSystemTable(table) {
+	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
 		return errors.New("workflow system tables are managed through the workflow API")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {

@@ -24,17 +24,18 @@ var ErrNotImplemented = errors.New("flop: not implemented")
 var ErrAccessDenied = errors.New("flop: access denied")
 
 type Config struct {
-	DataDir               string             `json:"dataDir,omitempty"`
-	SyncMode              string             `json:"syncMode,omitempty"`
-	AsyncSecondaryIndexes bool               `json:"asyncSecondaryIndexes,omitempty"`
-	RequestLogRetention   time.Duration      `json:"-"`
-	AuthSessionRetention  time.Duration      `json:"-"`
-	AuthSessionCleanup    time.Duration      `json:"-"`
-	EnablePprof           bool               `json:"-"`
-	SMTP                  *SMTPConfig        `json:"-"`
-	RequireAuthEmail      bool               `json:"-"`
-	AuthPayloads          *AuthPayloadConfig `json:"-"`
-	Workflow              *WorkflowConfig    `json:"-"`
+	DataDir               string                        `json:"dataDir,omitempty"`
+	SyncMode              string                        `json:"syncMode,omitempty"`
+	AsyncSecondaryIndexes bool                          `json:"asyncSecondaryIndexes,omitempty"`
+	RequestLogRetention   time.Duration                 `json:"-"`
+	AuthSessionRetention  time.Duration                 `json:"-"`
+	AuthSessionCleanup    time.Duration                 `json:"-"`
+	EnablePprof           bool                          `json:"-"`
+	SMTP                  *SMTPConfig                   `json:"-"`
+	RequireAuthEmail      bool                          `json:"-"`
+	AuthPayloads          *AuthPayloadConfig            `json:"-"`
+	AuthProviders         map[string]AuthProviderConfig `json:"-"`
+	Workflow              *WorkflowConfig               `json:"-"`
 }
 
 type AuthPayloadConfig struct {

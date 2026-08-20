@@ -251,6 +251,22 @@ func (db *Database) EnqueueCommit(walBuffers map[string]*walBufEntry) error {
 	return db.coordinatedFlush(walBuffers)
 }
 
+// DiscardTransaction releases pending-key visibility guards for a buffered
+// transaction after the caller has rolled its in-memory mutations back.
+func (db *Database) DiscardTransaction(walBuffers map[string]*walBufEntry) {
+	if db == nil {
+		return
+	}
+	for tableName, entry := range walBuffers {
+		if entry == nil {
+			continue
+		}
+		if table := db.Tables[tableName]; table != nil {
+			table.clearPendingKeys(entry.pending)
+		}
+	}
+}
+
 // EnqueueCommitLocked is like EnqueueCommit but the caller already holds the table lock.
 // Used by Insert/Update/Delete for non-transaction single-table operations.
 func (db *Database) EnqueueCommitLocked(walBuffers map[string]*walBufEntry) error {
