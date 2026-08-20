@@ -70,13 +70,19 @@ func providerError(code, message string, status int, cause ...error) error {
 }
 
 type providerAuthService struct {
-	db        *Database
-	providers map[string]AuthProviderConfig
-	aead      cipher.AEAD
-	now       func() time.Time
-	random    io.Reader
-	maxFlows  int
-	mu        sync.Locker
+	db             *Database
+	providers      map[string]AuthProviderConfig
+	apps           map[string]AuthProviderAppConfig
+	aead           cipher.AEAD
+	tokenAEAD      map[string]cipher.AEAD
+	activeKey      string
+	initErr        error
+	now            func() time.Time
+	random         io.Reader
+	maxFlows       int
+	mu             sync.Locker
+	grantLocks     sync.Map
+	unusableGrants sync.Map
 }
 
 type providerFlowSecrets struct {
@@ -99,6 +105,7 @@ type providerCompleteResult struct {
 	RefreshToken string
 	Auth         *schema.AuthContext
 	Linked       *providerIdentityView
+	Grant        *providerGrantView
 }
 
 type providerIdentityView struct {
@@ -113,12 +120,16 @@ type providerIdentityView struct {
 }
 
 type providerDescriptor struct {
-	Key      string `json:"key"`
-	Issuer   string `json:"issuer"`
-	PKCES256 bool   `json:"pkceS256"`
+	Key            string                   `json:"key"`
+	Issuer         string                   `json:"issuer"`
+	PKCES256       bool                     `json:"pkceS256"`
+	Scopes         []string                 `json:"scopes,omitempty"`
+	DefaultScopes  []string                 `json:"defaultScopes,omitempty"`
+	RequiredScopes []string                 `json:"requiredScopes,omitempty"`
+	Capabilities   AuthProviderCapabilities `json:"capabilities"`
 }
 
-func newProviderAuthService(db *Database, providers map[string]AuthProviderConfig, secret string) *providerAuthService {
+func newProviderAuthService(db *Database, providers map[string]AuthProviderConfig, apps map[string]AuthProviderAppConfig, keys map[string][]byte, activeKey, secret string) *providerAuthService {
 	key := sha256.Sum256([]byte("flop/provider-flow/aead/v1\x00" + secret))
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
@@ -132,11 +143,39 @@ func newProviderAuthService(db *Database, providers map[string]AuthProviderConfi
 	for provider, config := range providers {
 		registered[provider] = config
 	}
+	normalizedApps := make(map[string]AuthProviderAppConfig, len(apps)+1)
+	for appID, config := range apps {
+		normalizedApps[appID] = cloneProviderAppConfig(config)
+	}
+	if len(providers) > 0 {
+		returns := []string{}
+		for _, config := range providers {
+			returns = append(returns, config.AllowedReturnURLs...)
+		}
+		normalizedApps["legacy"] = AuthProviderAppConfig{AllowedReturnURLs: canonicalStrings(returns), Providers: registered}
+	}
+	tokenAEAD := make(map[string]cipher.AEAD, len(keys))
+	for version, raw := range keys {
+		if len(raw) != 32 {
+			continue
+		}
+		keyBlock, keyErr := aes.NewCipher(raw)
+		if keyErr != nil {
+			continue
+		}
+		value, keyErr := cipher.NewGCM(keyBlock)
+		if keyErr == nil {
+			tokenAEAD[version] = value
+		}
+	}
 	locker := &sync.Mutex{}
 	service := &providerAuthService{
 		db:        db,
 		providers: registered,
+		apps:      normalizedApps,
 		aead:      aead,
+		tokenAEAD: tokenAEAD,
+		activeKey: activeKey,
 		now:       time.Now,
 		random:    rand.Reader,
 		maxFlows:  providerOutstandingFlowLimit,
@@ -145,7 +184,21 @@ func newProviderAuthService(db *Database, providers map[string]AuthProviderConfi
 	if db != nil && db.authService != nil {
 		db.authService.SetProviderSessionLocker(locker)
 	}
+	if db != nil {
+		service.initErr = service.syncRegistrations()
+	}
 	return service
+}
+
+func cloneProviderAppConfig(in AuthProviderAppConfig) AuthProviderAppConfig {
+	out := in
+	out.AllowedReturnURLs = append([]string(nil), in.AllowedReturnURLs...)
+	out.BackendCredentials = append([]string(nil), in.BackendCredentials...)
+	out.Providers = make(map[string]AuthProviderConfig, len(in.Providers))
+	for key, config := range in.Providers {
+		out.Providers[key] = config
+	}
+	return out
 }
 
 func validateAuthProviderConfigs(providers map[string]AuthProviderConfig) error {
@@ -171,6 +224,68 @@ func validateAuthProviderConfigs(providers map[string]AuthProviderConfig) error 
 			if err := validateConfiguredURL(returnTo, true); err != nil {
 				return fmt.Errorf("flop: auth provider %q return URL: %w", provider, err)
 			}
+		}
+	}
+	return nil
+}
+
+func validateAuthProviderAppConfigs(legacy map[string]AuthProviderConfig, apps map[string]AuthProviderAppConfig, keys map[string][]byte, active string) error {
+	clientOwners := map[string]string{}
+	needsKey := false
+	for provider, config := range legacy {
+		if config.ClientID != "" {
+			owner := "legacy/" + provider
+			if previous, ok := clientOwners[config.ClientID]; ok {
+				return fmt.Errorf("flop: provider registrations %q and %q reuse upstream client ID %q", previous, owner, config.ClientID)
+			}
+			clientOwners[config.ClientID] = owner
+		}
+		if config.ClientSecret != "" || len(config.AllowedScopes) > 0 {
+			needsKey = true
+		}
+	}
+	for appID, app := range apps {
+		if appID == "" || appID != strings.TrimSpace(appID) || appID == "legacy" {
+			return fmt.Errorf("flop: provider app ID must be non-empty and canonical (legacy is reserved)")
+		}
+		for _, raw := range app.AllowedReturnURLs {
+			if err := validateConfiguredURL(raw, true); err != nil {
+				return fmt.Errorf("flop: provider app %q return URL: %w", appID, err)
+			}
+		}
+		if len(app.BackendCredentials) > 0 {
+			needsKey = true
+		}
+		if err := validateAuthProviderConfigs(app.Providers); err != nil {
+			return fmt.Errorf("flop: provider app %q: %w", appID, err)
+		}
+		for provider, config := range app.Providers {
+			if config.ClientID != "" {
+				owner := appID + "/" + provider
+				if previous, ok := clientOwners[config.ClientID]; ok {
+					return fmt.Errorf("flop: provider registrations %q and %q reuse upstream client ID %q", previous, owner, config.ClientID)
+				}
+				clientOwners[config.ClientID] = owner
+			}
+			if config.ClientSecret != "" || len(config.AllowedScopes) > 0 {
+				needsKey = true
+			}
+			allowed := canonicalStrings(config.AllowedScopes)
+			for _, scope := range append(append([]string{}, config.DefaultScopes...), config.RequiredScopes...) {
+				if !exactStringMatch(allowed, scope) {
+					return fmt.Errorf("flop: provider app %q provider %q scope %q is not allowed", appID, provider, scope)
+				}
+			}
+		}
+	}
+	if needsKey {
+		if active == "" || len(keys[active]) != 32 {
+			return fmt.Errorf("flop: active provider secret key must select an exactly 32-byte key")
+		}
+	}
+	for version, key := range keys {
+		if version == "" || version != strings.TrimSpace(version) || len(key) != 32 {
+			return fmt.Errorf("flop: provider secret key %q must have a canonical version and exactly 32 bytes", version)
 		}
 	}
 	return nil
@@ -213,8 +328,26 @@ func (s *providerAuthService) descriptors() []providerDescriptor {
 	return out
 }
 
+func (s *providerAuthService) descriptorsForApp(appID string) ([]providerDescriptor, error) {
+	app, ok := s.apps[appID]
+	if !ok {
+		return nil, providerError("app_not_configured", "provider app not configured", 404)
+	}
+	out := make([]providerDescriptor, 0, len(app.Providers))
+	for key, config := range app.Providers {
+		_, grantCapable := config.Adapter.(AuthProviderGrantAdapter)
+		capabilities := AuthProviderCapabilities{Refresh: grantCapable, Revocation: grantCapable}
+		if advertised, ok := config.Adapter.(AuthProviderCapabilityAdapter); ok {
+			capabilities = advertised.ProviderCapabilities()
+		}
+		out = append(out, providerDescriptor{Key: key, Issuer: config.Issuer, PKCES256: !config.PKCEUnsupported, Scopes: canonicalStrings(config.AllowedScopes), DefaultScopes: canonicalStrings(config.DefaultScopes), RequiredScopes: canonicalStrings(config.RequiredScopes), Capabilities: capabilities})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
 func (s *providerAuthService) configured() bool {
-	return s != nil && len(s.providers) > 0
+	return s != nil && len(s.apps) > 0 && s.initErr == nil
 }
 
 func validateConfiguredURL(raw string, allowFragment bool) error {
@@ -240,22 +373,67 @@ func isLoopbackHost(host string) bool {
 }
 
 func (s *providerAuthService) start(ctx context.Context, provider, intent, returnTo string, auth *AuthContext) (*providerStartResult, error) {
-	config, err := s.providerConfig(provider)
+	return s.startForApp(ctx, "", provider, intent, returnTo, nil, "", auth)
+}
+
+func (s *providerAuthService) startForApp(ctx context.Context, appID, provider, intent, returnTo string, requestedScopes []string, incrementalGrantID string, auth *AuthContext) (*providerStartResult, error) {
+	if appID == "" && len(s.apps) == 1 {
+		for key := range s.apps {
+			appID = key
+		}
+	}
+	app, config, err := s.appProviderConfig(appID, provider)
 	if err != nil {
 		return nil, err
 	}
-	if intent != "sign_in" && intent != "link" {
-		return nil, providerError("invalid_intent", "intent must be sign_in or link", 400)
+	if intent != "sign_in" && intent != "link" && intent != "consent" {
+		return nil, providerError("invalid_intent", "intent must be sign_in, link, or consent", 400)
 	}
-	if returnTo != "" && !exactStringMatch(config.AllowedReturnURLs, returnTo) {
+	allowedReturns := canonicalStrings(append(append([]string{}, app.AllowedReturnURLs...), config.AllowedReturnURLs...))
+	if returnTo != "" && !exactStringMatch(allowedReturns, returnTo) {
 		return nil, providerError("return_not_allowed", "return destination not allowed", 400)
 	}
-	if intent == "link" {
+	if intent == "link" || intent == "consent" {
 		if auth == nil || auth.ID == "" || auth.SessionID == "" {
 			return nil, providerError("authentication_required", "authentication required", 401)
 		}
 		if err := s.db.authService.ValidateUserSession(auth.ID, auth.SessionID); err != nil {
 			return nil, providerError("authentication_required", "authentication required", 401, err)
+		}
+	}
+	scopes := canonicalStrings(requestedScopes)
+	if len(scopes) == 0 {
+		scopes = canonicalStrings(config.DefaultScopes)
+	}
+	scopes = canonicalStrings(append(scopes, config.RequiredScopes...))
+	allowedScopes := canonicalStrings(config.AllowedScopes)
+	if !scopeSubset(scopes, allowedScopes) {
+		return nil, providerError("scope_not_allowed", "requested provider scope is not configured", 400)
+	}
+	if len(scopes) > 0 {
+		if _, ok := config.Adapter.(AuthProviderGrantAdapter); !ok {
+			return nil, providerError("grant_not_supported", "provider adapter does not support token grants", 400)
+		}
+		if s.tokenAEAD[s.activeKey] == nil {
+			return nil, providerError("provider_key_unavailable", "provider token storage unavailable", 503)
+		}
+	}
+	registration, err := s.registration(appID, provider)
+	if err != nil {
+		return nil, err
+	}
+	clientSecret, err := s.registrationClientSecret(registration, config.ClientSecret)
+	if err != nil {
+		return nil, providerError("provider_key_unavailable", "provider credentials unavailable", 503, err)
+	}
+	if intent == "consent" {
+		grant, grantErr := s.db.Table(systemAuthProviderGrantTableName).Get(incrementalGrantID)
+		if grantErr != nil || grant == nil || toString(grant["principal_id"]) != auth.ID || toString(grant["registration_id"]) != toString(registration["id"]) {
+			return nil, providerError("grant_not_found", "provider grant not found", 404)
+		}
+		scopes = canonicalStrings(append(scopes, storedStrings(grant["granted_scopes"])...))
+		if !scopeSubset(scopes, allowedScopes) {
+			return nil, providerError("scope_not_allowed", "existing grant contains a scope that is no longer configured", 409)
 		}
 	}
 
@@ -280,25 +458,36 @@ func (s *providerAuthService) start(ctx context.Context, provider, intent, retur
 		method = "S256"
 	}
 
-	sealed, err := s.sealSecrets(providerFlowSecrets{Nonce: nonce, PKCEVerifier: verifier})
+	now := s.now().Unix()
+	stateHash := hashProviderToken(state)
+	sealed := ""
+	secretsKeyVersion := ""
+	if s.tokenAEAD[s.activeKey] != nil {
+		sealed, secretsKeyVersion, err = s.sealProviderValue("flow-secrets", appID, toString(registration["id"]), stateHash, providerFlowSecrets{Nonce: nonce, PKCEVerifier: verifier})
+	} else {
+		sealed, err = s.sealSecrets(providerFlowSecrets{Nonce: nonce, PKCEVerifier: verifier})
+	}
 	if err != nil {
 		return nil, providerError("provider_flow_failed", "could not start provider authentication", 500, err)
 	}
-	now := s.now().Unix()
-	stateHash := hashProviderToken(state)
 	row := map[string]any{
-		"state_hash":         stateHash,
-		"completion_hash":    "pending:" + stateHash,
-		"provider":           provider,
-		"intent":             intent,
-		"secrets_ciphertext": sealed,
-		"redirect_uri":       config.RedirectURI,
-		"return_to":          returnTo,
-		"created_at":         now,
-		"expires_at":         now + int64(providerFlowTTL/time.Second),
-		"phase":              providerFlowPhaseAuthorizationProcessing,
+		"state_hash":           stateHash,
+		"completion_hash":      "pending:" + stateHash,
+		"provider":             provider,
+		"app_id":               appID,
+		"registration_id":      toString(registration["id"]),
+		"requested_scopes":     scopes,
+		"incremental_grant_id": incrementalGrantID,
+		"intent":               intent,
+		"secrets_ciphertext":   sealed,
+		"secrets_key_version":  secretsKeyVersion,
+		"redirect_uri":         config.RedirectURI,
+		"return_to":            returnTo,
+		"created_at":           now,
+		"expires_at":           now + int64(providerFlowTTL/time.Second),
+		"phase":                providerFlowPhaseAuthorizationProcessing,
 	}
-	if intent == "link" {
+	if intent == "link" || intent == "consent" {
 		row["link_principal_id"] = auth.ID
 		row["link_session_id"] = auth.SessionID
 	}
@@ -321,8 +510,8 @@ func (s *providerAuthService) start(ctx context.Context, provider, intent, retur
 	}
 	flowID := toString(inserted["id"])
 	authorizationURL, adapterErr := config.Adapter.AuthorizationURL(ctx, AuthProviderAuthorizationRequest{
-		Provider: provider, State: state, Nonce: nonce, RedirectURI: config.RedirectURI,
-		CodeChallenge: challenge, CodeChallengeMethod: method,
+		AppID: appID, Provider: provider, State: state, Nonce: nonce, RedirectURI: config.RedirectURI,
+		CodeChallenge: challenge, CodeChallengeMethod: method, ClientID: config.ClientID, ClientSecret: clientSecret, Scopes: scopes,
 	})
 	var authorizationURLErr error
 	if adapterErr == nil {
@@ -377,16 +566,32 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 		return nil, providerError("provider_mismatch", "provider callback does not match flow", 400)
 	}
 	provider = flowProvider
-	config, err := s.providerConfig(provider)
+	appID := toString(flow["app_id"])
+	_, config, err := s.appProviderConfig(appID, provider)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, err
+	}
+	registration, registrationErr := s.registration(appID, provider)
+	if registrationErr != nil || toString(registration["id"]) != toString(flow["registration_id"]) {
+		s.mu.Unlock()
+		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400, registrationErr)
+	}
+	clientSecret, secretErr := s.registrationClientSecret(registration, config.ClientSecret)
+	if secretErr != nil {
+		s.mu.Unlock()
+		return nil, providerError("provider_key_unavailable", "provider credentials unavailable", 503, secretErr)
 	}
 	if toString(flow["redirect_uri"]) != config.RedirectURI {
 		s.mu.Unlock()
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400)
 	}
-	secrets, err := s.openSecrets(toString(flow["secrets_ciphertext"]))
+	var secrets providerFlowSecrets
+	if version := toString(flow["secrets_key_version"]); version != "" {
+		err = s.openProviderValue("flow-secrets", appID, toString(flow["registration_id"]), toString(flow["state_hash"]), toString(flow["secrets_ciphertext"]), version, &secrets)
+	} else {
+		secrets, err = s.openSecrets(toString(flow["secrets_ciphertext"]))
+	}
 	if err != nil {
 		s.mu.Unlock()
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400, err)
@@ -401,34 +606,54 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 		return nil, providerError("provider_flow_failed", "provider callback could not be completed", 500, err)
 	}
 	if providerFailure != "" {
-		result, finalizeErr := s.finalizeCallbackLocked(flows, flowID, "provider_denied", nil)
+		result, finalizeErr := s.finalizeCallbackLocked(flows, flowID, "provider_denied", nil, nil)
 		s.mu.Unlock()
 		return result, finalizeErr
 	}
-	if code == "" {
-		result, finalizeErr := s.finalizeCallbackLocked(flows, flowID, "invalid_callback", nil)
+	codeOptional, _ := config.Adapter.(AuthProviderCodelessAdapter)
+	if code == "" && (codeOptional == nil || !codeOptional.CallbackCodeOptional()) {
+		result, finalizeErr := s.finalizeCallbackLocked(flows, flowID, "invalid_callback", nil, nil)
 		s.mu.Unlock()
 		return result, finalizeErr
 	}
 	exchangeRequest := AuthProviderCallbackRequest{
-		Provider: provider, Code: code, RedirectURI: config.RedirectURI,
+		AppID: appID, Provider: provider, Code: code, RedirectURI: config.RedirectURI,
 		CodeVerifier: secrets.PKCEVerifier, Nonce: secrets.Nonce, Parameters: cloneURLValues(params),
+		ClientID: config.ClientID, ClientSecret: clientSecret, RequestedScopes: storedStrings(flow["requested_scopes"]),
 	}
 	s.mu.Unlock()
 
-	identity, exchangeErr := config.Adapter.Exchange(ctx, exchangeRequest)
+	var exchange AuthProviderExchangeResult
+	var exchangeErr error
+	if adapter, ok := config.Adapter.(AuthProviderGrantAdapter); ok {
+		exchange, exchangeErr = adapter.ExchangeGrant(ctx, exchangeRequest)
+	} else {
+		exchange.Identity, exchangeErr = config.Adapter.Exchange(ctx, exchangeRequest)
+	}
+	identity := exchange.Identity
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if exchangeErr != nil {
-		return s.finalizeCallbackLocked(flows, flowID, "provider_exchange_failed", nil)
+		return s.finalizeCallbackLocked(flows, flowID, "provider_exchange_failed", nil, nil)
 	}
 	if identity.Provider != provider || identity.Issuer != config.Issuer || identity.Subject == "" || identity.Subject != strings.TrimSpace(identity.Subject) {
-		return s.finalizeCallbackLocked(flows, flowID, "provider_identity_invalid", nil)
+		return s.finalizeCallbackLocked(flows, flowID, "provider_identity_invalid", nil, nil)
 	}
-	return s.finalizeCallbackLocked(flows, flowID, "", &identity)
+	requested := storedStrings(flow["requested_scopes"])
+	exchange.GrantedScopes = canonicalStrings(append(exchange.GrantedScopes, exchange.Tokens.Scopes...))
+	if len(requested) > 0 && exchange.Tokens.AccessToken == "" {
+		return s.finalizeCallbackLocked(flows, flowID, "provider_token_invalid", nil, nil)
+	}
+	if !scopeSubset(exchange.GrantedScopes, config.AllowedScopes) {
+		return s.finalizeCallbackLocked(flows, flowID, "provider_scope_invalid", nil, nil)
+	}
+	if len(requested) > 0 && !scopeSubset(config.RequiredScopes, exchange.GrantedScopes) {
+		return s.finalizeCallbackLocked(flows, flowID, "required_scope_denied", nil, nil)
+	}
+	return s.finalizeCallbackLocked(flows, flowID, "", &identity, &exchange)
 }
 
-func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowID, failureCode string, identity *AuthProviderIdentity) (*providerCallbackResult, error) {
+func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowID, failureCode string, identity *AuthProviderIdentity, exchange *AuthProviderExchangeResult) (*providerCallbackResult, error) {
 	flow, err := flows.Get(flowID)
 	if err != nil || flow == nil || toString(flow["phase"]) != providerFlowPhaseCallbackProcessing {
 		return nil, providerError("provider_flow_gone", "provider flow is invalid or expired", 410, err)
@@ -457,6 +682,15 @@ func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowI
 		updates["result_display_name"] = identity.DisplayName
 		updates["result_email"] = identity.Email
 		updates["result_email_verified"] = identity.EmailVerified
+		if exchange != nil && exchange.Tokens.AccessToken != "" {
+			exchange.Tokens.Scopes = exchange.GrantedScopes
+			ciphertext, version, sealErr := s.sealProviderValue("flow", toString(flow["app_id"]), toString(flow["registration_id"]), flowID, exchange.Tokens)
+			if sealErr != nil {
+				return nil, providerError("provider_flow_failed", "provider callback could not be completed", 500, sealErr)
+			}
+			updates["pending_tokens_ciphertext"] = ciphertext
+			updates["pending_tokens_key_version"] = version
+		}
 		if toString(flow["intent"]) == "sign_in" {
 			if linked, ok := s.db.Table(systemAuthIdentityTableName).FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject); ok {
 				updates["resolved_principal_id"] = toString(linked["principal_id"])
@@ -513,6 +747,9 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 	if intent == "link" {
 		return s.completeLink(flow, identity, confirm, auth, now)
 	}
+	if intent == "consent" {
+		return s.completeConsent(flow, identity, confirm, auth, now)
+	}
 	if intent != "sign_in" {
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400)
 	}
@@ -543,6 +780,11 @@ func (s *providerAuthService) completeSignIn(flow map[string]any, identity AuthP
 		tx.abort()
 		return nil, providerError("provider_flow_failed", "provider authentication failed", 500, err)
 	}
+	grant, err := s.materializeGrant(tx, flow, linked)
+	if err != nil {
+		tx.abort()
+		return nil, providerError("provider_grant_failed", "provider grant could not be saved", 500, err)
+	}
 	token, refreshToken, appAuth, sessionID, err := s.db.authService.CreateProviderSession(toString(linked["principal_id"]), toString(linked["id"]), tx.txBuf)
 	if err != nil {
 		tx.abort()
@@ -552,7 +794,7 @@ func (s *providerAuthService) completeSignIn(flow map[string]any, identity AuthP
 	if err := tx.commit(); err != nil {
 		return nil, providerError("provider_flow_failed", "provider authentication failed", 500, err)
 	}
-	return &providerCompleteResult{Token: token, RefreshToken: refreshToken, Auth: appAuth}, nil
+	return &providerCompleteResult{Token: token, RefreshToken: refreshToken, Auth: appAuth, Grant: grant}, nil
 }
 
 func (s *providerAuthService) completeLink(flow map[string]any, identity AuthProviderIdentity, confirm bool, auth *AuthContext, now int64) (*providerCompleteResult, error) {
@@ -589,11 +831,49 @@ func (s *providerAuthService) completeLink(flow map[string]any, identity AuthPro
 		}
 		return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 	}
+	grant, err := s.materializeGrant(tx, flow, row)
+	if err != nil {
+		tx.abort()
+		return nil, providerError("provider_grant_failed", "provider grant could not be saved", 500, err)
+	}
 	if err := tx.commit(); err != nil {
 		return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 	}
 	view := providerIdentityViewFromRow(row)
-	return &providerCompleteResult{Linked: &view}, nil
+	return &providerCompleteResult{Linked: &view, Grant: grant}, nil
+}
+
+func (s *providerAuthService) completeConsent(flow map[string]any, identity AuthProviderIdentity, confirm bool, auth *AuthContext, now int64) (*providerCompleteResult, error) {
+	if !confirm {
+		return nil, providerError("confirmation_required", "explicit confirmation required", 400)
+	}
+	principalID, sessionID := toString(flow["link_principal_id"]), toString(flow["link_session_id"])
+	if auth == nil || auth.ID != principalID || auth.SessionID != sessionID {
+		return nil, providerError("link_session_changed", "the original authenticated session is required", 401)
+	}
+	grantID := toString(flow["incremental_grant_id"])
+	grantRow, err := s.db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || grantRow == nil || toString(grantRow["principal_id"]) != principalID {
+		return nil, providerError("grant_not_found", "provider grant not found", 404)
+	}
+	identityRow, err := s.db.Table(systemAuthIdentityTableName).Get(toString(grantRow["identity_id"]))
+	if err != nil || identityRow == nil || toString(identityRow["issuer"]) != identity.Issuer || toString(identityRow["subject"]) != identity.Subject {
+		return nil, providerError("provider_identity_invalid", "provider identity does not match grant", 409)
+	}
+	tx := newProviderTxn(s.db)
+	if err := tx.update(s.db.Table(systemAuthProviderFlowTableName), toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now}); err != nil {
+		tx.abort()
+		return nil, err
+	}
+	grant, err := s.materializeGrant(tx, flow, identityRow)
+	if err != nil {
+		tx.abort()
+		return nil, providerError("provider_grant_failed", "provider grant could not be saved", 500, err)
+	}
+	if err := tx.commit(); err != nil {
+		return nil, providerError("provider_grant_failed", "provider grant could not be saved", 500, err)
+	}
+	return &providerCompleteResult{Grant: grant}, nil
 }
 
 func (s *providerAuthService) listIdentities(principalID string) ([]providerIdentityView, error) {
@@ -625,7 +905,12 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 		return providerError("identity_required", "identity required", 400)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			s.mu.Unlock()
+		}
+	}()
 	identities := s.db.Table(systemAuthIdentityTableName)
 	identity, err := identities.Get(identityID)
 	if err != nil || identity == nil || toString(identity["principal_id"]) != principalID {
@@ -641,8 +926,15 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 			continue
 		}
 		provider := toString(linked["provider"])
-		config, ok := s.providers[provider]
-		if ok && config.Adapter != nil && config.Issuer == toString(linked["issuer"]) {
+		usable := false
+		for _, app := range s.apps {
+			config, ok := app.Providers[provider]
+			if ok && config.Adapter != nil && config.Issuer == toString(linked["issuer"]) {
+				usable = true
+				break
+			}
+		}
+		if usable {
 			otherMethods++
 		}
 	}
@@ -651,6 +943,19 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 	}
 
 	tx := newProviderTxn(s.db)
+	grants, _ := s.db.Table(systemAuthProviderGrantTableName).FindByIndex("identity_id", identityID)
+	retryIDs := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		if toString(grant["state"]) == "revoked" && toString(grant["token_ciphertext"]) == "" {
+			continue
+		}
+		retryID, err := s.stageGrantRevocation(tx, grant)
+		if err != nil {
+			tx.abort()
+			return providerError("provider_identity_failed", "linked identity could not be removed", 500, err)
+		}
+		retryIDs = append(retryIDs, retryID)
+	}
 	if err := tx.delete(identities, identityID); err != nil {
 		tx.abort()
 		return providerError("provider_identity_failed", "linked identity could not be removed", 500, err)
@@ -673,6 +978,11 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 	}
 	if err := tx.commit(); err != nil {
 		return providerError("provider_identity_failed", "linked identity could not be removed", 500, err)
+	}
+	s.mu.Unlock()
+	locked = false
+	for _, retryID := range retryIDs {
+		_ = s.attemptRevocation(context.Background(), retryID)
 	}
 	return nil
 }

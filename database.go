@@ -89,12 +89,18 @@ const systemSuperadminTableName = "_superadmin"
 const systemAuthSessionTableName = "_auth_sessions"
 const systemAuthIdentityTableName = "_auth_identities"
 const systemAuthProviderFlowTableName = "_auth_provider_flows"
+const systemAuthProviderAppTableName = "_auth_provider_apps"
+const systemAuthProviderRegistrationTableName = "_auth_provider_registrations"
+const systemAuthProviderGrantTableName = "_auth_provider_grants"
+const systemAuthProviderRevocationTableName = "_auth_provider_revocations"
 
 const defaultAuthSessionRetention = 30 * 24 * time.Hour
 const defaultAuthSessionCleanupInterval = time.Hour
 
 func isAdminHiddenSystemTable(name string) bool {
-	return isWorkflowSystemTable(name) || name == systemAuthIdentityTableName || name == systemAuthProviderFlowTableName
+	return isWorkflowSystemTable(name) || name == systemAuthIdentityTableName || name == systemAuthProviderFlowTableName ||
+		name == systemAuthProviderAppTableName || name == systemAuthProviderRegistrationTableName ||
+		name == systemAuthProviderGrantTableName || name == systemAuthProviderRevocationTableName
 }
 
 type materializedRuntime struct {
@@ -169,6 +175,9 @@ func (a *App) Open() (*Database, error) {
 		return nil, fmt.Errorf("flop: app is nil")
 	}
 	if err := validateAuthProviderConfigs(a.config.AuthProviders); err != nil {
+		return nil, err
+	}
+	if err := validateAuthProviderAppConfigs(a.config.AuthProviders, a.config.AuthProviderApps, a.config.ProviderSecretKeys, a.config.ActiveProviderSecretKey); err != nil {
 		return nil, err
 	}
 
@@ -253,8 +262,12 @@ func (a *App) Open() (*Database, error) {
 	sessionTable := db.GetTable(systemAuthSessionTableName)
 	if authTable := db.GetAuthTable(); authTable != nil {
 		d.authService = server.NewAuthService(authTable, sessionTable, secret, d.authInstanceID)
-		d.providerAuth = newProviderAuthService(d, a.config.AuthProviders, secret)
-	} else if len(a.config.AuthProviders) > 0 {
+		d.providerAuth = newProviderAuthService(d, a.config.AuthProviders, a.config.AuthProviderApps, a.config.ProviderSecretKeys, a.config.ActiveProviderSecretKey, secret)
+		if d.providerAuth.initErr != nil {
+			_ = db.Close()
+			return nil, d.providerAuth.initErr
+		}
+	} else if len(a.config.AuthProviders) > 0 || len(a.config.AuthProviderApps) > 0 {
 		_ = db.Close()
 		return nil, fmt.Errorf("flop: provider authentication requires an auth table")
 	}
@@ -389,7 +402,7 @@ func (d *Database) SetJWTSecret(secret string) {
 	d.jwtSecret = secret
 	if d.authService != nil {
 		d.authService = server.NewAuthService(d.db.GetAuthTable(), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
-		d.providerAuth = newProviderAuthService(d, d.app.config.AuthProviders, secret)
+		d.providerAuth = newProviderAuthService(d, d.app.config.AuthProviders, d.app.config.AuthProviderApps, d.app.config.ProviderSecretKeys, d.app.config.ActiveProviderSecretKey, secret)
 	}
 	if d.superadminService != nil {
 		d.superadminService = server.NewSuperadminService(d.db.GetTable(systemSuperadminTableName), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
@@ -582,7 +595,7 @@ func (d *Database) reopen() (*Database, error) {
 	d.app = reopened.app
 	d.db = reopened.db
 	d.authService = reopened.authService
-	d.providerAuth = newProviderAuthService(d, reopened.app.config.AuthProviders, reopened.jwtSecret)
+	d.providerAuth = newProviderAuthService(d, reopened.app.config.AuthProviders, reopened.app.config.AuthProviderApps, reopened.app.config.ProviderSecretKeys, reopened.app.config.ActiveProviderSecretKey, reopened.jwtSecret)
 	d.superadminService = reopened.superadminService
 	d.emailSettings = reopened.emailSettings
 	d.mailer = reopened.mailer
@@ -2227,6 +2240,11 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	if _, exists := a.tables[systemAuthProviderFlowTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemAuthProviderFlowTableName)
 	}
+	for _, name := range []string{systemAuthProviderAppTableName, systemAuthProviderRegistrationTableName, systemAuthProviderGrantTableName, systemAuthProviderRevocationTableName} {
+		if _, exists := a.tables[name]; exists {
+			panic("flop: table name reserved for system use: " + name)
+		}
+	}
 	if _, exists := a.tables[systemWorkflowTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemWorkflowTableName)
 	}
@@ -2342,6 +2360,10 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	defs[systemAuthSessionTableName] = systemAuthSessionTableDef()
 	defs[systemAuthIdentityTableName] = systemAuthIdentityTableDef()
 	defs[systemAuthProviderFlowTableName] = systemAuthProviderFlowTableDef()
+	defs[systemAuthProviderAppTableName] = systemAuthProviderAppTableDef()
+	defs[systemAuthProviderRegistrationTableName] = systemAuthProviderRegistrationTableDef()
+	defs[systemAuthProviderGrantTableName] = systemAuthProviderGrantTableDef()
+	defs[systemAuthProviderRevocationTableName] = systemAuthProviderRevocationTableDef()
 	for name, def := range workflowSystemTableDefs() {
 		defs[name] = def
 	}
@@ -2460,10 +2482,17 @@ func systemAuthProviderFlowTableDef() *schema.TableDef {
 		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
 		{Name: "state_hash", Kind: schema.KindString, Required: true},
 		{Name: "provider", Kind: schema.KindString, Required: true},
+		{Name: "app_id", Kind: schema.KindString, Required: false},
+		{Name: "registration_id", Kind: schema.KindString, Required: false},
+		{Name: "requested_scopes", Kind: schema.KindJson, Required: false},
+		{Name: "incremental_grant_id", Kind: schema.KindString, Required: false},
+		{Name: "pending_tokens_ciphertext", Kind: schema.KindString, Required: false},
+		{Name: "pending_tokens_key_version", Kind: schema.KindString, Required: false},
 		{Name: "intent", Kind: schema.KindString, Required: true},
 		{Name: "link_principal_id", Kind: schema.KindString, Required: false},
 		{Name: "link_session_id", Kind: schema.KindString, Required: false},
 		{Name: "secrets_ciphertext", Kind: schema.KindString, Required: true},
+		{Name: "secrets_key_version", Kind: schema.KindString, Required: false},
 		{Name: "redirect_uri", Kind: schema.KindString, Required: true},
 		{Name: "return_to", Kind: schema.KindString, Required: false},
 		{Name: "created_at", Kind: schema.KindTimestamp, Required: true},
@@ -2492,6 +2521,54 @@ func systemAuthProviderFlowTableDef() *schema.TableDef {
 			{Fields: []string{"completion_hash"}, Unique: true, Type: schema.IndexTypeHash},
 		},
 	}
+}
+
+func providerSystemTable(name string, fields []schema.CompiledField, indexes []schema.IndexDef) *schema.TableDef {
+	return &schema.TableDef{Name: name, CompiledSchema: schema.NewCompiledSchema(fields), SystemOwner: "provider_auth", Indexes: indexes}
+}
+
+func systemAuthProviderAppTableDef() *schema.TableDef {
+	return providerSystemTable(systemAuthProviderAppTableName, []schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
+		{Name: "app_id", Kind: schema.KindString, Required: true},
+		{Name: "backend_credential_hashes", Kind: schema.KindJson, Required: false},
+		{Name: "enabled", Kind: schema.KindBoolean, Required: true},
+		{Name: "updated_at", Kind: schema.KindTimestamp, Required: true},
+	}, []schema.IndexDef{{Fields: []string{"app_id"}, Unique: true, Type: schema.IndexTypeHash}})
+}
+
+func systemAuthProviderRegistrationTableDef() *schema.TableDef {
+	return providerSystemTable(systemAuthProviderRegistrationTableName, []schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
+		{Name: "app_id", Kind: schema.KindString, Required: true}, {Name: "provider", Kind: schema.KindString, Required: true},
+		{Name: "issuer", Kind: schema.KindString, Required: true}, {Name: "client_id", Kind: schema.KindString, Required: false},
+		{Name: "credential_ciphertext", Kind: schema.KindString, Required: false}, {Name: "credential_key_version", Kind: schema.KindString, Required: false},
+		{Name: "credential_version", Kind: schema.KindString, Required: false}, {Name: "config_fingerprint", Kind: schema.KindString, Required: true},
+		{Name: "enabled", Kind: schema.KindBoolean, Required: true}, {Name: "updated_at", Kind: schema.KindTimestamp, Required: true},
+	}, []schema.IndexDef{{Fields: []string{"app_id", "provider"}, Unique: true, Type: schema.IndexTypeHash}, {Fields: []string{"client_id"}, Unique: false, Type: schema.IndexTypeHash}})
+}
+
+func systemAuthProviderGrantTableDef() *schema.TableDef {
+	return providerSystemTable(systemAuthProviderGrantTableName, []schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
+		{Name: "principal_id", Kind: schema.KindString, Required: true}, {Name: "identity_id", Kind: schema.KindString, Required: true},
+		{Name: "registration_id", Kind: schema.KindString, Required: true}, {Name: "app_id", Kind: schema.KindString, Required: true},
+		{Name: "provider", Kind: schema.KindString, Required: true}, {Name: "granted_scopes", Kind: schema.KindJson, Required: true},
+		{Name: "token_ciphertext", Kind: schema.KindString, Required: false}, {Name: "token_key_version", Kind: schema.KindString, Required: false},
+		{Name: "access_expires_at", Kind: schema.KindTimestamp, Required: false}, {Name: "state", Kind: schema.KindString, Required: true},
+		{Name: "consented_at", Kind: schema.KindTimestamp, Required: true}, {Name: "refreshed_at", Kind: schema.KindTimestamp, Required: false},
+		{Name: "revoked_at", Kind: schema.KindTimestamp, Required: false},
+	}, []schema.IndexDef{{Fields: []string{"registration_id", "identity_id"}, Unique: true, Type: schema.IndexTypeHash}, {Fields: []string{"principal_id"}, Unique: false, Type: schema.IndexTypeHash}, {Fields: []string{"app_id"}, Unique: false, Type: schema.IndexTypeHash}, {Fields: []string{"identity_id"}, Unique: false, Type: schema.IndexTypeHash}})
+}
+
+func systemAuthProviderRevocationTableDef() *schema.TableDef {
+	return providerSystemTable(systemAuthProviderRevocationTableName, []schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
+		{Name: "grant_id", Kind: schema.KindString, Required: true}, {Name: "app_id", Kind: schema.KindString, Required: true},
+		{Name: "registration_id", Kind: schema.KindString, Required: true}, {Name: "token_ciphertext", Kind: schema.KindString, Required: true},
+		{Name: "token_key_version", Kind: schema.KindString, Required: true}, {Name: "attempts", Kind: schema.KindInteger, Required: true},
+		{Name: "next_attempt_at", Kind: schema.KindTimestamp, Required: true}, {Name: "last_error_code", Kind: schema.KindString, Required: false},
+	}, []schema.IndexDef{{Fields: []string{"grant_id"}, Unique: true, Type: schema.IndexTypeHash}})
 }
 
 func mapKind(kind string) schema.FieldKind {

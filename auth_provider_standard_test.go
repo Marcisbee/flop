@@ -1,0 +1,130 @@
+package flop
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestOAuth2ProviderProtocolFixture(t *testing.T) {
+	var refreshes, revocations atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			if r.Method != http.MethodPost {
+				t.Errorf("token method=%s", r.Method)
+			}
+			_ = r.ParseForm()
+			if r.Form.Get("client_id") != "client" || r.Form.Get("client_secret") != "secret" {
+				t.Error("token endpoint did not receive client authentication")
+			}
+			if r.Form.Get("grant_type") == "refresh_token" {
+				refreshes.Add(1)
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "refreshed", "refresh_token": "rotated", "token_type": "Bearer", "expires_in": 3600, "scope": "openid read"})
+				return
+			}
+			if r.Form.Get("code_verifier") != "verifier" {
+				t.Error("token exchange omitted PKCE verifier")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access", "refresh_token": "refresh", "token_type": "Bearer", "expires_in": 3600, "id_token": "signed.fixture.token"})
+		case "/userinfo":
+			if r.Header.Get("Authorization") != "Bearer access" {
+				t.Errorf("userinfo authorization=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "subject", "name": "Person", "email": "person@example.com", "email_verified": true})
+		case "/revoke":
+			revocations.Add(1)
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	adapter := &OAuth2AuthProvider{Definition: OAuth2ProviderDefinition{AuthorizationEndpoint: server.URL + "/authorize", TokenEndpoint: server.URL + "/token", UserInfoEndpoint: server.URL + "/userinfo", RevocationEndpoint: server.URL + "/revoke", Issuer: "https://issuer.example", Audience: "client", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "sub", DisplayNameClaim: "name", EmailClaim: "email", EmailVerifiedClaim: "email_verified", VerifyIDToken: func(_ context.Context, raw string) (map[string]any, error) {
+		if raw != "signed.fixture.token" {
+			return nil, fmt.Errorf("bad token")
+		}
+		return map[string]any{"iss": "https://issuer.example", "sub": "subject", "aud": "client", "nonce": "nonce", "exp": time.Now().Add(time.Minute).Unix()}, nil
+	}}, HTTPClient: server.Client()}
+	authorization, err := adapter.AuthorizationURL(context.Background(), AuthProviderAuthorizationRequest{ClientID: "client", RedirectURI: "https://flop.example/callback", State: "state", Nonce: "nonce", CodeChallenge: "challenge", CodeChallengeMethod: "S256", Scopes: []string{"openid", "read"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(authorization)
+	if parsed.Query().Get("state") != "state" || parsed.Query().Get("code_challenge") != "challenge" || parsed.Query().Get("scope") != "openid read" {
+		t.Fatalf("authorization query=%s", parsed.RawQuery)
+	}
+	result, err := adapter.ExchangeGrant(context.Background(), AuthProviderCallbackRequest{Provider: "fixture", Code: "code", RedirectURI: "https://flop.example/callback", CodeVerifier: "verifier", Nonce: "nonce", ClientID: "client", ClientSecret: "secret", RequestedScopes: []string{"openid", "read"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Identity.Subject != "subject" || result.Identity.Issuer != "https://issuer.example" || !result.Identity.EmailVerified {
+		t.Fatalf("identity=%+v", result.Identity)
+	}
+	if !scopeSubset([]string{"openid", "read"}, result.GrantedScopes) {
+		t.Fatalf("granted scopes=%v", result.GrantedScopes)
+	}
+	if _, err := adapter.RefreshGrant(context.Background(), AuthProviderRefreshRequest{ClientID: "client", ClientSecret: "secret", RefreshToken: "refresh", Scopes: []string{"openid", "read"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.RevokeGrant(context.Background(), AuthProviderRevokeRequest{ClientID: "client", ClientSecret: "secret", Token: "rotated", TokenTypeHint: "refresh_token"}); err != nil {
+		t.Fatal(err)
+	}
+	if refreshes.Load() != 1 || revocations.Load() != 1 {
+		t.Fatalf("refreshes=%d revocations=%d", refreshes.Load(), revocations.Load())
+	}
+}
+
+func TestSteamOpenIDProtocolFixture(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "openid.mode=check_authentication") {
+			t.Errorf("verification body=%s", body)
+		}
+		_, _ = io.WriteString(w, "ns:http://specs.openid.net/auth/2.0\nis_valid:true\n")
+	}))
+	defer server.Close()
+	adapter := &SteamOpenIDProvider{HTTPClient: server.Client(), Endpoint: server.URL}
+	authorization, err := adapter.AuthorizationURL(context.Background(), AuthProviderAuthorizationRequest{RedirectURI: "https://flop.example/callback?provider=steam", State: "state"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(authorization)
+	returnTo, _ := url.Parse(parsed.Query().Get("openid.return_to"))
+	if returnTo.Query().Get("state") != "state" {
+		t.Fatalf("return_to=%s", returnTo)
+	}
+	parameters := url.Values{"openid.mode": {"id_res"}, "openid.claimed_id": {"https://steamcommunity.com/openid/id/76561198000000000"}, "openid.identity": {"https://steamcommunity.com/openid/id/76561198000000000"}}
+	identity, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", Parameters: parameters})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Subject != "76561198000000000" || identity.Issuer != "https://steamcommunity.com/openid" {
+		t.Fatalf("identity=%+v", identity)
+	}
+}
+
+func TestBuiltinProviderCatalog(t *testing.T) {
+	for _, provider := range []string{"discord", "twitch", "github", "google", "facebook", "x"} {
+		if _, ok := BuiltinOAuth2ProviderDefinition(provider); !ok {
+			t.Errorf("missing built-in provider %s", provider)
+		}
+	}
+	if _, ok := BuiltinOAuth2ProviderDefinition("youtube"); ok {
+		t.Fatal("YouTube must not be a separate provider")
+	}
+	if GoogleScopeYouTubeReadonly == "" {
+		t.Fatal("Google YouTube scopes were not published")
+	}
+	if config, err := BuiltinAuthProviderConfig("draugiem", BuiltinAuthProviderOptions{ClientID: "app", ClientSecret: "key", RedirectURI: "https://flop.example/callback"}); err != nil || config.Issuer != "https://www.draugiem.lv" {
+		t.Fatalf("Draugiem built-in config=%+v err=%v", config, err)
+	}
+}
