@@ -76,7 +76,7 @@ type providerAuthService struct {
 	now       func() time.Time
 	random    io.Reader
 	maxFlows  int
-	mu        sync.Mutex
+	mu        sync.Locker
 }
 
 type providerFlowSecrets struct {
@@ -126,14 +126,20 @@ func newProviderAuthService(db *Database, providers map[string]AuthProviderConfi
 	for provider, config := range providers {
 		registered[provider] = config
 	}
-	return &providerAuthService{
+	locker := &sync.Mutex{}
+	service := &providerAuthService{
 		db:        db,
 		providers: registered,
 		aead:      aead,
 		now:       time.Now,
 		random:    rand.Reader,
 		maxFlows:  providerOutstandingFlowLimit,
+		mu:        locker,
 	}
+	if db != nil && db.authService != nil {
+		db.authService.SetProviderSessionLocker(locker)
+	}
+	return service
 }
 
 func validateAuthProviderConfigs(providers map[string]AuthProviderConfig) error {
@@ -358,7 +364,9 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 	}
 	flowID := toString(flow["id"])
 	if _, err := flows.Update(flowID, map[string]any{
-		"phase": providerFlowPhaseCallbackProcessing, "callback_consumed_at": now,
+		"phase":                     providerFlowPhaseCallbackProcessing,
+		"callback_consumed_at":      now,
+		"callback_claim_expires_at": now + int64(providerFlowTTL/time.Second),
 	}); err != nil {
 		s.mu.Unlock()
 		return nil, providerError("provider_flow_failed", "provider callback could not be completed", 500, err)
@@ -397,7 +405,7 @@ func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowI
 		return nil, providerError("provider_flow_gone", "provider flow is invalid or expired", 410, err)
 	}
 	now := s.now().Unix()
-	if providerUnix(flow["expires_at"]) <= now {
+	if providerUnix(flow["callback_claim_expires_at"]) <= now {
 		_, _ = flows.Delete(flowID)
 		return nil, providerError("provider_flow_expired", "provider flow expired", 410)
 	}
@@ -598,7 +606,17 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 	if err != nil {
 		return providerError("provider_identity_failed", "linked identity could not be removed", 500, err)
 	}
-	otherMethods := len(linkedRows) - 1
+	otherMethods := 0
+	for _, linked := range linkedRows {
+		if toString(linked["id"]) == identityID {
+			continue
+		}
+		provider := toString(linked["provider"])
+		config, ok := s.providers[provider]
+		if ok && config.Adapter != nil && config.Issuer == toString(linked["issuer"]) {
+			otherMethods++
+		}
+	}
 	if otherMethods <= 0 && !s.db.authService.HasUsablePassword(principalID) {
 		return providerError("last_sign_in_method", "cannot remove the last usable sign-in method", 409)
 	}
@@ -846,8 +864,15 @@ func cleanupExpiredProviderFlowRows(flows *TableInstance, now time.Time) (int, e
 	for _, row := range rows {
 		completionConsumed := providerUnix(row["completion_consumed_at"])
 		completionExpires := providerUnix(row["completion_expires_at"])
+		callbackConsumed := providerUnix(row["callback_consumed_at"])
+		callbackClaimExpires := providerUnix(row["callback_claim_expires_at"])
+		if callbackConsumed > 0 && callbackClaimExpires == 0 {
+			callbackClaimExpires = callbackConsumed + int64(providerFlowTTL/time.Second)
+		}
 		flowExpires := providerUnix(row["expires_at"])
-		if completionConsumed > 0 || (completionExpires > 0 && completionExpires <= nowUnix) || (completionExpires == 0 && flowExpires <= nowUnix) {
+		claimExpired := callbackConsumed > 0 && callbackClaimExpires > 0 && callbackClaimExpires <= nowUnix
+		unclaimedExpired := callbackConsumed == 0 && flowExpires <= nowUnix
+		if completionConsumed > 0 || (completionExpires > 0 && completionExpires <= nowUnix) || (completionExpires == 0 && (claimExpired || unclaimedExpired)) {
 			ids = append(ids, toString(row["id"]))
 		}
 	}

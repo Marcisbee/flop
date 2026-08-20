@@ -290,12 +290,13 @@ func VerifyPurposeJWT(token, secret string) *PurposePayload {
 
 // AuthService handles user registration, login, and token management.
 type AuthService struct {
-	authTable       *engine.TableInstance
-	sessionTable    *engine.TableInstance
-	secret          string
-	instanceID      string
-	accessTokenTTL  int64 // seconds
-	refreshTokenTTL int64 // seconds
+	authTable             *engine.TableInstance
+	sessionTable          *engine.TableInstance
+	secret                string
+	instanceID            string
+	accessTokenTTL        int64 // seconds
+	refreshTokenTTL       int64 // seconds
+	providerSessionLocker sync.Locker
 }
 
 // NewAuthService creates a new AuthService.
@@ -307,6 +308,14 @@ func NewAuthService(authTable, sessionTable *engine.TableInstance, secret, insta
 		instanceID:      instanceID,
 		accessTokenTTL:  900,     // 15 min
 		refreshTokenTTL: 2592000, // 30 days
+	}
+}
+
+// SetProviderSessionLocker coordinates provider-derived refresh rotation with
+// identity unlink. The owning database installs the locker during setup.
+func (as *AuthService) SetProviderSessionLocker(locker sync.Locker) {
+	if as != nil {
+		as.providerSessionLocker = locker
 	}
 }
 
@@ -428,6 +437,16 @@ func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 	session, err := as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
 	if err != nil {
 		return "", "", err
+	}
+	if toString(session["auth_identity_id"]) != "" && as.providerSessionLocker != nil {
+		as.providerSessionLocker.Lock()
+		defer as.providerSessionLocker.Unlock()
+		// Unlink may have won the race after the first read. Revalidate while
+		// holding the shared lock before creating a replacement session.
+		session, err = as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
+		if err != nil {
+			return "", "", err
+		}
 	}
 	user, err := as.authTable.Get(payload.Sub)
 	if err != nil || user == nil {

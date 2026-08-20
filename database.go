@@ -2462,6 +2462,7 @@ func systemAuthProviderFlowTableDef() *schema.TableDef {
 		{Name: "expires_at", Kind: schema.KindTimestamp, Required: true},
 		{Name: "phase", Kind: schema.KindString, Required: true},
 		{Name: "callback_consumed_at", Kind: schema.KindTimestamp, Required: false},
+		{Name: "callback_claim_expires_at", Kind: schema.KindTimestamp, Required: false},
 		{Name: "completion_hash", Kind: schema.KindString, Required: false},
 		{Name: "completion_expires_at", Kind: schema.KindTimestamp, Required: false},
 		{Name: "completion_consumed_at", Kind: schema.KindTimestamp, Required: false},
