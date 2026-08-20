@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,11 +19,33 @@ import (
 )
 
 type fakeAuthProvider struct {
-	mu         sync.Mutex
-	auth       []AuthProviderAuthorizationRequest
-	callbacks  []AuthProviderCallbackRequest
-	identities map[string]AuthProviderIdentity
-	errors     map[string]error
+	mu              sync.Mutex
+	auth            []AuthProviderAuthorizationRequest
+	callbacks       []AuthProviderCallbackRequest
+	identities      map[string]AuthProviderIdentity
+	errors          map[string]error
+	blockCode       string
+	exchangeStarted chan struct{}
+	exchangeRelease <-chan struct{}
+}
+
+type firstLockGate struct {
+	mu       sync.Mutex
+	once     sync.Once
+	acquired chan struct{}
+	release  <-chan struct{}
+}
+
+func (g *firstLockGate) Lock() {
+	g.mu.Lock()
+	g.once.Do(func() {
+		close(g.acquired)
+		<-g.release
+	})
+}
+
+func (g *firstLockGate) Unlock() {
+	g.mu.Unlock()
 }
 
 func (f *fakeAuthProvider) AuthorizationURL(_ context.Context, request AuthProviderAuthorizationRequest) (string, error) {
@@ -44,12 +67,24 @@ func (f *fakeAuthProvider) AuthorizationURL(_ context.Context, request AuthProvi
 
 func (f *fakeAuthProvider) Exchange(_ context.Context, request AuthProviderCallbackRequest) (AuthProviderIdentity, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.callbacks = append(f.callbacks, request)
-	if err := f.errors[request.Code]; err != nil {
+	err := f.errors[request.Code]
+	identity, ok := f.identities[request.Code]
+	block := request.Code == f.blockCode
+	started := f.exchangeStarted
+	release := f.exchangeRelease
+	f.mu.Unlock()
+	if block {
+		if started != nil {
+			close(started)
+		}
+		if release != nil {
+			<-release
+		}
+	}
+	if err != nil {
 		return AuthProviderIdentity{}, err
 	}
-	identity, ok := f.identities[request.Code]
 	if !ok {
 		return AuthProviderIdentity{}, fmt.Errorf("unknown fake code containing secret material")
 	}
@@ -484,5 +519,204 @@ func TestProviderUnlinkSafeguardAndSessionRevocation(t *testing.T) {
 	session, err := db.Table(systemAuthSessionTableName).Get(providerSessionID)
 	if err != nil || providerUnix(session["revoked_at"]) == 0 {
 		t.Fatalf("provider-derived session was not revoked: %#v err=%v", session, err)
+	}
+}
+
+func TestProviderRefreshRotationCannotSurviveConcurrentUnlink(t *testing.T) {
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"link":  {Provider: "fake", Issuer: "https://issuer.example", Subject: "subject"},
+		"login": {Provider: "fake", Issuer: "https://issuer.example", Subject: "subject"},
+	}}
+	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
+	passwordToken, principalID := registerProviderTestUser(t, handler, "refresh-race@example.com")
+	state, _ := startProviderFlow(t, handler, "fake", "link", passwordToken, "")
+	linkedCode := callbackProviderFlow(t, handler, "fake", state, "link")
+	if rec := completeProviderFlow(t, handler, linkedCode, passwordToken, true); rec.Code != http.StatusOK {
+		t.Fatalf("link status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	identityRows, err := db.Table(systemAuthIdentityTableName).FindByIndex("principal_id", principalID)
+	if err != nil || len(identityRows) != 1 {
+		t.Fatalf("linked identities=%#v err=%v", identityRows, err)
+	}
+	identityID := toString(identityRows[0]["id"])
+
+	state, _ = startProviderFlow(t, handler, "fake", "sign_in", "", "")
+	loginCode := callbackProviderFlow(t, handler, "fake", state, "login")
+	login := completeProviderFlow(t, handler, loginCode, "", false)
+	if login.Code != http.StatusOK {
+		t.Fatalf("provider login status=%d body=%s", login.Code, login.Body.String())
+	}
+	refreshToken, _ := decodeProviderResponse(t, login)["refreshToken"].(string)
+
+	gateRelease := make(chan struct{})
+	gate := &firstLockGate{acquired: make(chan struct{}), release: gateRelease}
+	db.providerAuth.mu = gate
+	db.authService.SetProviderSessionLocker(gate)
+	type refreshResult struct {
+		token string
+		err   error
+	}
+	refreshDone := make(chan refreshResult, 1)
+	go func() {
+		token, _, err := db.authService.Refresh(refreshToken)
+		refreshDone <- refreshResult{token: token, err: err}
+	}()
+	select {
+	case <-gate.acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh did not reach provider-session rotation gate")
+	}
+
+	unlinkStarted := make(chan struct{})
+	unlinkDone := make(chan error, 1)
+	go func() {
+		close(unlinkStarted)
+		unlinkDone <- db.providerAuth.unlink(principalID, identityID)
+	}()
+	<-unlinkStarted
+	close(gateRelease)
+	refreshed := <-refreshDone
+	if refreshed.err != nil || refreshed.token == "" {
+		t.Fatalf("refresh that won coordination failed: token=%q err=%v", refreshed.token, refreshed.err)
+	}
+	if err := <-unlinkDone; err != nil {
+		t.Fatalf("concurrent unlink: %v", err)
+	}
+
+	derived, err := db.Table(systemAuthSessionTableName).FindByIndex("auth_identity_id", identityID)
+	if err != nil || len(derived) < 2 {
+		t.Fatalf("provider-derived sessions=%#v err=%v", derived, err)
+	}
+	for _, session := range derived {
+		if providerUnix(session["revoked_at"]) == 0 {
+			t.Fatalf("provider-derived session survived unlink: %#v", session)
+		}
+	}
+}
+
+func TestProviderCallbackExchangeDoesNotHoldServiceLock(t *testing.T) {
+	exchangeStarted := make(chan struct{})
+	exchangeRelease := make(chan struct{})
+	adapter := &fakeAuthProvider{
+		identities: map[string]AuthProviderIdentity{
+			"link": {Provider: "fake", Issuer: "https://issuer.example", Subject: "linked"},
+			"slow": {Provider: "fake", Issuer: "https://issuer.example", Subject: "slow"},
+		},
+		blockCode: "slow", exchangeStarted: exchangeStarted, exchangeRelease: exchangeRelease,
+	}
+	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
+	passwordToken, principalID := registerProviderTestUser(t, handler, "blocking-callback@example.com")
+	state, _ := startProviderFlow(t, handler, "fake", "link", passwordToken, "")
+	linkedCode := callbackProviderFlow(t, handler, "fake", state, "link")
+	if rec := completeProviderFlow(t, handler, linkedCode, passwordToken, true); rec.Code != http.StatusOK {
+		t.Fatalf("link status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	identityRows, _ := db.Table(systemAuthIdentityTableName).FindByIndex("principal_id", principalID)
+	identityID := toString(identityRows[0]["id"])
+
+	slowState, _ := startProviderFlow(t, handler, "fake", "sign_in", "", "")
+	callbackDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		path := "/api/auth/provider/callback?provider=fake&state=" + url.QueryEscape(slowState) + "&code=slow"
+		callbackDone <- providerRequest(t, handler, http.MethodGet, path, "", "")
+	}()
+	select {
+	case <-exchangeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking adapter exchange did not start")
+	}
+
+	flow, ok := db.Table(systemAuthProviderFlowTableName).FindByUniqueIndex("state_hash", hashProviderToken(slowState))
+	if !ok || providerUnix(flow["callback_consumed_at"]) == 0 || providerUnix(flow["callback_claim_expires_at"]) == 0 {
+		t.Fatalf("callback was not durably claimed before exchange: %#v", flow)
+	}
+	flowID := toString(flow["id"])
+	if _, err := db.Table(systemAuthProviderFlowTableName).Update(flowID, map[string]any{"expires_at": time.Now().Add(-time.Minute).Unix()}); err != nil {
+		t.Fatalf("expire original flow deadline: %v", err)
+	}
+	if _, err := db.cleanupExpiredProviderFlows(time.Now()); err != nil {
+		t.Fatalf("cleanup during claimed callback: %v", err)
+	}
+	if claimed, err := db.Table(systemAuthProviderFlowTableName).Get(flowID); err != nil || claimed == nil {
+		t.Fatalf("cleanup removed in-flight callback claim: %#v err=%v", claimed, err)
+	}
+
+	unlinkDone := make(chan error, 1)
+	go func() { unlinkDone <- db.providerAuth.unlink(principalID, identityID) }()
+	select {
+	case err := <-unlinkDone:
+		if err != nil {
+			t.Fatalf("unlink while adapter exchange blocked: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking adapter exchange held the provider service lock")
+	}
+	close(exchangeRelease)
+	select {
+	case rec := <-callbackDone:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("callback after exchange release status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback did not finish after adapter exchange was released")
+	}
+}
+
+func TestProviderUnlinkCountsOnlyCurrentlyUsableIdentities(t *testing.T) {
+	first := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"first": {Provider: "first", Issuer: "https://issuer-one.example", Subject: "first-subject"},
+	}}
+	second := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"second": {Provider: "second", Issuer: "https://issuer-two.example", Subject: "second-subject"},
+	}}
+	secondConfig := fakeProviderConfig(second, "second", "https://issuer-two.example")
+	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{
+		"first":  fakeProviderConfig(first, "first", "https://issuer-one.example"),
+		"second": secondConfig,
+	})
+	passwordToken, principalID := registerProviderTestUser(t, handler, "provider-removal@example.com")
+	for _, link := range []struct {
+		provider string
+		code     string
+	}{{"first", "first"}, {"second", "second"}} {
+		state, _ := startProviderFlow(t, handler, link.provider, "link", passwordToken, "")
+		completionCode := callbackProviderFlow(t, handler, link.provider, state, link.code)
+		if rec := completeProviderFlow(t, handler, completionCode, passwordToken, true); rec.Code != http.StatusOK {
+			t.Fatalf("link %s status=%d body=%s", link.provider, rec.Code, rec.Body.String())
+		}
+	}
+	rows, err := db.Table(systemAuthIdentityTableName).FindByIndex("principal_id", principalID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("linked identities=%#v err=%v", rows, err)
+	}
+	firstIdentityID := ""
+	for _, row := range rows {
+		if toString(row["provider"]) == "first" {
+			firstIdentityID = toString(row["id"])
+		}
+	}
+	if _, err := db.db.GetAuthTable().Update(principalID, map[string]any{"password": "not-a-usable-hash"}, nil); err != nil {
+		t.Fatalf("make password unusable: %v", err)
+	}
+
+	delete(db.providerAuth.providers, "second")
+	assertProviderErrorCode(t, db.providerAuth.unlink(principalID, firstIdentityID), "last_sign_in_method")
+
+	changedIssuer := secondConfig
+	changedIssuer.Issuer = "https://issuer-two-changed.example"
+	db.providerAuth.providers["second"] = changedIssuer
+	assertProviderErrorCode(t, db.providerAuth.unlink(principalID, firstIdentityID), "last_sign_in_method")
+
+	db.providerAuth.providers["second"] = secondConfig
+	if err := db.providerAuth.unlink(principalID, firstIdentityID); err != nil {
+		t.Fatalf("unlink with another currently usable identity: %v", err)
+	}
+}
+
+func assertProviderErrorCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var providerErr *AuthProviderError
+	if !errors.As(err, &providerErr) || providerErr.Code != code {
+		t.Fatalf("provider error=%v, want code %q", err, code)
 	}
 }

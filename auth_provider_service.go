@@ -68,7 +68,7 @@ type providerAuthService struct {
 	aead      cipher.AEAD
 	now       func() time.Time
 	random    io.Reader
-	mu        sync.Mutex
+	mu        sync.Locker
 }
 
 type providerFlowSecrets struct {
@@ -118,13 +118,19 @@ func newProviderAuthService(db *Database, providers map[string]AuthProviderConfi
 	for provider, config := range providers {
 		registered[provider] = config
 	}
-	return &providerAuthService{
+	locker := &sync.Mutex{}
+	service := &providerAuthService{
 		db:        db,
 		providers: registered,
 		aead:      aead,
 		now:       time.Now,
 		random:    rand.Reader,
+		mu:        locker,
 	}
+	if db != nil && db.authService != nil {
+		db.authService.SetProviderSessionLocker(locker)
+	}
+	return service
 }
 
 func validateAuthProviderConfigs(providers map[string]AuthProviderConfig) error {
@@ -280,45 +286,56 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 		return nil, providerError("invalid_callback", "invalid provider callback", 400)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	flows := s.db.Table(systemAuthProviderFlowTableName)
 	flow, ok := flows.FindByUniqueIndex("state_hash", hashProviderToken(state))
 	if !ok {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_gone", "provider flow is invalid or expired", 410)
 	}
 	now := s.now().Unix()
 	if providerUnix(flow["callback_consumed_at"]) > 0 {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_consumed", "provider flow already consumed", 410)
 	}
 	if providerUnix(flow["expires_at"]) <= now {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_expired", "provider flow expired", 410)
 	}
 	if toString(flow["provider"]) != provider {
+		s.mu.Unlock()
 		return nil, providerError("provider_mismatch", "provider callback does not match flow", 400)
 	}
 	config, err := s.providerConfig(provider)
 	if err != nil {
+		s.mu.Unlock()
 		return nil, err
 	}
 	if toString(flow["redirect_uri"]) != config.RedirectURI {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400)
 	}
 	secrets, err := s.openSecrets(toString(flow["secrets_ciphertext"]))
 	if err != nil {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400, err)
 	}
 	flowID := toString(flow["id"])
-	if _, err := flows.Update(flowID, map[string]any{"callback_consumed_at": now}); err != nil {
+	if _, err := flows.Update(flowID, map[string]any{
+		"callback_consumed_at":      now,
+		"callback_claim_expires_at": now + int64(providerFlowTTL/time.Second),
+	}); err != nil {
+		s.mu.Unlock()
 		return nil, providerError("provider_flow_failed", "provider callback could not be completed", 500, err)
 	}
+	returnTo := toString(flow["return_to"])
+	s.mu.Unlock()
 
 	completionCode, err := s.randomToken(32)
 	if err != nil {
 		return nil, providerError("provider_flow_failed", "provider callback could not be completed", 500, err)
 	}
 	updates := map[string]any{
-		"completion_hash":       hashProviderToken(completionCode),
-		"completion_expires_at": now + int64(providerCompletionTTL/time.Second),
+		"completion_hash": hashProviderToken(completionCode),
 	}
 	status := "success"
 	if providerFailure != "" {
@@ -347,10 +364,13 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 			updates["result_email_verified"] = identity.EmailVerified
 		}
 	}
+	updates["completion_expires_at"] = s.now().Unix() + int64(providerCompletionTTL/time.Second)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, err := flows.Update(flowID, updates); err != nil {
 		return nil, providerError("provider_flow_failed", "provider callback could not be completed", 500, err)
 	}
-	return &providerCallbackResult{CompletionCode: completionCode, Status: status, ReturnTo: toString(flow["return_to"])}, nil
+	return &providerCallbackResult{CompletionCode: completionCode, Status: status, ReturnTo: returnTo}, nil
 }
 
 func (s *providerAuthService) complete(code string, confirm bool, auth *AuthContext) (*providerCompleteResult, error) {
@@ -511,7 +531,17 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 	if err != nil {
 		return providerError("provider_identity_failed", "linked identity could not be removed", 500, err)
 	}
-	otherMethods := len(linkedRows) - 1
+	otherMethods := 0
+	for _, linked := range linkedRows {
+		if toString(linked["id"]) == identityID {
+			continue
+		}
+		provider := toString(linked["provider"])
+		config, ok := s.providers[provider]
+		if ok && config.Adapter != nil && config.Issuer == toString(linked["issuer"]) {
+			otherMethods++
+		}
+	}
 	if otherMethods <= 0 && !s.db.authService.HasUsablePassword(principalID) {
 		return providerError("last_sign_in_method", "cannot remove the last usable sign-in method", 409)
 	}
@@ -741,6 +771,10 @@ func (d *Database) cleanupExpiredProviderFlows(now time.Time) (int, error) {
 	if flows == nil {
 		return 0, nil
 	}
+	if d.providerAuth != nil && d.providerAuth.mu != nil {
+		d.providerAuth.mu.Lock()
+		defer d.providerAuth.mu.Unlock()
+	}
 	total := flows.Count()
 	rows, err := flows.Scan(total, 0)
 	if err != nil {
@@ -751,8 +785,15 @@ func (d *Database) cleanupExpiredProviderFlows(now time.Time) (int, error) {
 	for _, row := range rows {
 		completionConsumed := providerUnix(row["completion_consumed_at"])
 		completionExpires := providerUnix(row["completion_expires_at"])
+		callbackConsumed := providerUnix(row["callback_consumed_at"])
+		callbackClaimExpires := providerUnix(row["callback_claim_expires_at"])
+		if callbackConsumed > 0 && callbackClaimExpires == 0 {
+			callbackClaimExpires = callbackConsumed + int64(providerFlowTTL/time.Second)
+		}
 		flowExpires := providerUnix(row["expires_at"])
-		if completionConsumed > 0 || (completionExpires > 0 && completionExpires <= nowUnix) || (completionExpires == 0 && flowExpires <= nowUnix) {
+		claimExpired := callbackConsumed > 0 && callbackClaimExpires > 0 && callbackClaimExpires <= nowUnix
+		unclaimedExpired := callbackConsumed == 0 && flowExpires <= nowUnix
+		if completionConsumed > 0 || (completionExpires > 0 && completionExpires <= nowUnix) || (completionExpires == 0 && (claimExpired || unclaimedExpired)) {
 			ids = append(ids, toString(row["id"]))
 		}
 	}
