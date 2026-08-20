@@ -93,6 +93,10 @@ const systemAuthProviderFlowTableName = "_auth_provider_flows"
 const defaultAuthSessionRetention = 30 * 24 * time.Hour
 const defaultAuthSessionCleanupInterval = time.Hour
 
+func isAdminHiddenSystemTable(name string) bool {
+	return isWorkflowSystemTable(name) || name == systemAuthIdentityTableName || name == systemAuthProviderFlowTableName
+}
+
 type materializedRuntime struct {
 	spec        *materializedSpec
 	mu          sync.Mutex
@@ -250,6 +254,9 @@ func (a *App) Open() (*Database, error) {
 	if authTable := db.GetAuthTable(); authTable != nil {
 		d.authService = server.NewAuthService(authTable, sessionTable, secret, d.authInstanceID)
 		d.providerAuth = newProviderAuthService(d, a.config.AuthProviders, secret)
+	} else if len(a.config.AuthProviders) > 0 {
+		_ = db.Close()
+		return nil, fmt.Errorf("flop: provider authentication requires an auth table")
 	}
 	if superadminTable := db.GetTable(systemSuperadminTableName); superadminTable != nil {
 		d.superadminService = server.NewSuperadminService(superadminTable, sessionTable, secret, d.authInstanceID)
@@ -2440,6 +2447,7 @@ func systemAuthIdentityTableDef() *schema.TableDef {
 	return &schema.TableDef{
 		Name:           systemAuthIdentityTableName,
 		CompiledSchema: schema.NewCompiledSchema(fields),
+		SystemOwner:    "provider_auth",
 		Indexes: []schema.IndexDef{
 			{Fields: []string{"issuer", "subject"}, Unique: true, Type: schema.IndexTypeHash},
 			{Fields: []string{"principal_id"}, Unique: false, Type: schema.IndexTypeHash},
@@ -2478,6 +2486,7 @@ func systemAuthProviderFlowTableDef() *schema.TableDef {
 	return &schema.TableDef{
 		Name:           systemAuthProviderFlowTableName,
 		CompiledSchema: schema.NewCompiledSchema(fields),
+		SystemOwner:    "provider_auth",
 		Indexes: []schema.IndexDef{
 			{Fields: []string{"state_hash"}, Unique: true, Type: schema.IndexTypeHash},
 			{Fields: []string{"completion_hash"}, Unique: true, Type: schema.IndexTypeHash},
@@ -2532,7 +2541,7 @@ type EngineAdminProvider struct {
 func (p *EngineAdminProvider) AdminTables() ([]AdminTable, error) {
 	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
 	for name, t := range p.DB.db.Tables {
-		if isWorkflowSystemTable(name) || name == systemAuthProviderFlowTableName {
+		if isAdminHiddenSystemTable(name) {
 			continue
 		}
 		def := t.GetDef()
@@ -2594,7 +2603,7 @@ func (p *EngineAdminProvider) AdminWorkflowAPIKeyConfigured() bool {
 func (p *EngineAdminProvider) AdminArchiveTables() ([]AdminTable, error) {
 	tables := make([]AdminTable, 0, len(p.DB.db.Tables))
 	for name, t := range p.DB.db.Tables {
-		if isWorkflowSystemTable(name) || name == systemAuthProviderFlowTableName {
+		if isAdminHiddenSystemTable(name) {
 			continue
 		}
 		records, total, err := t.ScanArchived(1, 0)
@@ -2692,7 +2701,7 @@ func marshalArchiveSchema(cs *schema.CompiledSchema) (jsonx.RawMessage, error) {
 }
 
 func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
-	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
+	if isAdminHiddenSystemTable(table) {
 		return AdminRowsPage{}, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2736,7 +2745,7 @@ func (p *EngineAdminProvider) AdminRows(table string, limit, offset int) (AdminR
 }
 
 func (p *EngineAdminProvider) AdminArchiveRows(table string, limit, offset int) (AdminRowsPage, bool, error) {
-	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
+	if isAdminHiddenSystemTable(table) {
 		return AdminRowsPage{}, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2866,7 +2875,7 @@ func adminFileLabelFromString(s string) string {
 }
 
 func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[string]any) bool, limit, offset int, indexField, indexValue string) ([]map[string]any, int, bool, error) {
-	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
+	if isAdminHiddenSystemTable(table) {
 		return nil, 0, false, nil
 	}
 	ti := p.DB.db.GetTable(table)
@@ -2917,8 +2926,8 @@ func (p *EngineAdminProvider) AdminFilterRows(table string, match func(map[strin
 }
 
 func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) (map[string]any, error) {
-	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
-		return nil, errors.New("workflow system tables are managed through the workflow API")
+	if isAdminHiddenSystemTable(table) {
+		return nil, errors.New("system tables are engine-managed")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return nil, fmt.Errorf("materialized table is read-only: %s", table)
@@ -2949,8 +2958,8 @@ func (p *EngineAdminProvider) AdminCreateRow(table string, data map[string]any) 
 }
 
 func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string]any) error {
-	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
-		return errors.New("workflow system tables are managed through the workflow API")
+	if isAdminHiddenSystemTable(table) {
+		return errors.New("system tables are engine-managed")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return fmt.Errorf("materialized table is read-only: %s", table)
@@ -2971,8 +2980,8 @@ func (p *EngineAdminProvider) AdminUpdateRow(table, pk string, fields map[string
 }
 
 func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
-	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
-		return errors.New("workflow system tables are managed through the workflow API")
+	if isAdminHiddenSystemTable(table) {
+		return errors.New("system tables are engine-managed")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return fmt.Errorf("materialized table is read-only: %s", table)
@@ -2992,8 +3001,8 @@ func (p *EngineAdminProvider) AdminDeleteRow(table, pk string) error {
 }
 
 func (p *EngineAdminProvider) AdminArchiveRow(table, pk string) error {
-	if isWorkflowSystemTable(table) || table == systemAuthProviderFlowTableName {
-		return errors.New("workflow system tables are managed through the workflow API")
+	if isAdminHiddenSystemTable(table) {
+		return errors.New("system tables are engine-managed")
 	}
 	if ok, _, _ := p.DB.materializedStatus(table); ok {
 		return fmt.Errorf("materialized table is read-only: %s", table)
@@ -3013,8 +3022,8 @@ func (p *EngineAdminProvider) AdminArchiveRow(table, pk string) error {
 }
 
 func (p *EngineAdminProvider) AdminRestoreRow(table, archiveID string) error {
-	if isWorkflowSystemTable(table) {
-		return errors.New("workflow system tables are managed through the workflow API")
+	if isAdminHiddenSystemTable(table) {
+		return errors.New("system tables are engine-managed")
 	}
 	ti := p.DB.Table(table)
 	if ti == nil {
@@ -3024,8 +3033,8 @@ func (p *EngineAdminProvider) AdminRestoreRow(table, archiveID string) error {
 }
 
 func (p *EngineAdminProvider) AdminDeleteArchivedRow(table, archiveID string) error {
-	if isWorkflowSystemTable(table) {
-		return errors.New("workflow system tables are managed through the workflow API")
+	if isAdminHiddenSystemTable(table) {
+		return errors.New("system tables are engine-managed")
 	}
 	ti := p.DB.Table(table)
 	if ti == nil {

@@ -112,6 +112,12 @@ type providerIdentityView struct {
 	LastAuthenticatedAt int64  `json:"lastAuthenticatedAt"`
 }
 
+type providerDescriptor struct {
+	Key      string `json:"key"`
+	Issuer   string `json:"issuer"`
+	PKCES256 bool   `json:"pkceS256"`
+}
+
 func newProviderAuthService(db *Database, providers map[string]AuthProviderConfig, secret string) *providerAuthService {
 	key := sha256.Sum256([]byte("flop/provider-flow/aead/v1\x00" + secret))
 	block, err := aes.NewCipher(key[:])
@@ -143,6 +149,7 @@ func newProviderAuthService(db *Database, providers map[string]AuthProviderConfi
 }
 
 func validateAuthProviderConfigs(providers map[string]AuthProviderConfig) error {
+	issuerOwners := make(map[string]string, len(providers))
 	for provider, config := range providers {
 		if provider == "" || provider != strings.TrimSpace(provider) {
 			return fmt.Errorf("flop: auth provider key must be non-empty and canonical")
@@ -153,6 +160,10 @@ func validateAuthProviderConfigs(providers map[string]AuthProviderConfig) error 
 		if config.Issuer == "" || config.Issuer != strings.TrimSpace(config.Issuer) {
 			return fmt.Errorf("flop: auth provider %q issuer must be non-empty and canonical", provider)
 		}
+		if existing, ok := issuerOwners[config.Issuer]; ok {
+			return fmt.Errorf("flop: auth providers %q and %q use the same issuer %q", existing, provider, config.Issuer)
+		}
+		issuerOwners[config.Issuer] = provider
 		if err := validateConfiguredURL(config.RedirectURI, false); err != nil {
 			return fmt.Errorf("flop: auth provider %q redirect URI: %w", provider, err)
 		}
@@ -188,6 +199,22 @@ func (s *providerAuthService) providerConfig(provider string) (AuthProviderConfi
 		}
 	}
 	return config, nil
+}
+
+func (s *providerAuthService) descriptors() []providerDescriptor {
+	if s == nil {
+		return []providerDescriptor{}
+	}
+	out := make([]providerDescriptor, 0, len(s.providers))
+	for key, config := range s.providers {
+		out = append(out, providerDescriptor{Key: key, Issuer: config.Issuer, PKCES256: !config.PKCEUnsupported})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
+func (s *providerAuthService) configured() bool {
+	return s != nil && len(s.providers) > 0
 }
 
 func validateConfiguredURL(raw string, allowFragment bool) error {
@@ -325,7 +352,7 @@ func (s *providerAuthService) start(ctx context.Context, provider, intent, retur
 }
 
 func (s *providerAuthService) callback(ctx context.Context, provider, state, code, providerFailure string, params url.Values) (*providerCallbackResult, error) {
-	if provider == "" || state == "" {
+	if state == "" {
 		return nil, providerError("invalid_callback", "invalid provider callback", 400)
 	}
 	s.mu.Lock()
@@ -344,10 +371,12 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 		s.mu.Unlock()
 		return nil, providerError("provider_flow_expired", "provider flow expired", 410)
 	}
-	if toString(flow["provider"]) != provider {
+	flowProvider := toString(flow["provider"])
+	if provider != "" && flowProvider != provider {
 		s.mu.Unlock()
 		return nil, providerError("provider_mismatch", "provider callback does not match flow", 400)
 	}
+	provider = flowProvider
 	config, err := s.providerConfig(provider)
 	if err != nil {
 		s.mu.Unlock()

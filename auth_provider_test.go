@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcisbee/flop/internal/engine"
+	"github.com/marcisbee/flop/internal/schema"
 	internalserver "github.com/marcisbee/flop/internal/server"
 )
 
@@ -218,6 +220,175 @@ func completeProviderFlow(t *testing.T, handler http.Handler, completionCode, be
 	t.Helper()
 	body := fmt.Sprintf(`{"completionCode":%q,"confirm":%t}`, completionCode, confirm)
 	return providerRequest(t, handler, http.MethodPost, "/api/auth/provider/complete", body, bearer)
+}
+
+func TestProviderDiscoveryAndSchemaReflectConfiguration(t *testing.T) {
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{}}
+	_, _, configured := providerTestApp(t, map[string]AuthProviderConfig{
+		"zeta": fakeProviderConfig(adapter, "zeta", "https://zeta.example"),
+		"alpha": {
+			Adapter: adapter, Issuer: "https://alpha.example",
+			RedirectURI: "https://app.example/api/auth/provider/callback", PKCEUnsupported: true,
+		},
+	})
+	discovery := providerRequest(t, configured, http.MethodGet, "/api/auth/providers", "", "")
+	if discovery.Code != http.StatusOK {
+		t.Fatalf("configured discovery status=%d body=%s", discovery.Code, discovery.Body.String())
+	}
+	providers, _ := decodeProviderResponse(t, discovery)["providers"].([]any)
+	if len(providers) != 2 {
+		t.Fatalf("configured providers=%#v", providers)
+	}
+	first, _ := providers[0].(map[string]any)
+	second, _ := providers[1].(map[string]any)
+	if first["key"] != "alpha" || first["issuer"] != "https://alpha.example" || first["pkceS256"] != false || second["key"] != "zeta" {
+		t.Fatalf("provider discovery=%#v", providers)
+	}
+
+	schemaResponse := providerRequest(t, configured, http.MethodGet, "/api/schema", "", "")
+	if schemaResponse.Code != http.StatusOK {
+		t.Fatalf("configured schema status=%d body=%s", schemaResponse.Code, schemaResponse.Body.String())
+	}
+	endpoints, _ := decodeProviderResponse(t, schemaResponse)["endpoints"].([]any)
+	wantPaths := map[string]bool{
+		"/api/auth/providers": false, "/api/auth/provider/start": false,
+		"/api/auth/provider/callback": false, "/api/auth/provider/complete": false,
+		"/api/auth/provider/identities": false, "/api/auth/provider/identities/{identityId}": false,
+	}
+	for _, raw := range endpoints {
+		endpoint, _ := raw.(map[string]any)
+		if _, ok := wantPaths[endpoint["path"].(string)]; ok {
+			wantPaths[endpoint["path"].(string)] = true
+		}
+	}
+	for path, found := range wantPaths {
+		if !found {
+			t.Errorf("configured schema omitted %s", path)
+		}
+	}
+
+	_, _, unconfigured := providerTestApp(t, nil)
+	discovery = providerRequest(t, unconfigured, http.MethodGet, "/api/auth/providers", "", "")
+	if discovery.Code != http.StatusOK {
+		t.Fatalf("unconfigured discovery status=%d body=%s", discovery.Code, discovery.Body.String())
+	}
+	providers, _ = decodeProviderResponse(t, discovery)["providers"].([]any)
+	if len(providers) != 0 {
+		t.Fatalf("unconfigured providers=%#v", providers)
+	}
+	schemaResponse = providerRequest(t, unconfigured, http.MethodGet, "/api/schema", "", "")
+	endpoints, _ = decodeProviderResponse(t, schemaResponse)["endpoints"].([]any)
+	for _, raw := range endpoints {
+		endpoint, _ := raw.(map[string]any)
+		path, _ := endpoint["path"].(string)
+		if strings.HasPrefix(path, "/api/auth/provider") || path == "/api/auth/providers" {
+			t.Fatalf("unconfigured schema advertised provider endpoint %q", path)
+		}
+	}
+}
+
+func TestProviderCallbackResolvesProviderFromState(t *testing.T) {
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"canonical": {Provider: "fake", Issuer: "https://issuer.example", Subject: "subject"},
+	}}
+	config := fakeProviderConfig(adapter, "fake", "https://issuer.example")
+	config.RedirectURI = "https://app.example/api/auth/provider/callback"
+	_, _, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": config})
+	state, authorization := startProviderFlow(t, handler, "fake", "sign_in", "", "")
+	if authorization.RedirectURI != config.RedirectURI {
+		t.Fatalf("authorization redirect URI=%q want %q", authorization.RedirectURI, config.RedirectURI)
+	}
+	rec := providerRequest(t, handler, http.MethodGet, "/api/auth/provider/callback?state="+url.QueryEscape(state)+"&code=canonical", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("canonical callback status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if code, _ := decodeProviderResponse(t, rec)["completionCode"].(string); code == "" {
+		t.Fatal("canonical callback omitted completion code")
+	}
+}
+
+func TestProviderConfigurationStartupInvariants(t *testing.T) {
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{}}
+	duplicate := New(Config{DataDir: t.TempDir(), AuthProviders: map[string]AuthProviderConfig{
+		"first":  fakeProviderConfig(adapter, "first", "https://issuer.example"),
+		"second": fakeProviderConfig(adapter, "second", "https://issuer.example"),
+	}})
+	if _, err := duplicate.Open(); err == nil || !strings.Contains(err.Error(), "same issuer") {
+		t.Fatalf("duplicate issuer open error=%v", err)
+	}
+
+	withoutAuth := New(Config{DataDir: t.TempDir(), AuthProviders: map[string]AuthProviderConfig{
+		"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example"),
+	}})
+	Define(withoutAuth, "notes", func(s *SchemaBuilder) {
+		s.String("id").Primary("uuidv7")
+		s.String("body")
+	})
+	if _, err := withoutAuth.Open(); err == nil || !strings.Contains(err.Error(), "requires an auth table") {
+		t.Fatalf("provider without auth table error=%v", err)
+	}
+}
+
+func TestProviderSystemTablesAreOwnedAndAdminHidden(t *testing.T) {
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{}}
+	_, db, _ := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
+	admin := &EngineAdminProvider{DB: db}
+	tables, err := admin.AdminTables()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, systemTable := range []string{systemAuthIdentityTableName, systemAuthProviderFlowTableName} {
+		meta := db.db.GetMeta().Tables[systemTable]
+		if meta == nil || meta.SystemOwner != "provider_auth" {
+			t.Fatalf("system owner for %s = %#v", systemTable, meta)
+		}
+		for _, table := range tables {
+			if table.Name == systemTable {
+				t.Fatalf("admin table listing exposed %s", systemTable)
+			}
+		}
+		if _, ok, err := admin.AdminRows(systemTable, 10, 0); err != nil || ok {
+			t.Fatalf("admin rows for %s ok=%t err=%v", systemTable, ok, err)
+		}
+		if _, err := admin.AdminCreateRow(systemTable, map[string]any{}); err == nil {
+			t.Fatalf("admin create allowed for %s", systemTable)
+		}
+		if err := admin.AdminUpdateRow(systemTable, "id", map[string]any{}); err == nil {
+			t.Fatalf("admin update allowed for %s", systemTable)
+		}
+		if err := admin.AdminDeleteRow(systemTable, "id"); err == nil {
+			t.Fatalf("admin delete allowed for %s", systemTable)
+		}
+	}
+}
+
+func TestProviderSystemTableCollisionIsActionable(t *testing.T) {
+	for _, tableName := range []string{systemAuthIdentityTableName, systemAuthProviderFlowTableName} {
+		t.Run(tableName, func(t *testing.T) {
+			dataDir := t.TempDir()
+			legacy := engine.NewDatabase(engine.DatabaseConfig{DataDir: dataDir, SyncMode: "normal"})
+			err := legacy.Open(map[string]*schema.TableDef{
+				tableName: {
+					Name: tableName,
+					CompiledSchema: schema.NewCompiledSchema([]schema.CompiledField{
+						{Name: "id", Kind: schema.KindString, Required: true, Unique: true},
+						{Name: "user_data", Kind: schema.KindString},
+					}),
+				},
+			})
+			if err != nil {
+				t.Fatalf("create colliding table: %v", err)
+			}
+			if err := legacy.Close(); err != nil {
+				t.Fatalf("close colliding database: %v", err)
+			}
+
+			app := New(Config{DataDir: dataDir, SyncMode: "normal"})
+			if _, err := app.Open(); err == nil || !strings.Contains(err.Error(), "conflicts with reserved system table owner") {
+				t.Fatalf("reserved table collision error=%v", err)
+			}
+		})
+	}
 }
 
 func TestProviderLinkAndSignInUseIssuerSubjectAndStandardSession(t *testing.T) {

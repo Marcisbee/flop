@@ -630,6 +630,16 @@ func (h *APIHandler) handleSchema(w http.ResponseWriter) {
 			Name: rd.Name, Method: http.MethodPost, Path: "/api/reduce/" + rd.Name, Type: "reducer", Access: rd.Access,
 		})
 	}
+	if h.db != nil && h.db.providerAuth.configured() {
+		out = append(out,
+			endpoint{Name: "auth_provider_discovery", Method: http.MethodGet, Path: "/api/auth/providers", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_start", Method: http.MethodPost, Path: "/api/auth/provider/start", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_callback", Method: http.MethodGet, Path: "/api/auth/provider/callback", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_complete", Method: http.MethodPost, Path: "/api/auth/provider/complete", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_identities", Method: http.MethodGet, Path: "/api/auth/provider/identities", Type: "auth", Access: Authenticated()},
+			endpoint{Name: "auth_provider_unlink", Method: http.MethodDelete, Path: "/api/auth/provider/identities/{identityId}", Type: "auth", Access: Authenticated()},
+		)
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type == out[j].Type {
 			return out[i].Name < out[j].Name
@@ -695,6 +705,12 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/auth/providers":
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"providers": h.db.providerAuth.descriptors()})
 	case "/api/auth/provider/start":
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
