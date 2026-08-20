@@ -279,7 +279,7 @@ func (s *providerAuthService) syncRegistrations() error {
 					}
 					unlock := s.lockGrant(toString(grant["id"]))
 					current, getErr := grants.Get(toString(grant["id"]))
-					if getErr == nil && current != nil && toString(current["registration_id"]) == registrationID && toString(current["client_id"]) == "" {
+					if getErr == nil && current != nil && toString(current["registration_id"]) == registrationID && toString(current["state"]) == "active" {
 						_, getErr = grants.Update(toString(current["id"]), registrationSnapshot(row))
 					}
 					unlock()
@@ -312,13 +312,37 @@ func (s *providerAuthService) syncRegistrations() error {
 					return err
 				}
 			}
+			if exists && oldClientID == config.ClientID && oldIssuer == config.Issuer {
+				registration, getErr := registrations.Get(registrationID)
+				if getErr != nil || registration == nil {
+					if getErr == nil {
+						getErr = fmt.Errorf("provider registration not found")
+					}
+					return getErr
+				}
+				rows, _ := grants.FindByIndex("app_id", appID)
+				for _, grant := range rows {
+					if toString(grant["registration_id"]) != registrationID {
+						continue
+					}
+					unlock := s.lockGrant(toString(grant["id"]))
+					current, grantErr := grants.Get(toString(grant["id"]))
+					if grantErr == nil && current != nil && toString(current["registration_id"]) == registrationID && toString(current["state"]) == "active" {
+						_, grantErr = grants.Update(toString(current["id"]), registrationSnapshot(registration))
+					}
+					unlock()
+					if grantErr != nil {
+						return grantErr
+					}
+				}
+			}
 			if exists && (oldClientID != config.ClientID || oldIssuer != config.Issuer) {
 				rows, _ := grants.FindByIndex("app_id", appID)
 				for _, grant := range rows {
 					if toString(grant["registration_id"]) == registrationID {
 						unlock := s.lockGrant(toString(grant["id"]))
 						current, getErr := grants.Get(toString(grant["id"]))
-						if getErr == nil && current != nil && toString(current["registration_id"]) == registrationID {
+						if getErr == nil && current != nil && toString(current["registration_id"]) == registrationID && toString(current["state"]) == "active" {
 							_, getErr = grants.Update(toString(current["id"]), map[string]any{"state": "reconnect_required"})
 						}
 						unlock()
@@ -388,6 +412,13 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 		currentIdentity, identityErr := s.db.Table(systemAuthIdentityTableName).Get(toString(existing["identity_id"]))
 		if identityErr != nil || currentIdentity == nil || toString(currentIdentity["principal_id"]) != toString(existing["principal_id"]) {
 			return nil, fmt.Errorf("provider identity changed during authorization")
+		}
+		if tokens.RefreshToken == "" && toString(existing["token_ciphertext"]) != "" {
+			var currentTokens AuthProviderTokenSet
+			if err := s.openProviderValue("grant", appID, registrationID, grantID, toString(existing["token_ciphertext"]), toString(existing["token_key_version"]), &currentTokens); err != nil {
+				return nil, err
+			}
+			tokens.RefreshToken = currentTokens.RefreshToken
 		}
 	} else {
 		grantID, err = s.randomToken(18)
@@ -504,7 +535,11 @@ func (s *providerAuthService) tokenLease(ctx context.Context, appID, backendCred
 		}
 		clientSecret := config.ClientSecret
 		if configErr == nil {
-			clientSecret, configErr = s.grantClientSecret(row, config.ClientSecret)
+			if clientID == toString(registration["client_id"]) {
+				clientSecret, configErr = s.registrationClientSecret(registration, config.ClientSecret)
+			} else {
+				clientSecret, configErr = s.grantClientSecret(row, config.ClientSecret)
+			}
 		}
 		adapter, ok := config.Adapter.(AuthProviderGrantAdapter)
 		if advertised, hasCapabilities := config.Adapter.(AuthProviderCapabilityAdapter); hasCapabilities && !advertised.ProviderCapabilities().Refresh {
@@ -657,10 +692,25 @@ func (s *providerAuthService) attemptRevocation(ctx context.Context, retryID str
 	if err != nil || retry == nil {
 		return err
 	}
+	return s.attemptRevocationForGrant(ctx, retryID, toString(retry["grant_id"]))
+}
+
+func (s *providerAuthService) attemptRevocationForGrant(ctx context.Context, retryID, grantID string) error {
+	retries := s.db.Table(systemAuthProviderRevocationTableName)
 	grants := s.db.Table(systemAuthProviderGrantTableName)
-	unlock := s.lockGrant(toString(retry["grant_id"]))
+	unlock := s.lockGrant(grantID)
 	defer unlock()
-	grant, err := grants.Get(toString(retry["grant_id"]))
+	retry, err := retries.Get(retryID)
+	if err != nil {
+		return err
+	}
+	if retry == nil {
+		return nil
+	}
+	if toString(retry["grant_id"]) != grantID {
+		return fmt.Errorf("provider revocation retry changed during attempt")
+	}
+	grant, err := grants.Get(grantID)
 	if err != nil || grant == nil {
 		return err
 	}
@@ -697,14 +747,23 @@ func (s *providerAuthService) attemptRevocation(ctx context.Context, retryID str
 		}
 		remoteErr = adapter.RevokeGrant(ctx, AuthProviderRevokeRequest{AppID: appID, Provider: toString(grant["provider"]), ClientID: clientID, ClientSecret: clientSecret, Token: token, TokenTypeHint: hint})
 	}
-	if remoteErr != nil {
+	var upstream *AuthProviderUpstreamError
+	terminal := errors.As(remoteErr, &upstream) && upstream.Terminal
+	if remoteErr != nil && !terminal {
 		attempts := providerUnix(retry["attempts"]) + 1
 		_, _ = retries.Update(retryID, map[string]any{"attempts": attempts, "next_attempt_at": s.now().Add(time.Duration(attempts) * time.Minute).Unix(), "last_error_code": "provider_unavailable"})
 		_, _ = grants.Update(toString(grant["id"]), map[string]any{"state": "revoked"})
 		return remoteErr
 	}
 	finish := newProviderTxn(s.db)
-	if err := finish.update(grants, toString(grant["id"]), map[string]any{"state": "revoked", "token_ciphertext": "", "token_key_version": ""}); err != nil {
+	if err := finish.update(grants, toString(grant["id"]), map[string]any{
+		"state":                  "revoked",
+		"token_ciphertext":       "",
+		"token_key_version":      "",
+		"client_id":              "",
+		"credential_ciphertext":  "",
+		"credential_key_version": "",
+	}); err != nil {
 		finish.abort()
 		return err
 	}

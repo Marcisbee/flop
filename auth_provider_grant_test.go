@@ -20,11 +20,14 @@ type fakeGrantProvider struct {
 	tokens         map[string]AuthProviderTokenSet
 	refreshes      int
 	refreshScopes  []string
+	lastRefresh    AuthProviderRefreshRequest
 	refreshStarted chan struct{}
 	refreshRelease <-chan struct{}
 	revocations    int
 	lastRevoke     AuthProviderRevokeRequest
 	revokeErr      error
+	revokeStarted  chan struct{}
+	revokeRelease  <-chan struct{}
 }
 
 func (p *fakeGrantProvider) AuthorizationURL(_ context.Context, request AuthProviderAuthorizationRequest) (string, error) {
@@ -53,6 +56,7 @@ func (p *fakeGrantProvider) ExchangeGrant(_ context.Context, request AuthProvide
 func (p *fakeGrantProvider) RefreshGrant(_ context.Context, request AuthProviderRefreshRequest) (AuthProviderTokenSet, error) {
 	p.mu.Lock()
 	p.refreshes++
+	p.lastRefresh = request
 	scopes := append([]string(nil), request.Scopes...)
 	if p.refreshScopes != nil {
 		scopes = append([]string(nil), p.refreshScopes...)
@@ -72,10 +76,20 @@ func (p *fakeGrantProvider) RefreshGrant(_ context.Context, request AuthProvider
 }
 func (p *fakeGrantProvider) RevokeGrant(_ context.Context, request AuthProviderRevokeRequest) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.revocations++
 	p.lastRevoke = request
-	return p.revokeErr
+	started, release, revokeErr := p.revokeStarted, p.revokeRelease, p.revokeErr
+	p.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		<-release
+	}
+	return revokeErr
 }
 
 func appGrantTestConfig(adapter AuthProviderGrantAdapter, clientID, credential string) AuthProviderAppConfig {
@@ -415,6 +429,79 @@ func TestProviderRefreshAndIncrementalConsentShareGrantSerialization(t *testing.
 	}
 }
 
+func TestProviderIncrementalConsentPreservesRefreshToken(t *testing.T) {
+	provider := &fakeGrantProvider{
+		issuer: "https://issuer.example",
+		tokens: map[string]AuthProviderTokenSet{
+			"initial":     {AccessToken: "initial", RefreshToken: "original-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+			"incremental": {AccessToken: "incremental", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Second), Scopes: []string{"identity", "read"}},
+		},
+	}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	token, _, grantID, _ := linkGrantForTest(t, db, handler, "initial", "incremental-refresh@example.com", "identity")
+	state := startAppFlow(t, handler, "app", "consent", token, grantID, "read")
+	completion := callbackProviderFlow(t, handler, "shared", state, "incremental")
+	if response := completeProviderFlow(t, handler, completion, token, true); response.Code != http.StatusOK {
+		t.Fatalf("incremental consent status=%d body=%s", response.Code, response.Body.String())
+	}
+	lease, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "read")
+	if err != nil || lease.AccessToken != "app-refreshed" {
+		t.Fatalf("incremental refresh lease=%+v err=%v", lease, err)
+	}
+	provider.mu.Lock()
+	refresh := provider.lastRefresh
+	provider.mu.Unlock()
+	if refresh.RefreshToken != "original-refresh" {
+		t.Fatalf("refresh token=%q want original-refresh", refresh.RefreshToken)
+	}
+}
+
+func TestProviderSameClientCredentialRotationUsesCurrentSecret(t *testing.T) {
+	dataDir := t.TempDir()
+	provider := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{
+		"expired": {AccessToken: "expired", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Second), Scopes: []string{"identity"}},
+	}}
+	open := func(secret, version string) (*Database, http.Handler) {
+		config := appGrantTestConfig(provider, "client", "backend")
+		providerConfig := config.Providers["shared"]
+		providerConfig.ClientSecret = secret
+		providerConfig.CredentialVersion = version
+		config.Providers["shared"] = providerConfig
+		app := New(Config{DataDir: dataDir, AuthProviderApps: map[string]AuthProviderAppConfig{"app": config}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+		defineGrantTestUsers(app)
+		db, err := app.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return db, app.APIHandler(db)
+	}
+	db, handler := open("old-secret", "old-version")
+	_, _, grantID, _ := linkGrantForTest(t, db, handler, "expired", "secret-rotation@example.com", "identity")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, _ = open("new-secret", "new-version")
+	defer db.Close()
+	grant, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || grant == nil {
+		t.Fatalf("rotated grant=%#v err=%v", grant, err)
+	}
+	snapshotSecret, err := db.providerAuth.grantClientSecret(grant, "")
+	if err != nil || snapshotSecret != "new-secret" {
+		t.Fatalf("rotated credential snapshot=%q err=%v", snapshotSecret, err)
+	}
+	if _, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity"); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	refresh := provider.lastRefresh
+	provider.mu.Unlock()
+	if refresh.ClientID != "client" || refresh.ClientSecret != "new-secret" {
+		t.Fatalf("refresh credentials client=%q secret=%q", refresh.ClientID, refresh.ClientSecret)
+	}
+}
+
 func TestProviderClientRotationPreservesRevocationCredentials(t *testing.T) {
 	for _, operation := range []string{"revoke", "unlink"} {
 		t.Run(operation, func(t *testing.T) {
@@ -516,7 +603,89 @@ func TestProviderRemoteRevocationRetriesWithoutRestoringAccess(t *testing.T) {
 		t.Fatalf("retry completed=%d err=%v", completed, err)
 	}
 	grant, _ := db.Table(systemAuthProviderGrantTableName).Get(grantID)
-	if toString(grant["token_ciphertext"]) != "" || db.Table(systemAuthProviderRevocationTableName).Count() != 0 {
-		t.Fatal("successful retry did not scrub revocation token material")
+	if toString(grant["token_ciphertext"]) != "" || toString(grant["token_key_version"]) != "" ||
+		toString(grant["client_id"]) != "" || toString(grant["credential_ciphertext"]) != "" || toString(grant["credential_key_version"]) != "" ||
+		db.Table(systemAuthProviderRevocationTableName).Count() != 0 {
+		t.Fatal("successful retry did not scrub provider token and credential material")
+	}
+}
+
+func TestProviderImmediateRevocationScrubsGrantSecrets(t *testing.T) {
+	provider := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{
+		"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+	}}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	_, principalID, grantID, _ := linkGrantForTest(t, db, handler, "code", "immediate-revoke@example.com", "identity")
+	if err := db.providerAuth.revokeGrant(context.Background(), principalID, grantID); err != nil {
+		t.Fatal(err)
+	}
+	grant, _ := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if toString(grant["token_ciphertext"]) != "" || toString(grant["token_key_version"]) != "" ||
+		toString(grant["client_id"]) != "" || toString(grant["credential_ciphertext"]) != "" || toString(grant["credential_key_version"]) != "" {
+		t.Fatal("immediate revocation did not scrub provider token and credential material")
+	}
+}
+
+func TestProviderTerminalRevocationScrubsGrantSecrets(t *testing.T) {
+	provider := &fakeGrantProvider{
+		issuer:    "https://issuer.example",
+		revokeErr: &AuthProviderUpstreamError{Code: "invalid_token", Terminal: true},
+		tokens: map[string]AuthProviderTokenSet{
+			"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+		},
+	}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	_, principalID, grantID, _ := linkGrantForTest(t, db, handler, "code", "terminal-revoke@example.com", "identity")
+	if err := db.providerAuth.revokeGrant(context.Background(), principalID, grantID); err != nil {
+		t.Fatal(err)
+	}
+	grant, _ := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if toString(grant["token_ciphertext"]) != "" || toString(grant["token_key_version"]) != "" ||
+		toString(grant["client_id"]) != "" || toString(grant["credential_ciphertext"]) != "" || toString(grant["credential_key_version"]) != "" {
+		t.Fatal("terminal revocation did not scrub provider token and credential material")
+	}
+}
+
+func TestProviderOverlappingRevocationsCallUpstreamOnce(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	provider := &fakeGrantProvider{
+		issuer:        "https://issuer.example",
+		revokeStarted: started,
+		revokeRelease: release,
+		tokens: map[string]AuthProviderTokenSet{
+			"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+		},
+	}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	_, principalID, grantID, _ := linkGrantForTest(t, db, handler, "code", "overlapping-revoke@example.com", "identity")
+	revokeDone := make(chan error, 1)
+	go func() { revokeDone <- db.providerAuth.revokeGrant(context.Background(), principalID, grantID) }()
+	<-started
+	retryRows := providerAllRows(db.Table(systemAuthProviderRevocationTableName))
+	if len(retryRows) != 1 {
+		t.Fatalf("retry rows=%d", len(retryRows))
+	}
+	retryID := toString(retryRows[0]["id"])
+	staleGrantID := toString(retryRows[0]["grant_id"])
+	retryDone := make(chan error, 1)
+	go func() {
+		retryDone <- db.providerAuth.attemptRevocationForGrant(context.Background(), retryID, staleGrantID)
+	}()
+	close(release)
+	if err := <-revokeDone; err != nil {
+		t.Fatalf("immediate revocation: %v", err)
+	}
+	if err := <-retryDone; err != nil {
+		t.Fatalf("overlapping retry: %v", err)
+	}
+	provider.mu.Lock()
+	revocations := provider.revocations
+	provider.mu.Unlock()
+	if revocations != 1 {
+		t.Fatalf("upstream revocations=%d want 1", revocations)
 	}
 }
