@@ -776,17 +776,17 @@ func (s *providerAuthService) completeSignIn(flow map[string]any, identity AuthP
 		tx.abort()
 		return nil, providerError("provider_flow_failed", "provider authentication failed", 500, err)
 	}
+	grant, err := s.materializeGrant(tx, flow, linked)
+	if err != nil {
+		tx.abort()
+		return nil, providerError("provider_grant_failed", "provider grant could not be saved", 500, err)
+	}
 	if err := tx.update(identities, toString(linked["id"]), map[string]any{
 		"provider": identity.Provider, "display_name": identity.DisplayName, "email": identity.Email,
 		"email_verified": identity.EmailVerified, "last_authenticated_at": now,
 	}); err != nil {
 		tx.abort()
 		return nil, providerError("provider_flow_failed", "provider authentication failed", 500, err)
-	}
-	grant, err := s.materializeGrant(tx, flow, linked)
-	if err != nil {
-		tx.abort()
-		return nil, providerError("provider_grant_failed", "provider grant could not be saved", 500, err)
 	}
 	token, refreshToken, appAuth, sessionID, err := s.db.authService.CreateProviderSession(toString(linked["principal_id"]), toString(linked["id"]), tx.txBuf)
 	if err != nil {

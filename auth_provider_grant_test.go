@@ -15,19 +15,20 @@ import (
 )
 
 type fakeGrantProvider struct {
-	mu             sync.Mutex
-	issuer         string
-	tokens         map[string]AuthProviderTokenSet
-	refreshes      int
-	refreshScopes  []string
-	lastRefresh    AuthProviderRefreshRequest
-	refreshStarted chan struct{}
-	refreshRelease <-chan struct{}
-	revocations    int
-	lastRevoke     AuthProviderRevokeRequest
-	revokeErr      error
-	revokeStarted  chan struct{}
-	revokeRelease  <-chan struct{}
+	mu               sync.Mutex
+	issuer           string
+	tokens           map[string]AuthProviderTokenSet
+	refreshes        int
+	refreshScopes    []string
+	lastRefresh      AuthProviderRefreshRequest
+	refreshStarted   chan struct{}
+	refreshRelease   <-chan struct{}
+	revocations      int
+	lastRevoke       AuthProviderRevokeRequest
+	revokeErr        error
+	revokeStarted    chan struct{}
+	revokeRelease    <-chan struct{}
+	revokePreference string
 }
 
 func (p *fakeGrantProvider) AuthorizationURL(_ context.Context, request AuthProviderAuthorizationRequest) (string, error) {
@@ -91,6 +92,7 @@ func (p *fakeGrantProvider) RevokeGrant(_ context.Context, request AuthProviderR
 	}
 	return revokeErr
 }
+func (p *fakeGrantProvider) RevocationTokenType() string { return p.revokePreference }
 
 func appGrantTestConfig(adapter AuthProviderGrantAdapter, clientID, credential string) AuthProviderAppConfig {
 	return AuthProviderAppConfig{AllowedReturnURLs: []string{"https://client.example/done"}, BackendCredentials: []string{credential}, Providers: map[string]AuthProviderConfig{"shared": {Adapter: adapter, Issuer: "https://issuer.example", RedirectURI: "https://flop.example/api/auth/provider/callback?provider=shared", ClientID: clientID, ClientSecret: clientID + "-secret", AllowedScopes: []string{"identity", "read", GoogleScopeYouTubeReadonly}, DefaultScopes: []string{"identity"}, RequiredScopes: []string{"identity"}}}}
@@ -535,6 +537,67 @@ func TestProviderClientRotationPreservesRevocationCredentials(t *testing.T) {
 				t.Fatalf("revocation credentials client=%q secret=%q", revoke.ClientID, revoke.ClientSecret)
 			}
 		})
+	}
+}
+
+func TestProviderClientRotationReconnectDoesNotRestoreOldRefreshToken(t *testing.T) {
+	dataDir := t.TempDir()
+	provider := &fakeGrantProvider{
+		issuer:           "https://issuer.example",
+		revokePreference: "refresh_token",
+		tokens: map[string]AuthProviderTokenSet{
+			"initial":   {AccessToken: "old-access", RefreshToken: "old-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+			"reconnect": {AccessToken: "new-access", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Second), Scopes: []string{"identity"}},
+		},
+	}
+	db, handler := openGrantTestDatabase(t, dataDir, provider, "old-client")
+	_, principalID, grantID, _ := linkGrantForTest(t, db, handler, "initial", "client-rotation-reconnect@example.com", "identity")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, handler = openGrantTestDatabase(t, dataDir, provider, "new-client")
+	defer db.Close()
+	state := startAppFlow(t, handler, "app", "sign_in", "", "", "identity")
+	completion := callbackProviderFlow(t, handler, "shared", state, "reconnect")
+	response := completeProviderFlow(t, handler, completion, "", false)
+	if response.Code != http.StatusOK {
+		t.Fatalf("reconnect status=%d body=%s", response.Code, response.Body.String())
+	}
+	if reconnectedID := decodeProviderResponse(t, response)["grant"].(map[string]any)["id"].(string); reconnectedID != grantID {
+		t.Fatalf("reconnect grant=%q want %q", reconnectedID, grantID)
+	}
+
+	grant, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || grant == nil {
+		t.Fatalf("reconnected grant=%#v err=%v", grant, err)
+	}
+	var tokens AuthProviderTokenSet
+	if err := db.providerAuth.openProviderValue("grant", "app", toString(grant["registration_id"]), grantID, toString(grant["token_ciphertext"]), toString(grant["token_key_version"]), &tokens); err != nil {
+		t.Fatal(err)
+	}
+	if tokens.RefreshToken != "" {
+		t.Fatalf("reconnect retained refresh token %q", tokens.RefreshToken)
+	}
+	_, err = db.ProviderToken(context.Background(), "app", "backend", grantID, "identity")
+	var providerErr *AuthProviderError
+	if !errors.As(err, &providerErr) || providerErr.Code != "reconnect_required" {
+		t.Fatalf("expired reconnect token error=%v", err)
+	}
+	provider.mu.Lock()
+	refreshes := provider.refreshes
+	provider.mu.Unlock()
+	if refreshes != 0 {
+		t.Fatalf("reconnect attempted %d refreshes with an old token", refreshes)
+	}
+	if err := db.providerAuth.revokeGrant(context.Background(), principalID, grantID); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	revoke := provider.lastRevoke
+	provider.mu.Unlock()
+	if revoke.Token != "new-access" || revoke.TokenTypeHint != "access_token" || revoke.ClientID != "new-client" || revoke.ClientSecret != "new-client-secret" {
+		t.Fatalf("reconnect revocation=%+v", revoke)
 	}
 }
 

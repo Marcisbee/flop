@@ -389,10 +389,13 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 		return nil, err
 	}
 	tokens.Scopes = canonicalStrings(tokens.Scopes)
+	registration, err := s.db.Table(systemAuthProviderRegistrationTableName).Get(registrationID)
+	if err != nil || registration == nil || !providerBool(registration["enabled"]) || toString(registration["app_id"]) != appID || toString(registration["provider"]) != toString(flow["provider"]) {
+		return nil, fmt.Errorf("provider registration changed during authorization")
+	}
 	grants := s.db.Table(systemAuthProviderGrantTableName)
 	existing, exists := grants.FindByUniqueCompositeIndex([]string{"registration_id", "identity_id"}, registrationID, toString(identity["id"]))
 	grantID := ""
-	var err error
 	if exists {
 		grantID = toString(existing["id"])
 		tx.lockGrant(s, grantID)
@@ -413,7 +416,9 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 		if identityErr != nil || currentIdentity == nil || toString(currentIdentity["principal_id"]) != toString(existing["principal_id"]) {
 			return nil, fmt.Errorf("provider identity changed during authorization")
 		}
-		if tokens.RefreshToken == "" && toString(existing["token_ciphertext"]) != "" {
+		if state == "active" &&
+			toString(existing["client_id"]) == toString(registration["client_id"]) &&
+			tokens.RefreshToken == "" && toString(existing["token_ciphertext"]) != "" {
 			var currentTokens AuthProviderTokenSet
 			if err := s.openProviderValue("grant", appID, registrationID, grantID, toString(existing["token_ciphertext"]), toString(existing["token_key_version"]), &currentTokens); err != nil {
 				return nil, err
@@ -425,10 +430,6 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 		if err != nil {
 			return nil, err
 		}
-	}
-	registration, err := s.db.Table(systemAuthProviderRegistrationTableName).Get(registrationID)
-	if err != nil || registration == nil || !providerBool(registration["enabled"]) || toString(registration["app_id"]) != appID || toString(registration["provider"]) != toString(flow["provider"]) {
-		return nil, fmt.Errorf("provider registration changed during authorization")
 	}
 	ciphertext, version, err := s.sealProviderValue("grant", appID, registrationID, grantID, tokens)
 	if err != nil {
