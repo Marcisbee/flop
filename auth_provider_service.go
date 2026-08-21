@@ -73,6 +73,7 @@ type providerAuthService struct {
 	db             *Database
 	providers      map[string]AuthProviderConfig
 	apps           map[string]AuthProviderAppConfig
+	aeadMu         sync.RWMutex
 	aead           cipher.AEAD
 	tokenAEAD      map[string]cipher.AEAD
 	activeKey      string
@@ -130,12 +131,7 @@ type providerDescriptor struct {
 }
 
 func newProviderAuthService(db *Database, providers map[string]AuthProviderConfig, apps map[string]AuthProviderAppConfig, keys map[string][]byte, activeKey, secret string) *providerAuthService {
-	key := sha256.Sum256([]byte("flop/provider-flow/aead/v1\x00" + secret))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := newProviderFlowAEAD(secret)
 	if err != nil {
 		return nil
 	}
@@ -188,6 +184,29 @@ func newProviderAuthService(db *Database, providers map[string]AuthProviderConfi
 		service.initErr = service.syncRegistrations()
 	}
 	return service
+}
+
+func newProviderFlowAEAD(secret string) (cipher.AEAD, error) {
+	key := sha256.Sum256([]byte("flop/provider-flow/aead/v1\x00" + secret))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return aead, nil
+}
+
+func (s *providerAuthService) rekeyFlowCipher(secret string) {
+	aead, err := newProviderFlowAEAD(secret)
+	if err != nil {
+		return
+	}
+	s.aeadMu.Lock()
+	s.aead = aead
+	s.aeadMu.Unlock()
 }
 
 func cloneProviderAppConfig(in AuthProviderAppConfig) AuthProviderAppConfig {
@@ -1021,6 +1040,8 @@ func (s *providerAuthService) sealSecrets(secrets providerFlowSecrets) (string, 
 	if err != nil {
 		return "", err
 	}
+	s.aeadMu.RLock()
+	defer s.aeadMu.RUnlock()
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := io.ReadFull(s.random, nonce); err != nil {
 		return "", err
@@ -1032,7 +1053,12 @@ func (s *providerAuthService) sealSecrets(secrets providerFlowSecrets) (string, 
 func (s *providerAuthService) openSecrets(encoded string) (providerFlowSecrets, error) {
 	var secrets providerFlowSecrets
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(raw) <= s.aead.NonceSize() {
+	if err != nil {
+		return secrets, errors.New("invalid provider flow ciphertext")
+	}
+	s.aeadMu.RLock()
+	defer s.aeadMu.RUnlock()
+	if len(raw) <= s.aead.NonceSize() {
 		return secrets, errors.New("invalid provider flow ciphertext")
 	}
 	plain, err := s.aead.Open(nil, raw[:s.aead.NonceSize()], raw[s.aead.NonceSize():], []byte("flop-provider-flow-v1"))
@@ -1223,9 +1249,10 @@ func (d *Database) cleanupExpiredProviderFlows(now time.Time) (int, error) {
 	if flows == nil {
 		return 0, nil
 	}
-	if d.providerAuth != nil {
-		d.providerAuth.mu.Lock()
-		defer d.providerAuth.mu.Unlock()
+	providerAuth := d.providerAuth
+	if providerAuth != nil {
+		providerAuth.mu.Lock()
+		defer providerAuth.mu.Unlock()
 	}
 	return cleanupExpiredProviderFlowRows(flows, now)
 }
