@@ -1060,6 +1060,129 @@ func TestProviderUnlinkCountsOnlyCurrentlyUsableIdentities(t *testing.T) {
 	}
 }
 
+func TestSetJWTSecretDoesNotReplaceProviderServiceDuringCleanup(t *testing.T) {
+	provider := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{}}
+	db, _ := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+
+	providerAuth := db.providerAuth
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 250; i++ {
+			if _, err := db.cleanupExpiredProviderFlows(time.Now()); err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 250; i++ {
+			db.SetJWTSecret(fmt.Sprintf("deployment-secret-%d", i))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 250; i++ {
+			sealed, err := providerAuth.sealSecrets(providerFlowSecrets{Nonce: fmt.Sprintf("nonce-%d", i)})
+			if err != nil {
+				errs <- err
+				return
+			}
+			// A rekey between sealing and opening intentionally invalidates the
+			// legacy flow; either result is valid, but both cipher accesses must
+			// remain synchronized.
+			_, _ = providerAuth.openSecrets(sealed)
+		}
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("cleanup provider flows: %v", err)
+	}
+	if db.providerAuth != providerAuth {
+		t.Fatal("SetJWTSecret replaced the provider service")
+	}
+}
+
+func TestSetJWTSecretReconfiguresAuthAndProviderFlowCipher(t *testing.T) {
+	t.Run("legacy flow and auth secret", func(t *testing.T) {
+		legacy := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+			"legacy-code": {Provider: "legacy", Issuer: "https://legacy-issuer.example", Subject: "legacy-subject"},
+		}}
+		_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{
+			"legacy": fakeProviderConfig(legacy, "legacy", "https://legacy-issuer.example"),
+		})
+		oldSecret := db.jwtSecret
+		oldToken, _ := registerProviderTestUser(t, handler, "rekey@example.com")
+		legacyState, _ := startProviderFlow(t, handler, "legacy", "sign_in", "", "")
+		providerAuth := db.providerAuth
+		const deploymentSecret = "configured-deployment-secret"
+		db.SetJWTSecret(deploymentSecret)
+
+		if db.providerAuth != providerAuth {
+			t.Fatal("SetJWTSecret replaced the provider service")
+		}
+		if _, err := db.ValidateAccessToken(oldToken); err == nil {
+			t.Fatal("token issued with the pre-configuration secret remained valid")
+		}
+		if internalserver.VerifyJWT(oldToken, deploymentSecret) != nil {
+			t.Fatal("pre-configuration token validated with the deployment secret")
+		}
+		newToken, _, _, err := db.authService.Login("rekey@example.com", "password123")
+		if err != nil {
+			t.Fatalf("login after SetJWTSecret: %v", err)
+		}
+		if internalserver.VerifyJWT(newToken, deploymentSecret) == nil {
+			t.Fatal("post-configuration token did not validate with the deployment secret")
+		}
+		if internalserver.VerifyJWT(newToken, oldSecret) != nil {
+			t.Fatal("post-configuration token validated with the old secret")
+		}
+		if _, err := db.ValidateAccessToken(newToken); err != nil {
+			t.Fatalf("validate post-configuration token: %v", err)
+		}
+
+		legacyCallback := providerRequest(t, handler, http.MethodGet, "/api/auth/provider/callback?provider=legacy&state="+url.QueryEscape(legacyState)+"&code=legacy-code", "", "")
+		if legacyCallback.Code != http.StatusBadRequest {
+			t.Fatalf("legacy flow survived JWT rekey: status=%d body=%s", legacyCallback.Code, legacyCallback.Body.String())
+		}
+	})
+
+	t.Run("app-scoped provider secret key", func(t *testing.T) {
+		appProvider := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{
+			"app-code": {AccessToken: "app-access", RefreshToken: "app-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+		}}
+		db, handler := openGrantTestDatabase(t, t.TempDir(), appProvider, "client")
+		defer db.Close()
+		_, _ = registerProviderTestUser(t, handler, "provider-rekey@example.com")
+		db.SetJWTSecret("configured-app-deployment-secret")
+		newToken, _, _, err := db.authService.Login("provider-rekey@example.com", "password123")
+		if err != nil {
+			t.Fatalf("login after SetJWTSecret: %v", err)
+		}
+		appState := startAppFlow(t, handler, "app", "link", newToken, "", "identity")
+		completionCode := callbackProviderFlow(t, handler, "shared", appState, "app-code")
+		completed := completeProviderFlow(t, handler, completionCode, newToken, true)
+		if completed.Code != http.StatusOK {
+			t.Fatalf("provider flow after SetJWTSecret status=%d body=%s", completed.Code, completed.Body.String())
+		}
+		grantID := decodeProviderResponse(t, completed)["grant"].(map[string]any)["id"].(string)
+		lease, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity")
+		if err != nil || lease.AccessToken != "app-access" {
+			t.Fatalf("app-scoped provider token after SetJWTSecret=%+v err=%v", lease, err)
+		}
+	})
+}
+
 func assertProviderErrorCode(t *testing.T, err error, code string) {
 	t.Helper()
 	var providerErr *AuthProviderError
