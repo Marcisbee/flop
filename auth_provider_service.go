@@ -813,7 +813,8 @@ func (s *providerAuthService) completeLink(flow map[string]any, identity AuthPro
 		return nil, providerError("link_session_changed", "the original authenticated session is required", 401, err)
 	}
 	identities := s.db.Table(systemAuthIdentityTableName)
-	if _, exists := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject); exists {
+	row, exists := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject)
+	if exists && toString(row["principal_id"]) != principalID {
 		_, _ = s.db.Table(systemAuthProviderFlowTableName).Update(toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now})
 		return nil, providerError("identity_already_linked", "provider identity is already linked", 409)
 	}
@@ -822,17 +823,20 @@ func (s *providerAuthService) completeLink(flow map[string]any, identity AuthPro
 		tx.abort()
 		return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 	}
-	row, err := tx.insert(identities, map[string]any{
-		"principal_id": principalID, "provider": identity.Provider, "issuer": identity.Issuer, "subject": identity.Subject,
-		"display_name": identity.DisplayName, "email": identity.Email, "email_verified": identity.EmailVerified,
-		"linked_at": now, "last_authenticated_at": now,
-	})
-	if err != nil {
-		tx.abort()
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate unique") {
-			return nil, providerError("identity_already_linked", "provider identity is already linked", 409)
+	if !exists {
+		var err error
+		row, err = tx.insert(identities, map[string]any{
+			"principal_id": principalID, "provider": identity.Provider, "issuer": identity.Issuer, "subject": identity.Subject,
+			"display_name": identity.DisplayName, "email": identity.Email, "email_verified": identity.EmailVerified,
+			"linked_at": now, "last_authenticated_at": now,
+		})
+		if err != nil {
+			tx.abort()
+			if strings.Contains(strings.ToLower(err.Error()), "duplicate unique") {
+				return nil, providerError("identity_already_linked", "provider identity is already linked", 409)
+			}
+			return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 		}
-		return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 	}
 	grant, err := s.materializeGrant(tx, flow, row)
 	if err != nil {
