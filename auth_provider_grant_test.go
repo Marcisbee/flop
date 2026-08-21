@@ -98,6 +98,18 @@ func appGrantTestConfig(adapter AuthProviderGrantAdapter, clientID, credential s
 	return AuthProviderAppConfig{AllowedReturnURLs: []string{"https://client.example/done"}, BackendCredentials: []string{credential}, Providers: map[string]AuthProviderConfig{"shared": {Adapter: adapter, Issuer: "https://issuer.example", RedirectURI: "https://flop.example/api/auth/provider/callback?provider=shared", ClientID: clientID, ClientSecret: clientID + "-secret", AllowedScopes: []string{"identity", "read", GoogleScopeYouTubeReadonly}, DefaultScopes: []string{"identity"}, RequiredScopes: []string{"identity"}}}}
 }
 
+func identityOnlyAppConfig(adapter AuthProviderAdapter, clientID, clientSecret, credential string) AuthProviderAppConfig {
+	return AuthProviderAppConfig{
+		AllowedReturnURLs:  []string{"https://client.example/done"},
+		BackendCredentials: []string{credential},
+		Providers: map[string]AuthProviderConfig{"shared": {
+			Adapter: adapter, Issuer: "https://issuer.example",
+			RedirectURI: "https://flop.example/api/auth/provider/callback?provider=shared",
+			ClientID:    clientID, ClientSecret: clientSecret,
+		}},
+	}
+}
+
 func defineGrantTestUsers(app *App) {
 	Define(app, "users", func(s *SchemaBuilder) {
 		s.String("id").Primary("uuidv7")
@@ -148,6 +160,243 @@ func startAppFlow(t *testing.T, handler http.Handler, appID, intent, bearer, gra
 	authorizationURL, _ := decodeProviderResponse(t, rec)["authorizationUrl"].(string)
 	parsed, _ := url.Parse(authorizationURL)
 	return parsed.Query().Get("state")
+}
+
+func TestIdentityOnlyProviderGrantsResolveForMatchingBackend(t *testing.T) {
+	const (
+		subject       = "identity-only-subject-secret"
+		backendA      = "backend-a-secret"
+		backendB      = "backend-b-secret"
+		clientSecretA = "provider-client-a-secret"
+		clientSecretB = "provider-client-b-secret"
+	)
+	provider := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"app-a":  {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person"},
+		"app-b":  {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person"},
+		"app-a2": {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person"},
+	}}
+	if _, tokenCapable := any(provider).(AuthProviderGrantAdapter); tokenCapable {
+		t.Fatal("identity-only fixture unexpectedly implements token grant capability")
+	}
+	app := New(Config{
+		DataDir: t.TempDir(), SyncMode: "normal",
+		AuthProviderApps: map[string]AuthProviderAppConfig{
+			"app-a": identityOnlyAppConfig(provider, "client-a", clientSecretA, backendA),
+			"app-b": identityOnlyAppConfig(provider, "client-b", clientSecretB, backendB),
+		},
+		ProviderSecretKeys:      map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")},
+		ActiveProviderSecretKey: "v1",
+	})
+	defineGrantTestUsers(app)
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler := app.APIHandler(db)
+
+	assertBrowserSafe := func(name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		for _, secret := range []string{subject, backendA, backendB, clientSecretA, clientSecretB, "upstream-access-token", "upstream-refresh-token"} {
+			if strings.Contains(rec.Body.String(), secret) || strings.Contains(rec.Header().Get("Location"), secret) {
+				t.Fatalf("%s exposed %q: headers=%v body=%s", name, secret, rec.Header(), rec.Body.String())
+			}
+		}
+	}
+	discovery := providerRequest(t, handler, http.MethodGet, "/api/auth/providers?appID=app-a", "", "")
+	assertBrowserSafe("discovery", discovery)
+
+	passwordToken, principalID := registerProviderTestUser(t, handler, "identity-only@example.com")
+	stateA := startAppFlow(t, handler, "app-a", "link", passwordToken, "")
+	callbackA := providerRequest(t, handler, http.MethodGet, "/api/auth/provider/callback?provider=shared&state="+url.QueryEscape(stateA)+"&code=app-a", "", "")
+	if callbackA.Code != http.StatusOK {
+		t.Fatalf("app A callback status=%d body=%s", callbackA.Code, callbackA.Body.String())
+	}
+	assertBrowserSafe("callback", callbackA)
+	completionA := toString(decodeProviderResponse(t, callbackA)["completionCode"])
+	linked := completeProviderFlow(t, handler, completionA, passwordToken, true)
+	if linked.Code != http.StatusOK {
+		t.Fatalf("app A completion status=%d body=%s", linked.Code, linked.Body.String())
+	}
+	assertBrowserSafe("link completion", linked)
+	grantA := toString(decodeProviderResponse(t, linked)["grant"].(map[string]any)["id"])
+
+	stateB := startAppFlow(t, handler, "app-b", "sign_in", "", "")
+	callbackB := providerRequest(t, handler, http.MethodGet, "/api/auth/provider/callback?provider=shared&state="+url.QueryEscape(stateB)+"&code=app-b", "", "")
+	if callbackB.Code != http.StatusOK {
+		t.Fatalf("app B callback status=%d body=%s", callbackB.Code, callbackB.Body.String())
+	}
+	assertBrowserSafe("sign-in callback", callbackB)
+	completionB := toString(decodeProviderResponse(t, callbackB)["completionCode"])
+	signedIn := completeProviderFlow(t, handler, completionB, "", false)
+	if signedIn.Code != http.StatusOK {
+		t.Fatalf("app B completion status=%d body=%s", signedIn.Code, signedIn.Body.String())
+	}
+	assertBrowserSafe("sign-in completion", signedIn)
+	grantB := toString(decodeProviderResponse(t, signedIn)["grant"].(map[string]any)["id"])
+
+	if got := db.Table(systemAuthIdentityTableName).Count(); got != 1 {
+		t.Fatalf("identities=%d want 1", got)
+	}
+	if got := db.Table(systemAuthProviderGrantTableName).Count(); got != 2 {
+		t.Fatalf("grants=%d want 2", got)
+	}
+	rowA, _ := db.Table(systemAuthProviderGrantTableName).Get(grantA)
+	rowB, _ := db.Table(systemAuthProviderGrantTableName).Get(grantB)
+	if grantA == grantB || toString(rowA["registration_id"]) == toString(rowB["registration_id"]) ||
+		toString(rowA["app_id"]) != "app-a" || toString(rowB["app_id"]) != "app-b" {
+		t.Fatalf("identity-only grants were not app isolated: A=%#v B=%#v", rowA, rowB)
+	}
+	for _, row := range []map[string]any{rowA, rowB} {
+		if toString(row["principal_id"]) != principalID || len(storedStrings(row["granted_scopes"])) != 0 ||
+			toString(row["token_ciphertext"]) != "" || toString(row["token_key_version"]) != "" ||
+			toString(row["credential_ciphertext"]) != "" || toString(row["credential_key_version"]) != "" ||
+			toString(row["client_id"]) != "" || toString(row["state"]) != "active" {
+			t.Fatalf("unsafe identity-only grant row: %#v", row)
+		}
+	}
+
+	resolvedA, err := db.ProviderIdentity(context.Background(), "app-a", backendA, grantA)
+	if err != nil || resolvedA.GrantID != grantA || resolvedA.AppID != "app-a" || resolvedA.Provider != "shared" || resolvedA.Issuer != "https://issuer.example" || resolvedA.Subject != subject {
+		t.Fatalf("app A identity=%+v err=%v", resolvedA, err)
+	}
+	resolvedB, err := db.ProviderIdentity(context.Background(), "app-b", backendB, grantB)
+	if err != nil || resolvedB.Subject != subject {
+		t.Fatalf("app B identity=%+v err=%v", resolvedB, err)
+	}
+	if _, err := db.ProviderToken(context.Background(), "app-b", backendB, grantB); err == nil {
+		t.Fatal("identity-only grant returned a provider token")
+	}
+	rowB, _ = db.Table(systemAuthProviderGrantTableName).Get(grantB)
+	if toString(rowB["state"]) != "active" {
+		t.Fatalf("token lookup changed identity-only grant state to %q", rowB["state"])
+	}
+
+	resolveHTTP := func(appID, grantID, credential, authorization string, extra bool) *httptest.ResponseRecorder {
+		t.Helper()
+		body := map[string]any{"appID": appID, "grantId": grantID}
+		if extra {
+			body["unexpected"] = true
+		}
+		encoded, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/provider/backend/identity", strings.NewReader(string(encoded)))
+		req.Header.Set("Content-Type", "application/json")
+		if credential != "" {
+			req.Header.Set("X-Flop-Backend-Credential", credential)
+		}
+		if authorization != "" {
+			req.Header.Set("Authorization", authorization)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("identity response cache control=%q", rec.Header().Get("Cache-Control"))
+		}
+		return rec
+	}
+	if rec := resolveHTTP("app-a", grantA, backendA, "", false); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), subject) || strings.Contains(rec.Body.String(), principalID) {
+		t.Fatalf("app A backend identity status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := resolveHTTP("app-b", grantB, "", "Bearer "+backendB, false); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), subject) {
+		t.Fatalf("app B bearer identity status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"missing credential": resolveHTTP("app-a", grantA, "", "", false),
+		"wrong credential":   resolveHTTP("app-a", grantA, "wrong", "", false),
+		"other credential":   resolveHTTP("app-a", grantA, backendB, "", false),
+		"other app grant":    resolveHTTP("app-b", grantA, backendB, "", false),
+		"unknown grant":      resolveHTTP("app-a", "unknown", backendA, "", false),
+		"unknown JSON field": resolveHTTP("app-a", grantA, backendA, "", true),
+	} {
+		if rec.Code >= 200 && rec.Code < 300 {
+			t.Fatalf("%s unexpectedly succeeded: %s", name, rec.Body.String())
+		}
+		assertBrowserSafe(name, rec)
+	}
+	if rec := resolveHTTP("app-a", grantA, "wrong", "", false); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "backend_unauthorized") {
+		t.Fatalf("wrong credential did not fail before grant lookup: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := resolveHTTP("app-a", "unknown", backendA, "", false); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "grant_not_found") {
+		t.Fatalf("authenticated unknown grant status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	registrationA, _ := db.Table(systemAuthProviderRegistrationTableName).Get(toString(rowA["registration_id"]))
+	if _, err := db.Table(systemAuthProviderRegistrationTableName).Update(toString(registrationA["id"]), map[string]any{"enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := resolveHTTP("app-a", grantA, backendA, "", false); rec.Code < 400 {
+		t.Fatalf("disabled registration resolved identity: %s", rec.Body.String())
+	}
+	_, _ = db.Table(systemAuthProviderRegistrationTableName).Update(toString(registrationA["id"]), map[string]any{"enabled": true})
+	appA, _ := db.Table(systemAuthProviderAppTableName).FindByUniqueIndex("app_id", "app-a")
+	_, _ = db.Table(systemAuthProviderAppTableName).Update(toString(appA["id"]), map[string]any{"enabled": false})
+	if rec := resolveHTTP("app-a", grantA, backendA, "", false); rec.Code < 400 {
+		t.Fatalf("disabled app resolved identity: %s", rec.Body.String())
+	}
+	_, _ = db.Table(systemAuthProviderAppTableName).Update(toString(appA["id"]), map[string]any{"enabled": true})
+	identity, _ := db.Table(systemAuthIdentityTableName).Get(toString(rowA["identity_id"]))
+	_, _ = db.Table(systemAuthIdentityTableName).Update(toString(identity["id"]), map[string]any{"principal_id": "inconsistent-principal"})
+	if _, err := db.ProviderIdentity(context.Background(), "app-a", backendA, grantA); err == nil {
+		t.Fatal("identity ownership mismatch resolved")
+	}
+	_, _ = db.Table(systemAuthIdentityTableName).Update(toString(identity["id"]), map[string]any{"principal_id": principalID, "issuer": "https://wrong-issuer.example"})
+	if _, err := db.ProviderIdentity(context.Background(), "app-a", backendA, grantA); err == nil {
+		t.Fatal("identity issuer mismatch resolved")
+	}
+	_, _ = db.Table(systemAuthIdentityTableName).Update(toString(identity["id"]), map[string]any{"issuer": "https://issuer.example"})
+	_, _ = db.Table(systemAuthProviderRegistrationTableName).Update(toString(registrationA["id"]), map[string]any{"provider": "wrong-provider"})
+	if _, err := db.ProviderIdentity(context.Background(), "app-a", backendA, grantA); err == nil {
+		t.Fatal("registration provider mismatch resolved")
+	}
+	_, _ = db.Table(systemAuthProviderRegistrationTableName).Update(toString(registrationA["id"]), map[string]any{"provider": "shared"})
+
+	if err := db.providerAuth.revokeGrant(context.Background(), principalID, grantA); err != nil {
+		t.Fatal(err)
+	}
+	if db.Table(systemAuthProviderRevocationTableName).Count() != 0 {
+		t.Fatal("identity-only revoke created a remote revocation retry")
+	}
+	if _, err := db.ProviderIdentity(context.Background(), "app-a", backendA, grantA); err == nil {
+		t.Fatal("revoked identity-only grant resolved")
+	}
+	if _, err := db.ProviderIdentity(context.Background(), "app-b", backendB, grantB); err != nil {
+		t.Fatalf("app A revocation affected app B grant: %v", err)
+	}
+
+	stateA = startAppFlow(t, handler, "app-a", "sign_in", "", "")
+	completionA = callbackProviderFlow(t, handler, "shared", stateA, "app-a2")
+	reauthorized := completeProviderFlow(t, handler, completionA, "", false)
+	if reauthorized.Code != http.StatusOK || toString(decodeProviderResponse(t, reauthorized)["grant"].(map[string]any)["id"]) != grantA {
+		t.Fatalf("identity-only reauthorization status=%d body=%s", reauthorized.Code, reauthorized.Body.String())
+	}
+	identityID := toString(rowA["identity_id"])
+	if err := db.providerAuth.unlink(principalID, identityID); err != nil {
+		t.Fatal(err)
+	}
+	if db.Table(systemAuthProviderRevocationTableName).Count() != 0 || db.Table(systemAuthIdentityTableName).Count() != 0 {
+		t.Fatal("identity-only unlink retained identity or created revocation retry")
+	}
+	for _, grantID := range []string{grantA, grantB} {
+		row, _ := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+		if toString(row["state"]) != "revoked" || toString(row["token_ciphertext"]) != "" {
+			t.Fatalf("unlinked identity-only grant remained usable: %#v", row)
+		}
+	}
+	for _, session := range providerAllRows(db.Table(systemAuthSessionTableName)) {
+		if toString(session["auth_identity_id"]) == identityID && providerUnix(session["revoked_at"]) == 0 {
+			t.Fatalf("provider-derived session survived identity unlink: %#v", session)
+		}
+	}
+
+	identities := providerRequest(t, handler, http.MethodGet, "/api/auth/provider/identities", "", passwordToken)
+	grants := providerRequest(t, handler, http.MethodGet, "/api/auth/provider/grants", "", passwordToken)
+	assertBrowserSafe("identity list", identities)
+	assertBrowserSafe("grant list", grants)
+	schemaResponse := providerRequest(t, handler, http.MethodGet, "/api/schema", "", "")
+	if !strings.Contains(schemaResponse.Body.String(), "auth_provider_backend_identity") {
+		t.Fatalf("generated schema omitted backend identity route: %s", schemaResponse.Body.String())
+	}
+	assertBrowserSafe("schema", schemaResponse)
 }
 
 func TestProviderGrantsAreIsolatedByApp(t *testing.T) {
@@ -737,6 +986,119 @@ func TestProviderRemoteRevocationRetriesWithoutRestoringAccess(t *testing.T) {
 		toString(grant["client_id"]) != "" || toString(grant["credential_ciphertext"]) != "" || toString(grant["credential_key_version"]) != "" ||
 		db.Table(systemAuthProviderRevocationTableName).Count() != 0 {
 		t.Fatal("successful retry did not scrub provider token and credential material")
+	}
+}
+
+func TestTokenlessMaterializationRejectsGrantWithPendingRevocation(t *testing.T) {
+	dataDir := t.TempDir()
+	tokenProvider := &fakeGrantProvider{
+		issuer:    "https://issuer.example",
+		revokeErr: fmt.Errorf("temporary upstream failure"),
+		tokens: map[string]AuthProviderTokenSet{
+			"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+		},
+	}
+	app := New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": appGrantTestConfig(tokenProvider, "client", "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := app.APIHandler(db)
+	_, principalID, grantID, _ := linkGrantForTest(t, db, handler, "code", "pending-tokenless@example.com", "identity")
+	err = db.providerAuth.revokeGrant(context.Background(), principalID, grantID)
+	var providerErr *AuthProviderError
+	if !errors.As(err, &providerErr) || providerErr.Code != "revocation_pending" {
+		t.Fatalf("revoke error=%v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	identityProvider := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"identity": {Provider: "shared", Issuer: "https://issuer.example", Subject: "shared-subject"},
+	}}
+	app = New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": identityOnlyAppConfig(identityProvider, "client", "client-secret", "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err = app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler = app.APIHandler(db)
+
+	state := startAppFlow(t, handler, "app", "sign_in", "", "")
+	completion := callbackProviderFlow(t, handler, "shared", state, "identity")
+	response := completeProviderFlow(t, handler, completion, "", false)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "provider_grant_failed") {
+		t.Fatalf("tokenless materialization status=%d body=%s", response.Code, response.Body.String())
+	}
+	grant, _ := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if toString(grant["state"]) != "revoked" || db.Table(systemAuthProviderRevocationTableName).Count() != 1 {
+		t.Fatalf("pending revocation changed by tokenless materialization: grant=%#v retries=%d", grant, db.Table(systemAuthProviderRevocationTableName).Count())
+	}
+	if _, err := db.ProviderIdentity(context.Background(), "app", "backend", grantID); err == nil {
+		t.Fatal("pending revocation was exposed as an identity grant")
+	}
+}
+
+func TestTokenlessMaterializationRejectsActiveTokenGrant(t *testing.T) {
+	dataDir := t.TempDir()
+	tokenProvider := &fakeGrantProvider{
+		issuer: "https://issuer.example",
+		tokens: map[string]AuthProviderTokenSet{
+			"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+		},
+	}
+	app := New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": appGrantTestConfig(tokenProvider, "client", "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := app.APIHandler(db)
+	_, _, grantID, _ := linkGrantForTest(t, db, handler, "code", "active-tokenless@example.com", "identity")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	identityProvider := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"identity": {Provider: "shared", Issuer: "https://issuer.example", Subject: "shared-subject"},
+	}}
+	app = New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": identityOnlyAppConfig(identityProvider, "client", "client-secret", "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err = app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler = app.APIHandler(db)
+	before, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || before == nil {
+		t.Fatalf("grant lookup=%#v err=%v", before, err)
+	}
+
+	state := startAppFlow(t, handler, "app", "sign_in", "", "")
+	completion := callbackProviderFlow(t, handler, "shared", state, "identity")
+	response := completeProviderFlow(t, handler, completion, "", false)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "provider_grant_failed") {
+		t.Fatalf("tokenless materialization status=%d body=%s", response.Code, response.Body.String())
+	}
+	after, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || after == nil {
+		t.Fatalf("grant lookup=%#v err=%v", after, err)
+	}
+	for _, field := range []string{"state", "token_ciphertext", "token_key_version", "client_id", "credential_ciphertext", "credential_key_version"} {
+		if toString(after[field]) != toString(before[field]) {
+			t.Fatalf("tokenless materialization changed %s: before=%q after=%q", field, before[field], after[field])
+		}
+	}
+	if db.Table(systemAuthProviderRevocationTableName).Count() != 0 {
+		t.Fatal("failed-closed tokenless materialization staged an unexpected revocation")
+	}
+	lease, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity")
+	if err != nil || lease.AccessToken != "access" {
+		t.Fatalf("original backend authorization lease=%#v err=%v", lease, err)
 	}
 }
 

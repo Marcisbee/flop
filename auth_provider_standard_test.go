@@ -84,7 +84,12 @@ func TestOAuth2ProviderProtocolFixture(t *testing.T) {
 }
 
 func TestSteamOpenIDProtocolFixture(t *testing.T) {
+	var validationRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		validationRequests.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/" {
+			t.Errorf("unexpected Steam request method=%s path=%s; no playtime or owned-games request is allowed", r.Method, r.URL.Path)
+		}
 		body, _ := io.ReadAll(r.Body)
 		if !strings.Contains(string(body), "openid.mode=check_authentication") {
 			t.Errorf("verification body=%s", body)
@@ -126,6 +131,9 @@ func TestSteamOpenIDProtocolFixture(t *testing.T) {
 	badEndpoint.Set("openid.op_endpoint", "https://attacker.example/openid")
 	if _, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: badEndpoint}); err == nil {
 		t.Fatal("Steam accepted an assertion from another OpenID endpoint")
+	}
+	if got := validationRequests.Load(); got != 1 {
+		t.Fatalf("Steam made %d requests, want only the OpenID assertion validation request and no playtime or owned-games request", got)
 	}
 }
 

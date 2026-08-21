@@ -641,6 +641,7 @@ func (h *APIHandler) handleSchema(w http.ResponseWriter) {
 			endpoint{Name: "auth_provider_grants", Method: http.MethodGet, Path: "/api/auth/provider/grants", Type: "auth", Access: Authenticated()},
 			endpoint{Name: "auth_provider_revoke", Method: http.MethodDelete, Path: "/api/auth/provider/grants/{grantId}", Type: "auth", Access: Authenticated()},
 			endpoint{Name: "auth_provider_backend_token", Method: http.MethodPost, Path: "/api/auth/provider/backend/token", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_backend_identity", Method: http.MethodPost, Path: "/api/auth/provider/backend/identity", Type: "auth", Access: Public()},
 		)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -916,6 +917,30 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, http.StatusOK, lease)
+	case "/api/auth/provider/backend/identity":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		var in struct {
+			AppID   string `json:"appID"`
+			GrantID string `json:"grantId"`
+		}
+		if err := decodeStrictJSONBody(r, &in); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		credential := r.Header.Get("X-Flop-Backend-Credential")
+		if credential == "" {
+			credential = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		}
+		identity, err := h.db.ProviderIdentity(r.Context(), in.AppID, credential, in.GrantID)
+		if err != nil {
+			providerJSONError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, identity)
 	case "/api/auth/register":
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
