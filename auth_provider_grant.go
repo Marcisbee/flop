@@ -549,6 +549,10 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 		}
 		existing = inserted
 	}
+	// A terminal refresh failure tombstones the grant in memory before persisting
+	// reconnect_required. Clear that residue only after the replacement active
+	// row commits, while the reused grant ID remains locked.
+	tx.afterCommit(func() { s.unusableGrants.Delete(grantID) })
 	row := make(map[string]any, len(existing)+len(updates))
 	for key, value := range existing {
 		row[key] = value

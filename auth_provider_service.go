@@ -1130,12 +1130,13 @@ func providerBool(value any) bool {
 }
 
 type providerTxn struct {
-	db     *Database
-	txBuf  map[string]*engine.WalBufEntry
-	undo   []func()
-	locked map[string]struct{}
-	unlock []func()
-	closed bool
+	db       *Database
+	txBuf    map[string]*engine.WalBufEntry
+	undo     []func()
+	onCommit []func()
+	locked   map[string]struct{}
+	unlock   []func()
+	closed   bool
 }
 
 func newProviderTxn(db *Database) *providerTxn {
@@ -1174,6 +1175,13 @@ func (tx *providerTxn) insert(table *TableInstance, data map[string]any) (map[st
 
 func (tx *providerTxn) addInserted(table *TableInstance, id string) {
 	tx.undo = append(tx.undo, func() { _ = table.rollbackInserted(id) })
+}
+
+func (tx *providerTxn) afterCommit(callback func()) {
+	if tx == nil || callback == nil {
+		return
+	}
+	tx.onCommit = append(tx.onCommit, callback)
 }
 
 func (tx *providerTxn) update(table *TableInstance, id string, updates map[string]any) error {
@@ -1223,6 +1231,9 @@ func (tx *providerTxn) commit() error {
 	if err := tx.db.db.EnqueueCommit(tx.txBuf); err != nil {
 		tx.rollback()
 		return err
+	}
+	for _, callback := range tx.onCommit {
+		callback()
 	}
 	return nil
 }

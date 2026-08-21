@@ -20,6 +20,7 @@ type fakeGrantProvider struct {
 	tokens           map[string]AuthProviderTokenSet
 	refreshes        int
 	refreshScopes    []string
+	refreshErr       error
 	lastRefresh      AuthProviderRefreshRequest
 	refreshStarted   chan struct{}
 	refreshRelease   <-chan struct{}
@@ -68,7 +69,7 @@ func (p *fakeGrantProvider) RefreshGrant(_ context.Context, request AuthProvider
 	if p.refreshScopes != nil {
 		scopes = append([]string(nil), p.refreshScopes...)
 	}
-	started, release := p.refreshStarted, p.refreshRelease
+	started, release, refreshErr := p.refreshStarted, p.refreshRelease, p.refreshErr
 	p.mu.Unlock()
 	if started != nil {
 		select {
@@ -78,6 +79,9 @@ func (p *fakeGrantProvider) RefreshGrant(_ context.Context, request AuthProvider
 	}
 	if release != nil {
 		<-release
+	}
+	if refreshErr != nil {
+		return AuthProviderTokenSet{}, refreshErr
 	}
 	return AuthProviderTokenSet{AccessToken: request.AppID + "-refreshed", RefreshToken: request.RefreshToken + "-rotated", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: scopes}, nil
 }
@@ -637,6 +641,30 @@ func TestReproductionProviderGrantReauthorizationAfterRevocation(t *testing.T) {
 			registrationA := toString(oldGrant["registration_id"])
 			if _, err := db.Table(systemAuthProviderGrantTableName).Update(oldGrantID, map[string]any{"refreshed_at": time.Now().Add(-time.Minute).Unix()}); err != nil {
 				t.Fatal(err)
+			}
+			if !test.pendingRevocation {
+				oldTokens := providerA.tokens["old"]
+				oldTokens.ExpiresAt = time.Now().Add(time.Second)
+				oldCiphertext, oldVersion, err := db.providerAuth.sealProviderValue("grant", "app-a", registrationA, oldGrantID, oldTokens)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Table(systemAuthProviderGrantTableName).Update(oldGrantID, map[string]any{
+					"token_ciphertext": oldCiphertext, "token_key_version": oldVersion, "access_expires_at": oldTokens.ExpiresAt.Unix(),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				providerA.mu.Lock()
+				providerA.refreshErr = &AuthProviderUpstreamError{Code: "invalid_grant", Terminal: true}
+				providerA.mu.Unlock()
+				lease, err := db.ProviderToken(context.Background(), "app-a", "backend-a", oldGrantID, "identity")
+				var providerErr *AuthProviderError
+				if lease != nil || !errors.As(err, &providerErr) || providerErr.Code != "reconnect_required" {
+					t.Fatalf("terminal refresh lease=%+v err=%v", lease, err)
+				}
+				if _, unusable := db.providerAuth.unusableGrants.Load(oldGrantID); !unusable {
+					t.Fatal("terminal refresh did not tombstone old grant")
+				}
 			}
 
 			stateB := startAppFlow(t, handler, "app-b", "link", bearer, "", "identity")
