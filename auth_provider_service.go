@@ -963,7 +963,9 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 			tx.abort()
 			return providerError("provider_identity_failed", "linked identity could not be removed", 500, err)
 		}
-		retryIDs = append(retryIDs, retryID)
+		if retryID != "" {
+			retryIDs = append(retryIDs, retryID)
+		}
 	}
 	if err := tx.delete(identities, identityID); err != nil {
 		tx.abort()

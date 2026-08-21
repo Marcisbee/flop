@@ -378,21 +378,37 @@ func providerGrantViewFromRow(row map[string]any) providerGrantView {
 	return providerGrantView{ID: toString(row["id"]), AppID: toString(row["app_id"]), Provider: toString(row["provider"]), IdentityID: toString(row["identity_id"]), Scopes: storedStrings(row["granted_scopes"]), State: toString(row["state"]), ExpiresAt: providerUnix(row["access_expires_at"])}
 }
 
+func (s *providerAuthService) materializationBinding(flow, identity map[string]any) (map[string]any, map[string]any, error) {
+	appID, registrationID, provider := toString(flow["app_id"]), toString(flow["registration_id"]), toString(flow["provider"])
+	registration, err := s.db.Table(systemAuthProviderRegistrationTableName).Get(registrationID)
+	if err != nil || registration == nil || !providerBool(registration["enabled"]) ||
+		toString(registration["app_id"]) != appID || toString(registration["provider"]) != provider {
+		return nil, nil, fmt.Errorf("provider registration changed during authorization")
+	}
+	if toString(identity["id"]) == "" || toString(identity["principal_id"]) == "" ||
+		toString(identity["provider"]) != provider ||
+		toString(identity["issuer"]) != toString(registration["issuer"]) ||
+		toString(identity["subject"]) == "" {
+		return nil, nil, fmt.Errorf("provider identity changed during authorization")
+	}
+	return registration, identity, nil
+}
+
 func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity map[string]any) (*providerGrantView, error) {
+	appID, registrationID, flowID := toString(flow["app_id"]), toString(flow["registration_id"]), toString(flow["id"])
+	registration, identity, err := s.materializationBinding(flow, identity)
+	if err != nil {
+		return nil, err
+	}
 	encoded := toString(flow["pending_tokens_ciphertext"])
 	if encoded == "" {
-		return nil, nil
+		return s.materializeIdentityGrant(tx, flow, identity, registration)
 	}
-	appID, registrationID, flowID := toString(flow["app_id"]), toString(flow["registration_id"]), toString(flow["id"])
 	var tokens AuthProviderTokenSet
 	if err := s.openProviderValue("flow", appID, registrationID, flowID, encoded, toString(flow["pending_tokens_key_version"]), &tokens); err != nil {
 		return nil, err
 	}
 	tokens.Scopes = canonicalStrings(tokens.Scopes)
-	registration, err := s.db.Table(systemAuthProviderRegistrationTableName).Get(registrationID)
-	if err != nil || registration == nil || !providerBool(registration["enabled"]) || toString(registration["app_id"]) != appID || toString(registration["provider"]) != toString(flow["provider"]) {
-		return nil, fmt.Errorf("provider registration changed during authorization")
-	}
 	grants := s.db.Table(systemAuthProviderGrantTableName)
 	existing, exists := grants.FindByUniqueCompositeIndex([]string{"registration_id", "identity_id"}, registrationID, toString(identity["id"]))
 	grantID := ""
@@ -468,6 +484,76 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 	return &view, nil
 }
 
+func (s *providerAuthService) materializeIdentityGrant(tx *providerTxn, flow, identity, registration map[string]any) (*providerGrantView, error) {
+	appID, registrationID := toString(flow["app_id"]), toString(flow["registration_id"])
+	grants := s.db.Table(systemAuthProviderGrantTableName)
+	existing, exists := grants.FindByUniqueCompositeIndex([]string{"registration_id", "identity_id"}, registrationID, toString(identity["id"]))
+	grantID := ""
+	if exists {
+		grantID = toString(existing["id"])
+		tx.lockGrant(s, grantID)
+		var err error
+		existing, err = grants.Get(grantID)
+		if err != nil || existing == nil {
+			return nil, fmt.Errorf("provider grant no longer exists")
+		}
+		if toString(existing["app_id"]) != appID ||
+			toString(existing["registration_id"]) != registrationID ||
+			toString(existing["identity_id"]) != toString(identity["id"]) ||
+			toString(existing["principal_id"]) != toString(identity["principal_id"]) ||
+			toString(existing["provider"]) != toString(flow["provider"]) {
+			return nil, fmt.Errorf("provider grant changed during authorization")
+		}
+	} else {
+		var err error
+		grantID, err = s.randomToken(18)
+		if err != nil {
+			return nil, err
+		}
+	}
+	now := s.now().Unix()
+	updates := map[string]any{
+		"granted_scopes":         []string{},
+		"token_ciphertext":       "",
+		"token_key_version":      "",
+		"client_id":              "",
+		"credential_ciphertext":  "",
+		"credential_key_version": "",
+		"state":                  "active",
+		"consented_at":           now,
+		"access_expires_at":      0,
+		"refreshed_at":           0,
+		"revoked_at":             0,
+	}
+	if exists {
+		if err := tx.update(grants, grantID, updates); err != nil {
+			return nil, err
+		}
+	} else {
+		created := map[string]any{
+			"id": grantID, "principal_id": toString(identity["principal_id"]), "identity_id": toString(identity["id"]),
+			"registration_id": registrationID, "app_id": appID, "provider": toString(registration["provider"]),
+		}
+		for key, value := range updates {
+			created[key] = value
+		}
+		inserted, err := tx.insert(grants, created)
+		if err != nil {
+			return nil, err
+		}
+		existing = inserted
+	}
+	row := make(map[string]any, len(existing)+len(updates))
+	for key, value := range existing {
+		row[key] = value
+	}
+	for key, value := range updates {
+		row[key] = value
+	}
+	view := providerGrantViewFromRow(row)
+	return &view, nil
+}
+
 func (s *providerAuthService) listGrants(principalID, appID string) ([]providerGrantView, error) {
 	rows, err := s.db.Table(systemAuthProviderGrantTableName).FindByIndex("principal_id", principalID)
 	if err != nil {
@@ -497,6 +583,34 @@ func (s *providerAuthService) authenticateBackend(appID, credential string) bool
 	return matched == 1
 }
 
+func (s *providerAuthService) identityGrant(appID, backendCredential, grantID string) (*ProviderIdentityGrant, error) {
+	if !s.authenticateBackend(appID, backendCredential) {
+		return nil, providerError("backend_unauthorized", "backend authentication failed", 401)
+	}
+	unlock := s.lockGrant(grantID)
+	defer unlock()
+	grant, err := s.db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || grant == nil || toString(grant["app_id"]) != appID || toString(grant["state"]) != "active" {
+		return nil, providerError("grant_not_found", "provider grant not found", 404)
+	}
+	registration, registrationErr := s.db.Table(systemAuthProviderRegistrationTableName).Get(toString(grant["registration_id"]))
+	identity, identityErr := s.db.Table(systemAuthIdentityTableName).Get(toString(grant["identity_id"]))
+	app, appFound := s.db.Table(systemAuthProviderAppTableName).FindByUniqueIndex("app_id", appID)
+	if registrationErr != nil || registration == nil || !providerBool(registration["enabled"]) ||
+		toString(registration["app_id"]) != appID || toString(registration["provider"]) != toString(grant["provider"]) ||
+		identityErr != nil || identity == nil || toString(identity["principal_id"]) == "" ||
+		toString(identity["principal_id"]) != toString(grant["principal_id"]) ||
+		toString(identity["provider"]) != toString(grant["provider"]) ||
+		toString(identity["issuer"]) != toString(registration["issuer"]) || toString(identity["subject"]) == "" ||
+		!appFound || !providerBool(app["enabled"]) {
+		return nil, providerError("grant_not_found", "provider grant not found", 404)
+	}
+	return &ProviderIdentityGrant{
+		GrantID: grantID, AppID: appID, Provider: toString(grant["provider"]),
+		Issuer: toString(identity["issuer"]), Subject: toString(identity["subject"]),
+	}, nil
+}
+
 func (s *providerAuthService) tokenLease(ctx context.Context, appID, backendCredential, grantID string, requiredScopes []string) (*ProviderTokenLease, error) {
 	if !s.authenticateBackend(appID, backendCredential) {
 		return nil, providerError("backend_unauthorized", "backend authentication failed", 401)
@@ -519,6 +633,9 @@ func (s *providerAuthService) tokenLease(ctx context.Context, appID, backendCred
 	granted := storedStrings(row["granted_scopes"])
 	if !scopeSubset(requiredScopes, granted) {
 		return nil, providerError("insufficient_scope", "provider grant lacks required scope", 403)
+	}
+	if toString(row["token_ciphertext"]) == "" || toString(row["token_key_version"]) == "" {
+		return nil, providerError("provider_token_unavailable", "provider grant has no access token", 409)
 	}
 	var tokens AuthProviderTokenSet
 	if err := s.openProviderValue("grant", appID, toString(row["registration_id"]), grantID, toString(row["token_ciphertext"]), toString(row["token_key_version"]), &tokens); err != nil {
@@ -638,6 +755,9 @@ func (s *providerAuthService) revokeGrant(ctx context.Context, principalID, gran
 		return providerError("provider_grant_failed", "provider grant could not be revoked", 500, err)
 	}
 	unlock()
+	if retryID == "" {
+		return nil
+	}
 	if err := s.attemptRevocation(ctx, retryID); err != nil {
 		return providerError("revocation_pending", "provider access is disabled; remote revocation is pending", 202, err)
 	}
@@ -648,6 +768,13 @@ func (s *providerAuthService) stageGrantRevocation(tx *providerTxn, grant map[st
 	grantID, appID, registrationID := toString(grant["id"]), toString(grant["app_id"]), toString(grant["registration_id"])
 	if existing, ok := s.db.Table(systemAuthProviderRevocationTableName).FindByUniqueIndex("grant_id", grantID); ok {
 		return toString(existing["id"]), nil
+	}
+	if toString(grant["token_ciphertext"]) == "" {
+		err := tx.update(s.db.Table(systemAuthProviderGrantTableName), grantID, map[string]any{
+			"state": "revoked", "revoked_at": s.now().Unix(), "token_key_version": "",
+			"client_id": "", "credential_ciphertext": "", "credential_key_version": "",
+		})
+		return "", err
 	}
 	var tokens AuthProviderTokenSet
 	if err := s.openProviderValue("grant", appID, registrationID, grantID, toString(grant["token_ciphertext"]), toString(grant["token_key_version"]), &tokens); err != nil {
@@ -802,4 +929,16 @@ func (d *Database) ProviderToken(ctx context.Context, appID, backendCredential, 
 		return nil, providerError("provider_auth_unavailable", "provider authentication unavailable", 404)
 	}
 	return d.providerAuth.tokenLease(ctx, appID, backendCredential, grantID, requiredScopes)
+}
+
+// ProviderIdentity resolves the verified external identity behind one
+// app-isolated grant after authenticating the app backend.
+func (d *Database) ProviderIdentity(ctx context.Context, appID, backendCredential, grantID string) (*ProviderIdentityGrant, error) {
+	if d == nil || d.providerAuth == nil {
+		return nil, providerError("provider_auth_unavailable", "provider authentication unavailable", 404)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return d.providerAuth.identityGrant(appID, backendCredential, grantID)
 }

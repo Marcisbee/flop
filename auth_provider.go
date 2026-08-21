@@ -179,3 +179,13 @@ type ProviderTokenLease struct {
 	ExpiresAt   time.Time `json:"expiresAt"`
 	Scopes      []string  `json:"scopes"`
 }
+
+// ProviderIdentityGrant is the verified provider identity resolved for one
+// app-isolated grant. It is returned only to an authenticated app backend.
+type ProviderIdentityGrant struct {
+	GrantID  string `json:"grantId"`
+	AppID    string `json:"appID"`
+	Provider string `json:"provider"`
+	Issuer   string `json:"issuer"`
+	Subject  string `json:"subject"`
+}
