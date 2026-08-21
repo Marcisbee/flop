@@ -504,6 +504,9 @@ func (s *providerAuthService) materializeIdentityGrant(tx *providerTxn, flow, id
 			toString(existing["provider"]) != toString(flow["provider"]) {
 			return nil, fmt.Errorf("provider grant changed during authorization")
 		}
+		if _, revocationPending := s.db.Table(systemAuthProviderRevocationTableName).FindByUniqueIndex("grant_id", grantID); revocationPending {
+			return nil, fmt.Errorf("provider grant revocation is pending")
+		}
 	} else {
 		var err error
 		grantID, err = s.randomToken(18)

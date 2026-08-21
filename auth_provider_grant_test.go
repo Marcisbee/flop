@@ -922,6 +922,59 @@ func TestProviderRemoteRevocationRetriesWithoutRestoringAccess(t *testing.T) {
 	}
 }
 
+func TestTokenlessMaterializationRejectsGrantWithPendingRevocation(t *testing.T) {
+	dataDir := t.TempDir()
+	tokenProvider := &fakeGrantProvider{
+		issuer:    "https://issuer.example",
+		revokeErr: fmt.Errorf("temporary upstream failure"),
+		tokens: map[string]AuthProviderTokenSet{
+			"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+		},
+	}
+	app := New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": appGrantTestConfig(tokenProvider, "client", "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := app.APIHandler(db)
+	_, principalID, grantID, _ := linkGrantForTest(t, db, handler, "code", "pending-tokenless@example.com", "identity")
+	err = db.providerAuth.revokeGrant(context.Background(), principalID, grantID)
+	var providerErr *AuthProviderError
+	if !errors.As(err, &providerErr) || providerErr.Code != "revocation_pending" {
+		t.Fatalf("revoke error=%v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	identityProvider := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"identity": {Provider: "shared", Issuer: "https://issuer.example", Subject: "shared-subject"},
+	}}
+	app = New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": identityOnlyAppConfig(identityProvider, "client", "client-secret", "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err = app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler = app.APIHandler(db)
+
+	state := startAppFlow(t, handler, "app", "sign_in", "", "")
+	completion := callbackProviderFlow(t, handler, "shared", state, "identity")
+	response := completeProviderFlow(t, handler, completion, "", false)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "provider_grant_failed") {
+		t.Fatalf("tokenless materialization status=%d body=%s", response.Code, response.Body.String())
+	}
+	grant, _ := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if toString(grant["state"]) != "revoked" || db.Table(systemAuthProviderRevocationTableName).Count() != 1 {
+		t.Fatalf("pending revocation changed by tokenless materialization: grant=%#v retries=%d", grant, db.Table(systemAuthProviderRevocationTableName).Count())
+	}
+	if _, err := db.ProviderIdentity(context.Background(), "app", "backend", grantID); err == nil {
+		t.Fatal("pending revocation was exposed as an identity grant")
+	}
+}
+
 func TestProviderImmediateRevocationScrubsGrantSecrets(t *testing.T) {
 	provider := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{
 		"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
