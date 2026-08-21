@@ -404,7 +404,7 @@ func TestProviderGrantsAreIsolatedByApp(t *testing.T) {
 		"a":           {AccessToken: "app-a-token", RefreshToken: "app-a-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity", "read"}},
 		"incremental": {AccessToken: "app-a-youtube", RefreshToken: "app-a-youtube-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity", "read", GoogleScopeYouTubeReadonly}},
 	}}
-	providerB := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{"b": {AccessToken: "app-b-token", RefreshToken: "app-b-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity", "read"}}}}
+	providerB := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{"b": {AccessToken: "app-b-token", RefreshToken: "app-b-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}}}}
 	app := New(Config{DataDir: t.TempDir(), SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app-a": appGrantTestConfig(providerA, "client-a", "backend-a"), "app-b": appGrantTestConfig(providerB, "client-b", "backend-b")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
 	Define(app, "users", func(s *SchemaBuilder) {
 		s.String("id").Primary("uuidv7")
@@ -426,6 +426,7 @@ func TestProviderGrantsAreIsolatedByApp(t *testing.T) {
 		t.Fatalf("discovery exposed registration credentials: %s", discovery.Body.String())
 	}
 	passwordToken, principalID := registerProviderTestUser(t, handler, "grants@example.com")
+	sessionsBeforeLinks := db.Table(systemAuthSessionTableName).Count()
 	stateA := startAppFlow(t, handler, "app-a", "link", passwordToken, "", "identity", "read")
 	completionA := callbackProviderFlow(t, handler, "shared", stateA, "a")
 	linked := completeProviderFlow(t, handler, completionA, passwordToken, true)
@@ -435,19 +436,31 @@ func TestProviderGrantsAreIsolatedByApp(t *testing.T) {
 	if strings.Contains(linked.Body.String(), "app-a-token") || strings.Contains(linked.Body.String(), "app-a-refresh") {
 		t.Fatalf("browser completion exposed provider tokens: %s", linked.Body.String())
 	}
-	grantA := decodeProviderResponse(t, linked)["grant"].(map[string]any)["id"].(string)
-	stateB := startAppFlow(t, handler, "app-b", "sign_in", "", "", "identity", "read")
-	completionB := callbackProviderFlow(t, handler, "shared", stateB, "b")
-	signedIn := completeProviderFlow(t, handler, completionB, "", false)
-	if signedIn.Code != 200 {
-		t.Fatalf("sign in status=%d body=%s", signedIn.Code, signedIn.Body.String())
+	linkedOut := decodeProviderResponse(t, linked)
+	if linkedOut["token"] != nil || linkedOut["refreshToken"] != nil || linkedOut["user"] != nil || linkedOut["me"] != nil {
+		t.Fatalf("link completion exposed a Flop session: %#v", linkedOut)
 	}
-	grantB := decodeProviderResponse(t, signedIn)["grant"].(map[string]any)["id"].(string)
+	grantA := decodeProviderResponse(t, linked)["grant"].(map[string]any)["id"].(string)
+	stateB := startAppFlow(t, handler, "app-b", "link", passwordToken, "", "identity")
+	completionB := callbackProviderFlow(t, handler, "shared", stateB, "b")
+	linkedAgain := completeProviderFlow(t, handler, completionB, passwordToken, true)
+	if linkedAgain.Code != 200 {
+		t.Fatalf("same-principal link status=%d body=%s", linkedAgain.Code, linkedAgain.Body.String())
+	}
+	linkedAgainOut := decodeProviderResponse(t, linkedAgain)
+	if linkedAgainOut["token"] != nil || linkedAgainOut["refreshToken"] != nil || linkedAgainOut["user"] != nil || linkedAgainOut["me"] != nil ||
+		strings.Contains(linkedAgain.Body.String(), "app-b-token") || strings.Contains(linkedAgain.Body.String(), "app-b-refresh") {
+		t.Fatalf("same-principal link exposed Flop or provider tokens: %#v", linkedAgainOut)
+	}
+	grantB := linkedAgainOut["grant"].(map[string]any)["id"].(string)
 	if db.Table(systemAuthIdentityTableName).Count() != 1 {
 		t.Fatalf("identities=%d want 1", db.Table(systemAuthIdentityTableName).Count())
 	}
 	if db.Table(systemAuthProviderGrantTableName).Count() != 2 {
 		t.Fatalf("grants=%d want 2", db.Table(systemAuthProviderGrantTableName).Count())
+	}
+	if got := db.Table(systemAuthSessionTableName).Count(); got != sessionsBeforeLinks {
+		t.Fatalf("linking another app created or switched a Flop session: before=%d after=%d", sessionsBeforeLinks, got)
 	}
 	rowA, _ := db.Table(systemAuthProviderGrantTableName).Get(grantA)
 	rowB, _ := db.Table(systemAuthProviderGrantTableName).Get(grantB)
@@ -481,6 +494,60 @@ func TestProviderGrantsAreIsolatedByApp(t *testing.T) {
 	if _, err := db.ProviderToken(context.Background(), "app-b", "backend-b", grantA, "read"); err == nil {
 		t.Fatal("cross-app grant lookup succeeded")
 	}
+	if _, err := db.ProviderToken(context.Background(), "app-a", "backend-b", grantA, "read"); err == nil {
+		t.Fatal("another app's backend credential was accepted")
+	}
+	if lease, err := db.ProviderToken(context.Background(), "app-b", "backend-b", grantB, "identity"); err != nil || lease.AccessToken != "app-b-token" {
+		t.Fatalf("app B lease=%+v err=%v", lease, err)
+	}
+	if _, err := db.ProviderToken(context.Background(), "app-b", "backend-b", grantB, "read"); err == nil {
+		t.Fatal("app B grant exceeded its isolated scopes")
+	}
+
+	grantBCiphertext := toString(rowB["token_ciphertext"])
+	rejectedState := startAppFlow(t, handler, "app-b", "link", passwordToken, "", "identity")
+	rejectedCompletion := callbackProviderFlow(t, handler, "shared", rejectedState, "b")
+	notConfirmed := completeProviderFlow(t, handler, rejectedCompletion, passwordToken, false)
+	if notConfirmed.Code != http.StatusBadRequest || decodeProviderResponse(t, notConfirmed)["code"] != "confirmation_required" {
+		t.Fatalf("unconfirmed link status=%d body=%s", notConfirmed.Code, notConfirmed.Body.String())
+	}
+	if got := db.Table(systemAuthProviderGrantTableName).Count(); got != 2 {
+		t.Fatalf("unconfirmed link mutated grants: %d", got)
+	}
+	rowB, _ = db.Table(systemAuthProviderGrantTableName).Get(grantB)
+	if toString(rowB["token_ciphertext"]) != grantBCiphertext {
+		t.Fatal("unconfirmed link replaced app B credentials")
+	}
+
+	login := providerRequest(t, handler, http.MethodPost, "/api/auth/password", `{"email":"grants@example.com","password":"password123"}`, "")
+	if login.Code != http.StatusOK {
+		t.Fatalf("second session login status=%d body=%s", login.Code, login.Body.String())
+	}
+	changedSessionToken, _ := decodeProviderResponse(t, login)["token"].(string)
+	sessionsBeforeRejectedComplete := db.Table(systemAuthSessionTableName).Count()
+	changedSession := completeProviderFlow(t, handler, rejectedCompletion, changedSessionToken, true)
+	if changedSession.Code != http.StatusUnauthorized || decodeProviderResponse(t, changedSession)["code"] != "link_session_changed" {
+		t.Fatalf("changed-session link status=%d body=%s", changedSession.Code, changedSession.Body.String())
+	}
+	rowB, _ = db.Table(systemAuthProviderGrantTableName).Get(grantB)
+	if db.Table(systemAuthProviderGrantTableName).Count() != 2 || toString(rowB["token_ciphertext"]) != grantBCiphertext {
+		t.Fatal("changed-session link mutated grants")
+	}
+	if got := db.Table(systemAuthSessionTableName).Count(); got != sessionsBeforeRejectedComplete {
+		t.Fatalf("changed-session rejection mutated sessions: before=%d after=%d", sessionsBeforeRejectedComplete, got)
+	}
+
+	otherToken, _ := registerProviderTestUser(t, handler, "other-grants@example.com")
+	collisionState := startAppFlow(t, handler, "app-b", "link", otherToken, "", "identity")
+	collisionCompletion := callbackProviderFlow(t, handler, "shared", collisionState, "b")
+	collision := completeProviderFlow(t, handler, collisionCompletion, otherToken, true)
+	if collision.Code != http.StatusConflict || decodeProviderResponse(t, collision)["code"] != "identity_already_linked" {
+		t.Fatalf("different-principal collision status=%d body=%s", collision.Code, collision.Body.String())
+	}
+	rowB, _ = db.Table(systemAuthProviderGrantTableName).Get(grantB)
+	if db.Table(systemAuthProviderGrantTableName).Count() != 2 || toString(rowB["token_ciphertext"]) != grantBCiphertext {
+		t.Fatal("different-principal collision mutated grants")
+	}
 	consentState := startAppFlow(t, handler, "app-a", "consent", passwordToken, grantA, GoogleScopeYouTubeReadonly)
 	consentCompletion := callbackProviderFlow(t, handler, "shared", consentState, "incremental")
 	consented := completeProviderFlow(t, handler, consentCompletion, passwordToken, true)
@@ -503,7 +570,7 @@ func TestProviderGrantsAreIsolatedByApp(t *testing.T) {
 	if _, err := db.ProviderToken(context.Background(), "app-a", "backend-a", grantA); err == nil {
 		t.Fatal("revoked grant returned a token")
 	}
-	if _, err := db.ProviderToken(context.Background(), "app-b", "backend-b", grantB, "read"); err != nil {
+	if _, err := db.ProviderToken(context.Background(), "app-b", "backend-b", grantB, "identity"); err != nil {
 		t.Fatalf("other app grant affected by revoke: %v", err)
 	}
 }

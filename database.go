@@ -399,14 +399,22 @@ func (a *App) wireCachedFields(d *Database) {
 
 // SetJWTSecret sets the JWT secret used for auth tokens.
 func (d *Database) SetJWTSecret(secret string) {
-	d.jwtSecret = secret
+	authService := d.authService
+	providerAuth := d.providerAuth
 	if d.authService != nil {
-		d.authService = server.NewAuthService(d.db.GetAuthTable(), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
-		d.providerAuth = newProviderAuthService(d, d.app.config.AuthProviders, d.app.config.AuthProviderApps, d.app.config.ProviderSecretKeys, d.app.config.ActiveProviderSecretKey, secret)
+		authService = server.NewAuthService(d.db.GetAuthTable(), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
+		if providerAuth != nil {
+			authService.SetProviderSessionLocker(providerAuth.mu)
+			providerAuth.rekeyFlowCipher(secret)
+		}
 	}
+	superadminService := d.superadminService
 	if d.superadminService != nil {
-		d.superadminService = server.NewSuperadminService(d.db.GetTable(systemSuperadminTableName), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
+		superadminService = server.NewSuperadminService(d.db.GetTable(systemSuperadminTableName), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
 	}
+	d.jwtSecret = secret
+	d.authService = authService
+	d.superadminService = superadminService
 }
 
 // ValidateAccessToken resolves the current authenticated principal for the given access token.

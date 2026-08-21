@@ -73,6 +73,7 @@ type providerAuthService struct {
 	db             *Database
 	providers      map[string]AuthProviderConfig
 	apps           map[string]AuthProviderAppConfig
+	aeadMu         sync.RWMutex
 	aead           cipher.AEAD
 	tokenAEAD      map[string]cipher.AEAD
 	activeKey      string
@@ -130,12 +131,7 @@ type providerDescriptor struct {
 }
 
 func newProviderAuthService(db *Database, providers map[string]AuthProviderConfig, apps map[string]AuthProviderAppConfig, keys map[string][]byte, activeKey, secret string) *providerAuthService {
-	key := sha256.Sum256([]byte("flop/provider-flow/aead/v1\x00" + secret))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := newProviderFlowAEAD(secret)
 	if err != nil {
 		return nil
 	}
@@ -188,6 +184,29 @@ func newProviderAuthService(db *Database, providers map[string]AuthProviderConfi
 		service.initErr = service.syncRegistrations()
 	}
 	return service
+}
+
+func newProviderFlowAEAD(secret string) (cipher.AEAD, error) {
+	key := sha256.Sum256([]byte("flop/provider-flow/aead/v1\x00" + secret))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return aead, nil
+}
+
+func (s *providerAuthService) rekeyFlowCipher(secret string) {
+	aead, err := newProviderFlowAEAD(secret)
+	if err != nil {
+		return
+	}
+	s.aeadMu.Lock()
+	s.aead = aead
+	s.aeadMu.Unlock()
 }
 
 func cloneProviderAppConfig(in AuthProviderAppConfig) AuthProviderAppConfig {
@@ -813,7 +832,8 @@ func (s *providerAuthService) completeLink(flow map[string]any, identity AuthPro
 		return nil, providerError("link_session_changed", "the original authenticated session is required", 401, err)
 	}
 	identities := s.db.Table(systemAuthIdentityTableName)
-	if _, exists := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject); exists {
+	row, exists := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject)
+	if exists && toString(row["principal_id"]) != principalID {
 		_, _ = s.db.Table(systemAuthProviderFlowTableName).Update(toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now})
 		return nil, providerError("identity_already_linked", "provider identity is already linked", 409)
 	}
@@ -822,17 +842,20 @@ func (s *providerAuthService) completeLink(flow map[string]any, identity AuthPro
 		tx.abort()
 		return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 	}
-	row, err := tx.insert(identities, map[string]any{
-		"principal_id": principalID, "provider": identity.Provider, "issuer": identity.Issuer, "subject": identity.Subject,
-		"display_name": identity.DisplayName, "email": identity.Email, "email_verified": identity.EmailVerified,
-		"linked_at": now, "last_authenticated_at": now,
-	})
-	if err != nil {
-		tx.abort()
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate unique") {
-			return nil, providerError("identity_already_linked", "provider identity is already linked", 409)
+	if !exists {
+		var err error
+		row, err = tx.insert(identities, map[string]any{
+			"principal_id": principalID, "provider": identity.Provider, "issuer": identity.Issuer, "subject": identity.Subject,
+			"display_name": identity.DisplayName, "email": identity.Email, "email_verified": identity.EmailVerified,
+			"linked_at": now, "last_authenticated_at": now,
+		})
+		if err != nil {
+			tx.abort()
+			if strings.Contains(strings.ToLower(err.Error()), "duplicate unique") {
+				return nil, providerError("identity_already_linked", "provider identity is already linked", 409)
+			}
+			return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 		}
-		return nil, providerError("provider_flow_failed", "provider identity could not be linked", 500, err)
 	}
 	grant, err := s.materializeGrant(tx, flow, row)
 	if err != nil {
@@ -1019,6 +1042,8 @@ func (s *providerAuthService) sealSecrets(secrets providerFlowSecrets) (string, 
 	if err != nil {
 		return "", err
 	}
+	s.aeadMu.RLock()
+	defer s.aeadMu.RUnlock()
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := io.ReadFull(s.random, nonce); err != nil {
 		return "", err
@@ -1030,7 +1055,12 @@ func (s *providerAuthService) sealSecrets(secrets providerFlowSecrets) (string, 
 func (s *providerAuthService) openSecrets(encoded string) (providerFlowSecrets, error) {
 	var secrets providerFlowSecrets
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(raw) <= s.aead.NonceSize() {
+	if err != nil {
+		return secrets, errors.New("invalid provider flow ciphertext")
+	}
+	s.aeadMu.RLock()
+	defer s.aeadMu.RUnlock()
+	if len(raw) <= s.aead.NonceSize() {
 		return secrets, errors.New("invalid provider flow ciphertext")
 	}
 	plain, err := s.aead.Open(nil, raw[:s.aead.NonceSize()], raw[s.aead.NonceSize():], []byte("flop-provider-flow-v1"))
@@ -1221,9 +1251,10 @@ func (d *Database) cleanupExpiredProviderFlows(now time.Time) (int, error) {
 	if flows == nil {
 		return 0, nil
 	}
-	if d.providerAuth != nil {
-		d.providerAuth.mu.Lock()
-		defer d.providerAuth.mu.Unlock()
+	providerAuth := d.providerAuth
+	if providerAuth != nil {
+		providerAuth.mu.Lock()
+		defer providerAuth.mu.Unlock()
 	}
 	return cleanupExpiredProviderFlowRows(flows, now)
 }
