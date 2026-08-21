@@ -1042,6 +1042,66 @@ func TestTokenlessMaterializationRejectsGrantWithPendingRevocation(t *testing.T)
 	}
 }
 
+func TestTokenlessMaterializationRejectsActiveTokenGrant(t *testing.T) {
+	dataDir := t.TempDir()
+	tokenProvider := &fakeGrantProvider{
+		issuer: "https://issuer.example",
+		tokens: map[string]AuthProviderTokenSet{
+			"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+		},
+	}
+	app := New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": appGrantTestConfig(tokenProvider, "client", "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := app.APIHandler(db)
+	_, _, grantID, _ := linkGrantForTest(t, db, handler, "code", "active-tokenless@example.com", "identity")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	identityProvider := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"identity": {Provider: "shared", Issuer: "https://issuer.example", Subject: "shared-subject"},
+	}}
+	app = New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviderApps: map[string]AuthProviderAppConfig{"app": identityOnlyAppConfig(identityProvider, "client", "client-secret", "backend")}, ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1"})
+	defineGrantTestUsers(app)
+	db, err = app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler = app.APIHandler(db)
+	before, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || before == nil {
+		t.Fatalf("grant lookup=%#v err=%v", before, err)
+	}
+
+	state := startAppFlow(t, handler, "app", "sign_in", "", "")
+	completion := callbackProviderFlow(t, handler, "shared", state, "identity")
+	response := completeProviderFlow(t, handler, completion, "", false)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "provider_grant_failed") {
+		t.Fatalf("tokenless materialization status=%d body=%s", response.Code, response.Body.String())
+	}
+	after, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || after == nil {
+		t.Fatalf("grant lookup=%#v err=%v", after, err)
+	}
+	for _, field := range []string{"state", "token_ciphertext", "token_key_version", "client_id", "credential_ciphertext", "credential_key_version"} {
+		if toString(after[field]) != toString(before[field]) {
+			t.Fatalf("tokenless materialization changed %s: before=%q after=%q", field, before[field], after[field])
+		}
+	}
+	if db.Table(systemAuthProviderRevocationTableName).Count() != 0 {
+		t.Fatal("failed-closed tokenless materialization staged an unexpected revocation")
+	}
+	lease, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity")
+	if err != nil || lease.AccessToken != "access" {
+		t.Fatalf("original backend authorization lease=%#v err=%v", lease, err)
+	}
+}
+
 func TestProviderImmediateRevocationScrubsGrantSecrets(t *testing.T) {
 	provider := &fakeGrantProvider{issuer: "https://issuer.example", tokens: map[string]AuthProviderTokenSet{
 		"code": {AccessToken: "access", RefreshToken: "refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},

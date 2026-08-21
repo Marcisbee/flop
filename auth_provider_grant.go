@@ -507,6 +507,9 @@ func (s *providerAuthService) materializeIdentityGrant(tx *providerTxn, flow, id
 		if _, revocationPending := s.db.Table(systemAuthProviderRevocationTableName).FindByUniqueIndex("grant_id", grantID); revocationPending {
 			return nil, fmt.Errorf("provider grant revocation is pending")
 		}
+		if toString(existing["token_ciphertext"]) != "" {
+			return nil, fmt.Errorf("provider grant contains token material")
+		}
 	} else {
 		var err error
 		grantID, err = s.randomToken(18)
