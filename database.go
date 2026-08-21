@@ -2575,7 +2575,8 @@ func systemAuthProviderRevocationTableDef() *schema.TableDef {
 	return providerSystemTable(systemAuthProviderRevocationTableName, []schema.CompiledField{
 		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
 		{Name: "grant_id", Kind: schema.KindString, Required: true}, {Name: "app_id", Kind: schema.KindString, Required: true},
-		{Name: "registration_id", Kind: schema.KindString, Required: true}, {Name: "token_ciphertext", Kind: schema.KindString, Required: true},
+		{Name: "registration_id", Kind: schema.KindString, Required: true}, {Name: "provider", Kind: schema.KindString, Required: false},
+		{Name: "token_ciphertext", Kind: schema.KindString, Required: true},
 		{Name: "token_key_version", Kind: schema.KindString, Required: true}, {Name: "attempts", Kind: schema.KindInteger, Required: true},
 		{Name: "client_id", Kind: schema.KindString, Required: false},
 		{Name: "credential_ciphertext", Kind: schema.KindString, Required: false}, {Name: "credential_key_version", Kind: schema.KindString, Required: false},

@@ -394,6 +394,50 @@ func (s *providerAuthService) materializationBinding(flow, identity map[string]a
 	return registration, identity, nil
 }
 
+func providerGrantMatchesMaterialization(existing, flow, identity map[string]any) bool {
+	return toString(existing["app_id"]) == toString(flow["app_id"]) &&
+		toString(existing["registration_id"]) == toString(flow["registration_id"]) &&
+		toString(existing["identity_id"]) == toString(identity["id"]) &&
+		toString(existing["principal_id"]) == toString(identity["principal_id"]) &&
+		toString(existing["provider"]) == toString(flow["provider"])
+}
+
+func providerGrantSecretsScrubbed(grant map[string]any) bool {
+	return toString(grant["token_ciphertext"]) == "" &&
+		toString(grant["token_key_version"]) == "" &&
+		toString(grant["client_id"]) == "" &&
+		toString(grant["credential_ciphertext"]) == "" &&
+		toString(grant["credential_key_version"]) == ""
+}
+
+// detachPendingGrantRevocation makes an in-flight revocation independent of
+// its old grant before the composite registration/identity slot is reused.
+func (s *providerAuthService) detachPendingGrantRevocation(tx *providerTxn, flow, grant map[string]any) (bool, error) {
+	grantID := toString(grant["id"])
+	retries := s.db.Table(systemAuthProviderRevocationTableName)
+	retry, pending := retries.FindByUniqueIndex("grant_id", grantID)
+	if !pending {
+		return false, nil
+	}
+	state := toString(grant["state"])
+	if state != "revoked" && state != "revoking" {
+		return false, fmt.Errorf("provider grant with pending revocation is not disabled")
+	}
+	provider := toString(flow["provider"])
+	if toString(retry["app_id"]) != toString(flow["app_id"]) ||
+		toString(retry["registration_id"]) != toString(flow["registration_id"]) ||
+		(toString(retry["provider"]) != "" && toString(retry["provider"]) != provider) {
+		return false, fmt.Errorf("provider revocation retry changed during authorization")
+	}
+	if err := tx.update(retries, toString(retry["id"]), map[string]any{"provider": provider}); err != nil {
+		return false, err
+	}
+	if err := tx.delete(s.db.Table(systemAuthProviderGrantTableName), grantID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity map[string]any) (*providerGrantView, error) {
 	appID, registrationID, flowID := toString(flow["app_id"]), toString(flow["registration_id"]), toString(flow["id"])
 	registration, identity, err := s.materializationBinding(flow, identity)
@@ -412,6 +456,7 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 	grants := s.db.Table(systemAuthProviderGrantTableName)
 	existing, exists := grants.FindByUniqueCompositeIndex([]string{"registration_id", "identity_id"}, registrationID, toString(identity["id"]))
 	grantID := ""
+	ciphertext, version := "", ""
 	if exists {
 		grantID = toString(existing["id"])
 		tx.lockGrant(s, grantID)
@@ -421,16 +466,42 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 		}
 		intent := toString(flow["intent"])
 		state := toString(existing["state"])
-		if (state != "active" && !(state == "reconnect_required" && intent != "consent")) ||
-			toString(existing["app_id"]) != appID ||
-			toString(existing["registration_id"]) != registrationID ||
-			toString(existing["identity_id"]) != toString(identity["id"]) ||
-			toString(existing["principal_id"]) != toString(identity["principal_id"]) {
+		if !providerGrantMatchesMaterialization(existing, flow, identity) {
 			return nil, fmt.Errorf("provider grant changed during authorization")
 		}
 		currentIdentity, identityErr := s.db.Table(systemAuthIdentityTableName).Get(toString(existing["identity_id"]))
-		if identityErr != nil || currentIdentity == nil || toString(currentIdentity["principal_id"]) != toString(existing["principal_id"]) {
+		if identityErr != nil || currentIdentity == nil ||
+			toString(currentIdentity["principal_id"]) != toString(existing["principal_id"]) ||
+			toString(currentIdentity["provider"]) != toString(existing["provider"]) ||
+			toString(currentIdentity["issuer"]) != toString(identity["issuer"]) ||
+			toString(currentIdentity["subject"]) != toString(identity["subject"]) {
 			return nil, fmt.Errorf("provider identity changed during authorization")
+		}
+		_, revocationPending := s.db.Table(systemAuthProviderRevocationTableName).FindByUniqueIndex("grant_id", grantID)
+		replacementGrantID := ""
+		if revocationPending {
+			replacementGrantID, err = s.randomToken(18)
+			if err != nil {
+				return nil, err
+			}
+			ciphertext, version, err = s.sealProviderValue("grant", appID, registrationID, replacementGrantID, tokens)
+			if err != nil {
+				return nil, err
+			}
+		}
+		detached, detachErr := s.detachPendingGrantRevocation(tx, flow, existing)
+		if detachErr != nil {
+			return nil, detachErr
+		}
+		if detached {
+			exists = false
+			grantID = replacementGrantID
+		} else if state == "revoked" {
+			if intent == "consent" || !providerGrantSecretsScrubbed(existing) {
+				return nil, fmt.Errorf("provider grant changed during authorization")
+			}
+		} else if state != "active" && !(state == "reconnect_required" && intent != "consent") {
+			return nil, fmt.Errorf("provider grant changed during authorization")
 		}
 		if state == "active" &&
 			toString(existing["client_id"]) == toString(registration["client_id"]) &&
@@ -447,11 +518,16 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 			return nil, err
 		}
 	}
-	ciphertext, version, err := s.sealProviderValue("grant", appID, registrationID, grantID, tokens)
-	if err != nil {
-		return nil, err
+	if ciphertext == "" {
+		ciphertext, version, err = s.sealProviderValue("grant", appID, registrationID, grantID, tokens)
+		if err != nil {
+			return nil, err
+		}
 	}
-	updates := map[string]any{"granted_scopes": tokens.Scopes, "token_ciphertext": ciphertext, "token_key_version": version, "state": "active", "consented_at": s.now().Unix()}
+	updates := map[string]any{
+		"granted_scopes": tokens.Scopes, "token_ciphertext": ciphertext, "token_key_version": version,
+		"state": "active", "consented_at": s.now().Unix(), "access_expires_at": 0, "refreshed_at": 0, "revoked_at": 0,
+	}
 	for key, value := range registrationSnapshot(registration) {
 		updates[key] = value
 	}
@@ -812,7 +888,11 @@ func (s *providerAuthService) stageGrantRevocation(tx *providerTxn, grant map[st
 	if err := tx.update(s.db.Table(systemAuthProviderGrantTableName), grantID, map[string]any{"state": "revoking", "revoked_at": s.now().Unix()}); err != nil {
 		return "", err
 	}
-	retry := map[string]any{"id": retryID, "grant_id": grantID, "app_id": appID, "registration_id": registrationID, "token_ciphertext": ciphertext, "token_key_version": version, "attempts": 0, "next_attempt_at": s.now().Unix()}
+	retry := map[string]any{
+		"id": retryID, "grant_id": grantID, "app_id": appID, "registration_id": registrationID,
+		"provider": toString(grant["provider"]), "token_ciphertext": ciphertext, "token_key_version": version,
+		"attempts": 0, "next_attempt_at": s.now().Unix(),
+	}
 	for key, value := range map[string]any{"client_id": grant["client_id"], "credential_ciphertext": grant["credential_ciphertext"], "credential_key_version": grant["credential_key_version"]} {
 		retry[key] = value
 	}
@@ -845,15 +925,35 @@ func (s *providerAuthService) attemptRevocationForGrant(ctx context.Context, ret
 		return fmt.Errorf("provider revocation retry changed during attempt")
 	}
 	grant, err := grants.Get(grantID)
-	if err != nil || grant == nil {
+	if err != nil {
 		return err
 	}
 	appID, registrationID := toString(retry["app_id"]), toString(retry["registration_id"])
+	provider := toString(retry["provider"])
+	if grant != nil {
+		grantProvider := toString(grant["provider"])
+		if toString(grant["app_id"]) != appID || toString(grant["registration_id"]) != registrationID ||
+			(provider != "" && grantProvider != provider) ||
+			(toString(grant["state"]) != "revoked" && toString(grant["state"]) != "revoking") {
+			return fmt.Errorf("provider grant changed during revocation attempt")
+		}
+		if provider == "" {
+			provider = grantProvider
+			if provider == "" {
+				return fmt.Errorf("provider revocation retry has no provider binding")
+			}
+			if _, err := retries.Update(retryID, map[string]any{"provider": provider}); err != nil {
+				return err
+			}
+		}
+	} else if provider == "" {
+		return fmt.Errorf("provider revocation retry has no provider binding")
+	}
 	var tokens AuthProviderTokenSet
 	if err := s.openProviderValue("revocation", appID, registrationID, retryID, toString(retry["token_ciphertext"]), toString(retry["token_key_version"]), &tokens); err != nil {
 		return err
 	}
-	_, config, configErr := s.appProviderConfig(appID, toString(grant["provider"]))
+	_, config, configErr := s.appProviderConfig(appID, provider)
 	adapter, ok := config.Adapter.(AuthProviderGrantAdapter)
 	remoteRevocation := ok
 	if advertised, hasCapabilities := config.Adapter.(AuthProviderCapabilityAdapter); hasCapabilities && !advertised.ProviderCapabilities().Revocation {
@@ -879,27 +979,31 @@ func (s *providerAuthService) attemptRevocationForGrant(ctx context.Context, ret
 		} else {
 			hint = "access_token"
 		}
-		remoteErr = adapter.RevokeGrant(ctx, AuthProviderRevokeRequest{AppID: appID, Provider: toString(grant["provider"]), ClientID: clientID, ClientSecret: clientSecret, Token: token, TokenTypeHint: hint})
+		remoteErr = adapter.RevokeGrant(ctx, AuthProviderRevokeRequest{AppID: appID, Provider: provider, ClientID: clientID, ClientSecret: clientSecret, Token: token, TokenTypeHint: hint})
 	}
 	var upstream *AuthProviderUpstreamError
 	terminal := errors.As(remoteErr, &upstream) && upstream.Terminal
 	if remoteErr != nil && !terminal {
 		attempts := providerUnix(retry["attempts"]) + 1
 		_, _ = retries.Update(retryID, map[string]any{"attempts": attempts, "next_attempt_at": s.now().Add(time.Duration(attempts) * time.Minute).Unix(), "last_error_code": "provider_unavailable"})
-		_, _ = grants.Update(toString(grant["id"]), map[string]any{"state": "revoked"})
+		if grant != nil {
+			_, _ = grants.Update(toString(grant["id"]), map[string]any{"state": "revoked"})
+		}
 		return remoteErr
 	}
 	finish := newProviderTxn(s.db)
-	if err := finish.update(grants, toString(grant["id"]), map[string]any{
-		"state":                  "revoked",
-		"token_ciphertext":       "",
-		"token_key_version":      "",
-		"client_id":              "",
-		"credential_ciphertext":  "",
-		"credential_key_version": "",
-	}); err != nil {
-		finish.abort()
-		return err
+	if grant != nil {
+		if err := finish.update(grants, toString(grant["id"]), map[string]any{
+			"state":                  "revoked",
+			"token_ciphertext":       "",
+			"token_key_version":      "",
+			"client_id":              "",
+			"credential_ciphertext":  "",
+			"credential_key_version": "",
+		}); err != nil {
+			finish.abort()
+			return err
+		}
 	}
 	if err := finish.delete(retries, retryID); err != nil {
 		finish.abort()
