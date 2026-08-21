@@ -20,6 +20,7 @@ type fakeGrantProvider struct {
 	tokens           map[string]AuthProviderTokenSet
 	refreshes        int
 	refreshScopes    []string
+	refreshErr       error
 	lastRefresh      AuthProviderRefreshRequest
 	refreshStarted   chan struct{}
 	refreshRelease   <-chan struct{}
@@ -29,6 +30,12 @@ type fakeGrantProvider struct {
 	revokeStarted    chan struct{}
 	revokeRelease    <-chan struct{}
 	revokePreference string
+}
+
+type failingProviderRandom struct{}
+
+func (failingProviderRandom) Read([]byte) (int, error) {
+	return 0, fmt.Errorf("provider random unavailable")
 }
 
 func (p *fakeGrantProvider) AuthorizationURL(_ context.Context, request AuthProviderAuthorizationRequest) (string, error) {
@@ -62,7 +69,7 @@ func (p *fakeGrantProvider) RefreshGrant(_ context.Context, request AuthProvider
 	if p.refreshScopes != nil {
 		scopes = append([]string(nil), p.refreshScopes...)
 	}
-	started, release := p.refreshStarted, p.refreshRelease
+	started, release, refreshErr := p.refreshStarted, p.refreshRelease, p.refreshErr
 	p.mu.Unlock()
 	if started != nil {
 		select {
@@ -72,6 +79,9 @@ func (p *fakeGrantProvider) RefreshGrant(_ context.Context, request AuthProvider
 	}
 	if release != nil {
 		<-release
+	}
+	if refreshErr != nil {
+		return AuthProviderTokenSet{}, refreshErr
 	}
 	return AuthProviderTokenSet{AccessToken: request.AppID + "-refreshed", RefreshToken: request.RefreshToken + "-rotated", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: scopes}, nil
 }
@@ -572,6 +582,248 @@ func TestProviderGrantsAreIsolatedByApp(t *testing.T) {
 	}
 	if _, err := db.ProviderToken(context.Background(), "app-b", "backend-b", grantB, "identity"); err != nil {
 		t.Fatalf("other app grant affected by revoke: %v", err)
+	}
+}
+
+func TestReproductionProviderGrantReauthorizationAfterRevocation(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		pendingRevocation bool
+		expectSameGrantID bool
+	}{
+		{name: "completed revocation", expectSameGrantID: true},
+		{name: "pending revocation", pendingRevocation: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			providerA := &fakeGrantProvider{
+				issuer: "https://issuer.example",
+				tokens: map[string]AuthProviderTokenSet{
+					"old": {AccessToken: "old-access-secret", RefreshToken: "old-refresh-secret", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+					"new": {AccessToken: "new-access-secret", RefreshToken: "new-refresh-secret", TokenType: "Bearer", Scopes: []string{"identity", "read"}},
+				},
+			}
+			if test.pendingRevocation {
+				providerA.revokeErr = fmt.Errorf("temporary upstream failure")
+			}
+			providerB := &fakeGrantProvider{
+				issuer: "https://issuer.example",
+				tokens: map[string]AuthProviderTokenSet{
+					"app-b": {AccessToken: "app-b-access-secret", RefreshToken: "app-b-refresh-secret", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity"}},
+				},
+			}
+			app := New(Config{
+				DataDir: t.TempDir(), SyncMode: "normal",
+				AuthProviderApps: map[string]AuthProviderAppConfig{
+					"app-a": appGrantTestConfig(providerA, "client-a", "backend-a"),
+					"app-b": appGrantTestConfig(providerB, "client-b", "backend-b"),
+				},
+				ProviderSecretKeys:      map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")},
+				ActiveProviderSecretKey: "v1",
+			})
+			defineGrantTestUsers(app)
+			db, err := app.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			handler := app.APIHandler(db)
+
+			bearer, principalID := registerProviderTestUser(t, handler, test.name+"@example.com")
+			stateA := startAppFlow(t, handler, "app-a", "link", bearer, "", "identity")
+			completionA := callbackProviderFlow(t, handler, "shared", stateA, "old")
+			linkedA := completeProviderFlow(t, handler, completionA, bearer, true)
+			if linkedA.Code != http.StatusOK {
+				t.Fatalf("initial app A link status=%d body=%s", linkedA.Code, linkedA.Body.String())
+			}
+			oldGrantID := toString(decodeProviderResponse(t, linkedA)["grant"].(map[string]any)["id"])
+			oldGrant, _ := db.Table(systemAuthProviderGrantTableName).Get(oldGrantID)
+			identityID := toString(oldGrant["identity_id"])
+			registrationA := toString(oldGrant["registration_id"])
+			if _, err := db.Table(systemAuthProviderGrantTableName).Update(oldGrantID, map[string]any{"refreshed_at": time.Now().Add(-time.Minute).Unix()}); err != nil {
+				t.Fatal(err)
+			}
+			if !test.pendingRevocation {
+				oldTokens := providerA.tokens["old"]
+				oldTokens.ExpiresAt = time.Now().Add(time.Second)
+				oldCiphertext, oldVersion, err := db.providerAuth.sealProviderValue("grant", "app-a", registrationA, oldGrantID, oldTokens)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Table(systemAuthProviderGrantTableName).Update(oldGrantID, map[string]any{
+					"token_ciphertext": oldCiphertext, "token_key_version": oldVersion, "access_expires_at": oldTokens.ExpiresAt.Unix(),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				providerA.mu.Lock()
+				providerA.refreshErr = &AuthProviderUpstreamError{Code: "invalid_grant", Terminal: true}
+				providerA.mu.Unlock()
+				lease, err := db.ProviderToken(context.Background(), "app-a", "backend-a", oldGrantID, "identity")
+				var providerErr *AuthProviderError
+				if lease != nil || !errors.As(err, &providerErr) || providerErr.Code != "reconnect_required" {
+					t.Fatalf("terminal refresh lease=%+v err=%v", lease, err)
+				}
+				if _, unusable := db.providerAuth.unusableGrants.Load(oldGrantID); !unusable {
+					t.Fatal("terminal refresh did not tombstone old grant")
+				}
+			}
+
+			stateB := startAppFlow(t, handler, "app-b", "link", bearer, "", "identity")
+			completionB := callbackProviderFlow(t, handler, "shared", stateB, "app-b")
+			linkedB := completeProviderFlow(t, handler, completionB, bearer, true)
+			if linkedB.Code != http.StatusOK {
+				t.Fatalf("app B link status=%d body=%s", linkedB.Code, linkedB.Body.String())
+			}
+			grantB := toString(decodeProviderResponse(t, linkedB)["grant"].(map[string]any)["id"])
+
+			revokeErr := db.providerAuth.revokeGrant(context.Background(), principalID, oldGrantID)
+			if test.pendingRevocation {
+				var providerErr *AuthProviderError
+				if !errors.As(revokeErr, &providerErr) || providerErr.Code != "revocation_pending" {
+					t.Fatalf("pending revoke error=%v", revokeErr)
+				}
+			} else if revokeErr != nil {
+				t.Fatal(revokeErr)
+			}
+			oldLifecycle, _ := db.Table(systemAuthProviderGrantTableName).Get(oldGrantID)
+			oldCiphertext := toString(oldLifecycle["token_ciphertext"])
+			oldRetryCount := db.Table(systemAuthProviderRevocationTableName).Count()
+			if test.pendingRevocation {
+				retries := providerAllRows(db.Table(systemAuthProviderRevocationTableName))
+				if len(retries) != 1 {
+					t.Fatalf("pending retry rows=%#v", retries)
+				}
+				// Simulate a retry written before the optional provider snapshot existed.
+				if _, err := db.Table(systemAuthProviderRevocationTableName).Update(toString(retries[0]["id"]), map[string]any{"provider": ""}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			reauthState := startAppFlow(t, handler, "app-a", "link", bearer, "", "identity", "read")
+			reauthCompletion := callbackProviderFlow(t, handler, "shared", reauthState, "new")
+			notConfirmed := completeProviderFlow(t, handler, reauthCompletion, bearer, false)
+			if notConfirmed.Code != http.StatusBadRequest || decodeProviderResponse(t, notConfirmed)["code"] != "confirmation_required" {
+				t.Fatalf("unconfirmed reauthorization status=%d body=%s", notConfirmed.Code, notConfirmed.Body.String())
+			}
+			unchanged, _ := db.Table(systemAuthProviderGrantTableName).Get(oldGrantID)
+			if toString(unchanged["state"]) != toString(oldLifecycle["state"]) ||
+				toString(unchanged["token_ciphertext"]) != oldCiphertext ||
+				db.Table(systemAuthProviderRevocationTableName).Count() != oldRetryCount {
+				t.Fatalf("unconfirmed reauthorization changed old lifecycle: before=%#v after=%#v", oldLifecycle, unchanged)
+			}
+
+			login := providerRequest(t, handler, http.MethodPost, "/api/auth/password", `{"email":`+fmt.Sprintf("%q", test.name+"@example.com")+`,"password":"password123"}`, "")
+			changedBearer := toString(decodeProviderResponse(t, login)["token"])
+			changedSession := completeProviderFlow(t, handler, reauthCompletion, changedBearer, true)
+			if changedSession.Code != http.StatusUnauthorized || decodeProviderResponse(t, changedSession)["code"] != "link_session_changed" {
+				t.Fatalf("changed-session reauthorization status=%d body=%s", changedSession.Code, changedSession.Body.String())
+			}
+			if test.pendingRevocation {
+				random := db.providerAuth.random
+				db.providerAuth.random = failingProviderRandom{}
+				failed := completeProviderFlow(t, handler, reauthCompletion, bearer, true)
+				db.providerAuth.random = random
+				if failed.Code != http.StatusInternalServerError || decodeProviderResponse(t, failed)["code"] != "provider_grant_failed" {
+					t.Fatalf("failed pending reauthorization status=%d body=%s", failed.Code, failed.Body.String())
+				}
+				rolledBack, err := db.Table(systemAuthProviderGrantTableName).Get(oldGrantID)
+				retries := providerAllRows(db.Table(systemAuthProviderRevocationTableName))
+				if err != nil || rolledBack == nil || toString(rolledBack["state"]) != "revoked" ||
+					len(retries) != 1 || toString(retries[0]["grant_id"]) != oldGrantID || toString(retries[0]["provider"]) != "" {
+					t.Fatalf("failed detachment did not roll back: grant=%#v retries=%#v err=%v", rolledBack, retries, err)
+				}
+			}
+
+			reauthorized := completeProviderFlow(t, handler, reauthCompletion, bearer, true)
+			if reauthorized.Code != http.StatusOK {
+				t.Fatalf("reauthorization status=%d body=%s", reauthorized.Code, reauthorized.Body.String())
+			}
+			for _, secret := range []string{"new-access-secret", "new-refresh-secret", "old-access-secret", "old-refresh-secret"} {
+				if strings.Contains(reauthorized.Body.String(), secret) {
+					t.Fatalf("browser response exposed %q: %s", secret, reauthorized.Body.String())
+				}
+			}
+			newGrantID := toString(decodeProviderResponse(t, reauthorized)["grant"].(map[string]any)["id"])
+			if (newGrantID == oldGrantID) != test.expectSameGrantID {
+				t.Fatalf("reauthorized grant id=%q old=%q expectSame=%t", newGrantID, oldGrantID, test.expectSameGrantID)
+			}
+			newGrant, _ := db.Table(systemAuthProviderGrantTableName).Get(newGrantID)
+			newScopes := storedStrings(newGrant["granted_scopes"])
+			if toString(newGrant["principal_id"]) != principalID || toString(newGrant["identity_id"]) != identityID ||
+				toString(newGrant["registration_id"]) != registrationA || toString(newGrant["app_id"]) != "app-a" ||
+				toString(newGrant["provider"]) != "shared" || toString(newGrant["state"]) != "active" ||
+				providerUnix(newGrant["revoked_at"]) != 0 || providerUnix(newGrant["refreshed_at"]) != 0 ||
+				providerUnix(newGrant["access_expires_at"]) != 0 || len(newScopes) != 2 || !scopeSubset([]string{"identity", "read"}, newScopes) {
+				t.Fatalf("unsafe reauthorized grant: %#v", newGrant)
+			}
+			var newTokens AuthProviderTokenSet
+			if err := db.providerAuth.openProviderValue("grant", "app-a", registrationA, newGrantID, toString(newGrant["token_ciphertext"]), toString(newGrant["token_key_version"]), &newTokens); err != nil {
+				t.Fatal(err)
+			}
+			if newTokens.AccessToken != "new-access-secret" || newTokens.RefreshToken != "new-refresh-secret" {
+				t.Fatalf("reauthorized tokens=%+v", newTokens)
+			}
+			lease, err := db.ProviderToken(context.Background(), "app-a", "backend-a", newGrantID, "read")
+			if err != nil || lease.AccessToken != "new-access-secret" {
+				t.Fatalf("reauthorized lease=%+v err=%v", lease, err)
+			}
+			if _, err := db.ProviderToken(context.Background(), "app-b", "backend-b", newGrantID, "identity"); err == nil {
+				t.Fatal("app B resolved app A's reauthorized grant")
+			}
+			if _, err := db.ProviderToken(context.Background(), "app-a", "backend-a", grantB, "identity"); err == nil {
+				t.Fatal("app A resolved app B's grant")
+			}
+			if leaseB, err := db.ProviderToken(context.Background(), "app-b", "backend-b", grantB, "identity"); err != nil || leaseB.AccessToken != "app-b-access-secret" {
+				t.Fatalf("app B grant changed: lease=%+v err=%v", leaseB, err)
+			}
+
+			replayed := completeProviderFlow(t, handler, reauthCompletion, bearer, true)
+			if replayed.Code != http.StatusGone || decodeProviderResponse(t, replayed)["code"] != "completion_consumed" {
+				t.Fatalf("completion replay status=%d body=%s", replayed.Code, replayed.Body.String())
+			}
+			otherBearer, _ := registerProviderTestUser(t, handler, "other-"+test.name+"@example.com")
+			collisionState := startAppFlow(t, handler, "app-a", "link", otherBearer, "", "identity")
+			collisionCompletion := callbackProviderFlow(t, handler, "shared", collisionState, "old")
+			collision := completeProviderFlow(t, handler, collisionCompletion, otherBearer, true)
+			if collision.Code != http.StatusConflict || decodeProviderResponse(t, collision)["code"] != "identity_already_linked" {
+				t.Fatalf("cross-principal collision status=%d body=%s", collision.Code, collision.Body.String())
+			}
+
+			if test.pendingRevocation {
+				retries := providerAllRows(db.Table(systemAuthProviderRevocationTableName))
+				if len(retries) != 1 || toString(retries[0]["grant_id"]) != oldGrantID || toString(retries[0]["provider"]) != "shared" {
+					t.Fatalf("detached retry rows=%#v", retries)
+				}
+				if oldGrant, err := db.Table(systemAuthProviderGrantTableName).Get(oldGrantID); err != nil || oldGrant != nil {
+					t.Fatalf("detached old grant=%#v err=%v", oldGrant, err)
+				}
+				_, _ = db.Table(systemAuthProviderRevocationTableName).Update(toString(retries[0]["id"]), map[string]any{"next_attempt_at": 0})
+				providerA.mu.Lock()
+				providerA.revokeErr = nil
+				providerA.mu.Unlock()
+				completed, err := db.RetryProviderRevocations(context.Background())
+				if err != nil || completed != 1 {
+					t.Fatalf("old retry completed=%d err=%v", completed, err)
+				}
+				providerA.mu.Lock()
+				oldRetryToken := providerA.lastRevoke.Token
+				providerA.mu.Unlock()
+				if oldRetryToken != "old-access-secret" || db.Table(systemAuthProviderRevocationTableName).Count() != 0 {
+					t.Fatalf("old retry token=%q retries=%d", oldRetryToken, db.Table(systemAuthProviderRevocationTableName).Count())
+				}
+				if lease, err := db.ProviderToken(context.Background(), "app-a", "backend-a", newGrantID, "read"); err != nil || lease.AccessToken != "new-access-secret" {
+					t.Fatalf("old retry changed new grant: lease=%+v err=%v", lease, err)
+				}
+				if err := db.providerAuth.revokeGrant(context.Background(), principalID, newGrantID); err != nil {
+					t.Fatal(err)
+				}
+				providerA.mu.Lock()
+				newRevokeToken := providerA.lastRevoke.Token
+				providerA.mu.Unlock()
+				if newRevokeToken != "new-access-secret" {
+					t.Fatalf("new revocation token=%q", newRevokeToken)
+				}
+			}
+		})
 	}
 }
 
