@@ -2473,6 +2473,7 @@ func systemAuthIdentityTableDef() *schema.TableDef {
 		{Name: "email_verified", Kind: schema.KindBoolean, Required: false},
 		{Name: "linked_at", Kind: schema.KindTimestamp, Required: true},
 		{Name: "last_authenticated_at", Kind: schema.KindTimestamp, Required: true},
+		{Name: "avatar_url", Kind: schema.KindString, Required: false},
 	}
 	return &schema.TableDef{
 		Name:           systemAuthIdentityTableName,
@@ -2519,6 +2520,7 @@ func systemAuthProviderFlowTableDef() *schema.TableDef {
 		{Name: "result_email_verified", Kind: schema.KindBoolean, Required: false},
 		{Name: "result_error_code", Kind: schema.KindString, Required: false},
 		{Name: "resolved_principal_id", Kind: schema.KindString, Required: false},
+		{Name: "result_avatar_url", Kind: schema.KindString, Required: false},
 	}
 	return &schema.TableDef{
 		Name:           systemAuthProviderFlowTableName,

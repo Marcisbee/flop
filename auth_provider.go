@@ -114,6 +114,7 @@ type AuthProviderIdentity struct {
 	Issuer        string
 	Subject       string
 	DisplayName   string
+	AvatarURL     string
 	Email         string
 	EmailVerified bool
 }
