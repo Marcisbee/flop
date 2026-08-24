@@ -106,6 +106,7 @@ type providerCompleteResult struct {
 	RefreshToken string
 	Auth         *schema.AuthContext
 	Linked       *providerIdentityView
+	Identity     *providerIdentityView
 	Grant        *providerGrantView
 }
 
@@ -114,6 +115,7 @@ type providerIdentityView struct {
 	Provider            string `json:"provider"`
 	Issuer              string `json:"issuer"`
 	DisplayName         string `json:"displayName,omitempty"`
+	AvatarURL           string `json:"avatarURL,omitempty"`
 	Email               string `json:"email,omitempty"`
 	EmailVerified       bool   `json:"emailVerified"`
 	LinkedAt            int64  `json:"linkedAt"`
@@ -650,6 +652,7 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 		exchange.Identity, exchangeErr = config.Adapter.Exchange(ctx, exchangeRequest)
 	}
 	identity := exchange.Identity
+	identity.AvatarURL = normalizedAvatarURL(identity.AvatarURL)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if exchangeErr != nil {
@@ -702,6 +705,7 @@ func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowI
 		updates["result_issuer"] = identity.Issuer
 		updates["result_subject"] = identity.Subject
 		updates["result_display_name"] = identity.DisplayName
+		updates["result_avatar_url"] = identity.AvatarURL
 		updates["result_email"] = identity.Email
 		updates["result_email_verified"] = identity.EmailVerified
 		if exchange != nil && exchange.Tokens.AccessToken != "" {
@@ -759,7 +763,7 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 	}
 	identity := AuthProviderIdentity{
 		Provider: toString(flow["result_provider"]), Issuer: toString(flow["result_issuer"]), Subject: toString(flow["result_subject"]),
-		DisplayName: toString(flow["result_display_name"]), Email: toString(flow["result_email"]),
+		DisplayName: toString(flow["result_display_name"]), AvatarURL: toString(flow["result_avatar_url"]), Email: toString(flow["result_email"]),
 		EmailVerified: providerBool(flow["result_email_verified"]),
 	}
 	if identity.Provider == "" || identity.Issuer == "" || identity.Subject == "" {
@@ -801,7 +805,7 @@ func (s *providerAuthService) completeSignIn(flow map[string]any, identity AuthP
 		return nil, providerError("provider_grant_failed", "provider grant could not be saved", 500, err)
 	}
 	if err := tx.update(identities, toString(linked["id"]), map[string]any{
-		"provider": identity.Provider, "display_name": identity.DisplayName, "email": identity.Email,
+		"provider": identity.Provider, "display_name": identity.DisplayName, "avatar_url": identity.AvatarURL, "email": identity.Email,
 		"email_verified": identity.EmailVerified, "last_authenticated_at": now,
 	}); err != nil {
 		tx.abort()
@@ -816,7 +820,14 @@ func (s *providerAuthService) completeSignIn(flow map[string]any, identity AuthP
 	if err := tx.commit(); err != nil {
 		return nil, providerError("provider_flow_failed", "provider authentication failed", 500, err)
 	}
-	return &providerCompleteResult{Token: token, RefreshToken: refreshToken, Auth: appAuth, Grant: grant}, nil
+	view := providerIdentityViewFromRow(linked)
+	view.Provider = identity.Provider
+	view.DisplayName = identity.DisplayName
+	view.AvatarURL = identity.AvatarURL
+	view.Email = identity.Email
+	view.EmailVerified = identity.EmailVerified
+	view.LastAuthenticatedAt = now
+	return &providerCompleteResult{Token: token, RefreshToken: refreshToken, Auth: appAuth, Identity: &view, Grant: grant}, nil
 }
 
 func (s *providerAuthService) completeLink(flow map[string]any, identity AuthProviderIdentity, confirm bool, auth *AuthContext, now int64) (*providerCompleteResult, error) {
@@ -846,7 +857,7 @@ func (s *providerAuthService) completeLink(flow map[string]any, identity AuthPro
 		var err error
 		row, err = tx.insert(identities, map[string]any{
 			"principal_id": principalID, "provider": identity.Provider, "issuer": identity.Issuer, "subject": identity.Subject,
-			"display_name": identity.DisplayName, "email": identity.Email, "email_verified": identity.EmailVerified,
+			"display_name": identity.DisplayName, "avatar_url": identity.AvatarURL, "email": identity.Email, "email_verified": identity.EmailVerified,
 			"linked_at": now, "last_authenticated_at": now,
 		})
 		if err != nil {
@@ -1024,7 +1035,7 @@ func (s *providerAuthService) unlink(principalID, identityID string) error {
 func providerIdentityViewFromRow(row map[string]any) providerIdentityView {
 	return providerIdentityView{
 		ID: toString(row["id"]), Provider: toString(row["provider"]), Issuer: toString(row["issuer"]),
-		DisplayName: toString(row["display_name"]), Email: toString(row["email"]), EmailVerified: providerBool(row["email_verified"]),
+		DisplayName: toString(row["display_name"]), AvatarURL: toString(row["avatar_url"]), Email: toString(row["email"]), EmailVerified: providerBool(row["email_verified"]),
 		LinkedAt: providerUnix(row["linked_at"]), LastAuthenticatedAt: providerUnix(row["last_authenticated_at"]),
 	}
 }

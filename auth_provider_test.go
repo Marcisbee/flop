@@ -393,8 +393,9 @@ func TestProviderSystemTableCollisionIsActionable(t *testing.T) {
 
 func TestProviderLinkAndSignInUseIssuerSubjectAndStandardSession(t *testing.T) {
 	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
-		"link-code":  {Provider: "fake", Issuer: "https://issuer.example", Subject: "stable-subject", DisplayName: "Initial", Email: "initial@example.com", EmailVerified: true},
-		"login-code": {Provider: "fake", Issuer: "https://issuer.example", Subject: "stable-subject", DisplayName: "Changed", Email: "changed@example.com", EmailVerified: false},
+		"link-code":    {Provider: "fake", Issuer: "https://issuer.example", Subject: "stable-subject", DisplayName: "Initial", AvatarURL: "https://cdn.example/initial.png", Email: "initial@example.com", EmailVerified: true},
+		"login-code":   {Provider: "fake", Issuer: "https://issuer.example", Subject: "stable-subject", DisplayName: "Changed", AvatarURL: "https://cdn.example/changed.png", Email: "changed@example.com", EmailVerified: false},
+		"clear-avatar": {Provider: "fake", Issuer: "https://issuer.example", Subject: "stable-subject", DisplayName: "Latest", AvatarURL: "javascript:alert(1)", Email: "latest@example.com", EmailVerified: true},
 	}}
 	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
 	passwordToken, principalID := registerProviderTestUser(t, handler, "account@example.com")
@@ -418,13 +419,21 @@ func TestProviderLinkAndSignInUseIssuerSubjectAndStandardSession(t *testing.T) {
 	if linked.Code != http.StatusOK {
 		t.Fatalf("link complete status=%d body=%s", linked.Code, linked.Body.String())
 	}
+	linkedOut := decodeProviderResponse(t, linked)
+	linkedIdentity, _ := linkedOut["identity"].(map[string]any)
+	if linkedIdentity["avatarURL"] != "https://cdn.example/initial.png" || linkedIdentity["subject"] != nil {
+		t.Fatalf("link identity payload=%#v", linkedIdentity)
+	}
 	identityRows, err := db.Table(systemAuthIdentityTableName).FindByIndex("principal_id", principalID)
 	if err != nil || len(identityRows) != 1 {
 		t.Fatalf("linked identities=%#v err=%v", identityRows, err)
 	}
+	if identityRows[0]["avatar_url"] != "https://cdn.example/initial.png" {
+		t.Fatalf("stored linked identity=%#v", identityRows[0])
+	}
 	identityID := toString(identityRows[0]["id"])
 	list := providerRequest(t, handler, http.MethodGet, "/api/auth/provider/identities", "", passwordToken)
-	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), "stable-subject") {
+	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), "stable-subject") || !strings.Contains(list.Body.String(), "https://cdn.example/initial.png") {
 		t.Fatalf("identity list exposed unsafe fields or failed: status=%d body=%s", list.Code, list.Body.String())
 	}
 
@@ -438,6 +447,16 @@ func TestProviderLinkAndSignInUseIssuerSubjectAndStandardSession(t *testing.T) {
 	if loginOut["token"] == "" || loginOut["refreshToken"] == "" || loginOut["user"] == nil || loginOut["me"] == nil {
 		t.Fatalf("provider login did not preserve password response shape: %#v", loginOut)
 	}
+	if _, ok := loginOut["grant"]; !ok {
+		t.Fatalf("provider login dropped grant response key: %#v", loginOut)
+	}
+	loginIdentity, _ := loginOut["identity"].(map[string]any)
+	if loginIdentity["avatarURL"] != "https://cdn.example/changed.png" || loginIdentity["displayName"] != "Changed" || loginIdentity["subject"] != nil {
+		t.Fatalf("provider login identity=%#v", loginIdentity)
+	}
+	if strings.Contains(fmt.Sprint(loginIdentity), "refreshToken") || strings.Contains(fmt.Sprint(loginIdentity), "accessToken") {
+		t.Fatalf("provider login identity exposed token material: %#v", loginIdentity)
+	}
 	providerToken, _ := loginOut["token"].(string)
 	claims := decodeJWTClaims(t, providerToken)
 	sessionID, _ := claims["sessionId"].(string)
@@ -450,6 +469,29 @@ func TestProviderLinkAndSignInUseIssuerSubjectAndStandardSession(t *testing.T) {
 	}
 	if identityRows[0]["email"] == "account@example.com" {
 		t.Fatal("test setup accidentally used Flop account email as provider identity")
+	}
+	refreshed, err := db.Table(systemAuthIdentityTableName).Get(identityID)
+	if err != nil || refreshed["avatar_url"] != "https://cdn.example/changed.png" || refreshed["display_name"] != "Changed" {
+		t.Fatalf("refreshed identity=%#v err=%v", refreshed, err)
+	}
+
+	state, _ = startProviderFlow(t, handler, "fake", "sign_in", "", "")
+	completionCode = callbackProviderFlow(t, handler, "fake", state, "clear-avatar")
+	cleared := completeProviderFlow(t, handler, completionCode, "", false)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear avatar login status=%d body=%s", cleared.Code, cleared.Body.String())
+	}
+	clearedIdentity, _ := decodeProviderResponse(t, cleared)["identity"].(map[string]any)
+	if _, exists := clearedIdentity["avatarURL"]; exists {
+		t.Fatalf("invalid refreshed avatar was returned: %#v", clearedIdentity)
+	}
+	refreshed, err = db.Table(systemAuthIdentityTableName).Get(identityID)
+	if err != nil || toString(refreshed["avatar_url"]) != "" || refreshed["display_name"] != "Latest" {
+		t.Fatalf("cleared identity=%#v err=%v", refreshed, err)
+	}
+	list = providerRequest(t, handler, http.MethodGet, "/api/auth/provider/identities", "", passwordToken)
+	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), "avatarURL") {
+		t.Fatalf("identity list retained invalid stale avatar: status=%d body=%s", list.Code, list.Body.String())
 	}
 }
 
@@ -482,19 +524,25 @@ func TestProviderSignInRejectsDisabledPrincipalWithoutSessionMutation(t *testing
 
 func TestUnlinkedVerifiedEmailNeverAutoLinksOrCreatesSession(t *testing.T) {
 	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
-		"same-email": {Provider: "fake", Issuer: "https://issuer.example", Subject: "unlinked", Email: "account@example.com", EmailVerified: true},
+		"linked":        {Provider: "fake", Issuer: "https://issuer.example", Subject: "linked", DisplayName: "Shared", AvatarURL: "https://cdn.example/shared.png", Email: "account@example.com", EmailVerified: true},
+		"same-metadata": {Provider: "fake", Issuer: "https://issuer.example", Subject: "unlinked", DisplayName: "Shared", AvatarURL: "https://cdn.example/shared.png", Email: "account@example.com", EmailVerified: true},
 	}}
 	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
-	_, _ = registerProviderTestUser(t, handler, "account@example.com")
+	token, _ := registerProviderTestUser(t, handler, "account@example.com")
+	state, _ := startProviderFlow(t, handler, "fake", "link", token, "")
+	completionCode := callbackProviderFlow(t, handler, "fake", state, "linked")
+	if rec := completeProviderFlow(t, handler, completionCode, token, true); rec.Code != http.StatusOK {
+		t.Fatalf("link status=%d body=%s", rec.Code, rec.Body.String())
+	}
 	sessionsBefore := db.Table(systemAuthSessionTableName).Count()
 
-	state, _ := startProviderFlow(t, handler, "fake", "sign_in", "", "")
-	completionCode := callbackProviderFlow(t, handler, "fake", state, "same-email")
+	state, _ = startProviderFlow(t, handler, "fake", "sign_in", "", "")
+	completionCode = callbackProviderFlow(t, handler, "fake", state, "same-metadata")
 	rec := completeProviderFlow(t, handler, completionCode, "", false)
 	if rec.Code != http.StatusConflict || decodeProviderResponse(t, rec)["code"] != "link_required" {
 		t.Fatalf("unlinked complete status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := db.Table(systemAuthIdentityTableName).Count(); got != 0 {
+	if got := db.Table(systemAuthIdentityTableName).Count(); got != 1 {
 		t.Fatalf("unlinked identity mutated identity table: %d", got)
 	}
 	if got := db.Table(systemAuthSessionTableName).Count(); got != sessionsBefore {
@@ -771,7 +819,7 @@ func TestProviderStartIsRateLimitedAndOutstandingFlowsAreBounded(t *testing.T) {
 
 func TestProviderIdentityPersistsAcrossReopenAndExpiredFlowsAreCleaned(t *testing.T) {
 	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
-		"link": {Provider: "fake", Issuer: "https://issuer.example", Subject: "persistent"},
+		"link": {Provider: "fake", Issuer: "https://issuer.example", Subject: "persistent", AvatarURL: "https://cdn.example/persistent.png"},
 	}}
 	dataDir := t.TempDir()
 	config := Config{DataDir: dataDir, SyncMode: "normal", AuthProviders: map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")}}
@@ -814,11 +862,84 @@ func TestProviderIdentityPersistsAcrossReopenAndExpiredFlowsAreCleaned(t *testin
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	rows, err := db.Table(systemAuthIdentityTableName).FindByIndex("principal_id", principalID)
-	if err != nil || len(rows) != 1 || rows[0]["subject"] != "persistent" {
+	if err != nil || len(rows) != 1 || rows[0]["subject"] != "persistent" || rows[0]["avatar_url"] != "https://cdn.example/persistent.png" {
 		t.Fatalf("reopened identities=%#v err=%v", rows, err)
 	}
 	if got := db.Table(systemAuthProviderFlowTableName).Count(); got != 0 {
 		t.Fatalf("expired callback material survived cleanup/reopen: %d rows", got)
+	}
+}
+
+func TestProviderAvatarSchemaUpgradePreservesLegacyIdentityAndIndexes(t *testing.T) {
+	dataDir := t.TempDir()
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{}}
+	app := New(Config{DataDir: dataDir, SyncMode: "normal", AuthProviders: map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")}})
+	Define(app, "users", func(s *SchemaBuilder) {
+		s.String("id").Primary("uuidv7")
+		s.String("email").Required().Unique().Email()
+		s.Bcrypt("password", 4).Required()
+		s.String("default_role").Default("user")
+		s.Roles("roles")
+	})
+	definitions := app.buildTableDefs()
+	withoutField := func(definition *schema.TableDef, fieldName string) *schema.TableDef {
+		fields := make([]schema.CompiledField, 0, len(definition.CompiledSchema.Fields)-1)
+		for _, field := range definition.CompiledSchema.Fields {
+			if field.Name != fieldName {
+				fields = append(fields, field)
+			}
+		}
+		legacyDefinition := *definition
+		legacyDefinition.CompiledSchema = schema.NewCompiledSchema(fields)
+		return &legacyDefinition
+	}
+	definitions[systemAuthIdentityTableName] = withoutField(definitions[systemAuthIdentityTableName], "avatar_url")
+	definitions[systemAuthProviderFlowTableName] = withoutField(definitions[systemAuthProviderFlowTableName], "result_avatar_url")
+
+	legacy := engine.NewDatabase(engine.DatabaseConfig{DataDir: dataDir, SyncMode: "normal"})
+	if err := legacy.Open(definitions); err != nil {
+		t.Fatalf("open pre-avatar database: %v", err)
+	}
+	if _, err := legacy.GetTable(systemAuthIdentityTableName).Insert(map[string]any{
+		"id": "legacyidentity0000000001", "principal_id": "legacy-principal", "provider": "fake",
+		"issuer": "https://issuer.example", "subject": "legacy-subject", "display_name": "Legacy",
+		"email": "legacy@example.com", "email_verified": true, "linked_at": int64(100), "last_authenticated_at": int64(200),
+	}, nil); err != nil {
+		t.Fatalf("insert legacy identity: %v", err)
+	}
+	if _, err := legacy.GetTable(systemAuthProviderFlowTableName).Insert(map[string]any{
+		"id": "legacyflow00000000000001", "state_hash": "legacy-state", "provider": "fake", "intent": "sign_in",
+		"secrets_ciphertext": "legacy", "redirect_uri": "https://app.example/callback", "created_at": time.Now().Unix(),
+		"expires_at": time.Now().Add(time.Hour).Unix(), "phase": providerFlowPhaseStarted,
+	}, nil); err != nil {
+		t.Fatalf("insert legacy flow: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close pre-avatar database: %v", err)
+	}
+
+	db, err := app.Open()
+	if err != nil {
+		t.Fatalf("upgrade pre-avatar database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	identity, ok := db.Table(systemAuthIdentityTableName).FindByUniqueCompositeIndex([]string{"issuer", "subject"}, "https://issuer.example", "legacy-subject")
+	if !ok || toString(identity["id"]) != "legacyidentity0000000001" || toString(identity["avatar_url"]) != "" {
+		t.Fatalf("upgraded identity lookup=%#v ok=%t", identity, ok)
+	}
+	byPrincipal, err := db.Table(systemAuthIdentityTableName).FindByIndex("principal_id", "legacy-principal")
+	if err != nil || len(byPrincipal) != 1 {
+		t.Fatalf("upgraded principal index rows=%#v err=%v", byPrincipal, err)
+	}
+	flow, err := db.Table(systemAuthProviderFlowTableName).Get("legacyflow00000000000001")
+	if err != nil || flow == nil || toString(flow["result_avatar_url"]) != "" {
+		t.Fatalf("upgraded flow=%#v err=%v", flow, err)
+	}
+	if _, err := db.Table(systemAuthIdentityTableName).Update("legacyidentity0000000001", map[string]any{"avatar_url": "https://cdn.example/legacy.png"}); err != nil {
+		t.Fatalf("write upgraded identity avatar field: %v", err)
+	}
+	if _, err := db.Table(systemAuthProviderFlowTableName).Update("legacyflow00000000000001", map[string]any{"result_avatar_url": "https://cdn.example/flow.png"}); err != nil {
+		t.Fatalf("write upgraded flow avatar field: %v", err)
 	}
 }
 

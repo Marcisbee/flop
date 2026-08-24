@@ -850,7 +850,7 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, http.StatusOK, map[string]any{
-			"token": result.Token, "refreshToken": result.RefreshToken, "user": userPayload, "me": mePayload, "grant": result.Grant,
+			"token": result.Token, "refreshToken": result.RefreshToken, "user": userPayload, "me": mePayload, "identity": result.Identity, "grant": result.Grant,
 		})
 	case "/api/auth/provider/identities":
 		if r.Method != http.MethodGet {
