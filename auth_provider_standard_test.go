@@ -39,7 +39,7 @@ func TestOAuth2ProviderProtocolFixture(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer access" {
 				t.Errorf("userinfo authorization=%q", r.Header.Get("Authorization"))
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "subject", "name": "Person", "picture": " https://cdn.example/person.png ", "email": "person@example.com", "email_verified": true})
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "subject", "name": "Person", "picture": " https://cdn.example/person.png ", "profile": map[string]any{"handle": " person ", "url": " https://social.example/person "}, "email": "person@example.com", "email_verified": true})
 		case "/revoke":
 			revocations.Add(1)
 			w.WriteHeader(http.StatusOK)
@@ -48,7 +48,7 @@ func TestOAuth2ProviderProtocolFixture(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	adapter := &OAuth2AuthProvider{Definition: OAuth2ProviderDefinition{AuthorizationEndpoint: server.URL + "/authorize", TokenEndpoint: server.URL + "/token", UserInfoEndpoint: server.URL + "/userinfo", RevocationEndpoint: server.URL + "/revoke", Issuer: "https://issuer.example", Audience: "client", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "sub", DisplayNameClaim: "name", AvatarURLClaim: "picture", EmailClaim: "email", EmailVerifiedClaim: "email_verified", VerifyIDToken: func(_ context.Context, raw string) (map[string]any, error) {
+	adapter := &OAuth2AuthProvider{Definition: OAuth2ProviderDefinition{AuthorizationEndpoint: server.URL + "/authorize", TokenEndpoint: server.URL + "/token", UserInfoEndpoint: server.URL + "/userinfo", RevocationEndpoint: server.URL + "/revoke", Issuer: "https://issuer.example", Audience: "client", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "sub", DisplayNameClaim: "name", AvatarURLClaim: "picture", ProfileHandleClaim: "profile.handle", ProfileURLClaim: "profile.url", EmailClaim: "email", EmailVerifiedClaim: "email_verified", VerifyIDToken: func(_ context.Context, raw string) (map[string]any, error) {
 		if raw != "signed.fixture.token" {
 			return nil, fmt.Errorf("bad token")
 		}
@@ -66,7 +66,7 @@ func TestOAuth2ProviderProtocolFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Identity.Subject != "subject" || result.Identity.Issuer != "https://issuer.example" || result.Identity.AvatarURL != "https://cdn.example/person.png" || !result.Identity.EmailVerified {
+	if result.Identity.Subject != "subject" || result.Identity.Issuer != "https://issuer.example" || result.Identity.AvatarURL != "https://cdn.example/person.png" || result.Identity.ProfileHandle != "person" || result.Identity.ProfileURL != "https://social.example/person" || !result.Identity.EmailVerified {
 		t.Fatalf("identity=%+v", result.Identity)
 	}
 	if !scopeSubset([]string{"openid", "read"}, result.GrantedScopes) {
@@ -80,6 +80,48 @@ func TestOAuth2ProviderProtocolFixture(t *testing.T) {
 	}
 	if refreshes.Load() != 1 || revocations.Load() != 1 {
 		t.Fatalf("refreshes=%d revocations=%d", refreshes.Load(), revocations.Load())
+	}
+}
+
+func TestOAuth2ProviderProfileExtractionIsOptionalAndNonFatal(t *testing.T) {
+	tests := []struct {
+		name, handleClaim, urlClaim, handle, profileURL string
+		userInfo                                        map[string]any
+	}{
+		{name: "top-level", handleClaim: "login", urlClaim: "html_url", handle: "person", profileURL: "https://profiles.example/person", userInfo: map[string]any{"id": "subject", "login": " person ", "html_url": " https://profiles.example/person "}},
+		{name: "nested", handleClaim: "profile.handle", urlClaim: "profile.url", handle: "nested", profileURL: "https://profiles.example/nested", userInfo: map[string]any{"id": "subject", "profile": map[string]any{"handle": " nested ", "url": "https://profiles.example/nested"}}},
+		{name: "url-without-handle", handleClaim: "login", urlClaim: "html_url", profileURL: "https://profiles.example/person", userInfo: map[string]any{"id": "subject", "html_url": "https://profiles.example/person"}},
+		{name: "missing-url-clears-handle", handleClaim: "login", urlClaim: "html_url", userInfo: map[string]any{"id": "subject", "login": "person"}},
+		{name: "malformed-url-clears-handle", handleClaim: "login", urlClaim: "html_url", userInfo: map[string]any{"id": "subject", "login": "person", "html_url": "://bad"}},
+		{name: "non-web-url-clears-handle", handleClaim: "login", urlClaim: "html_url", userInfo: map[string]any{"id": "subject", "login": "person", "html_url": "mailto:person@example.com"}},
+		{name: "hostless-url-clears-handle", handleClaim: "login", urlClaim: "html_url", userInfo: map[string]any{"id": "subject", "login": "person", "html_url": "https:///person"}},
+		{name: "non-string-url-clears-handle", handleClaim: "login", urlClaim: "html_url", userInfo: map[string]any{"id": "subject", "login": "person", "html_url": 42}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/token":
+					_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access"})
+				case "/userinfo":
+					_ = json.NewEncoder(w).Encode(test.userInfo)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			adapter := &OAuth2AuthProvider{Definition: OAuth2ProviderDefinition{
+				TokenEndpoint: server.URL + "/token", UserInfoEndpoint: server.URL + "/userinfo",
+				Issuer: "https://issuer.example", UserInfoSubjectClaim: "id", ProfileHandleClaim: test.handleClaim, ProfileURLClaim: test.urlClaim,
+			}, HTTPClient: server.Client()}
+			result, err := adapter.ExchangeGrant(context.Background(), AuthProviderCallbackRequest{Provider: "fixture", Code: "code"})
+			if err != nil {
+				t.Fatalf("exchange with optional profile: %v", err)
+			}
+			if result.Identity.ProfileHandle != test.handle || result.Identity.ProfileURL != test.profileURL {
+				t.Fatalf("profile=(%q, %q) want (%q, %q)", result.Identity.ProfileHandle, result.Identity.ProfileURL, test.handle, test.profileURL)
+			}
+		})
 	}
 }
 
@@ -199,6 +241,16 @@ func TestBuiltinProviderCatalog(t *testing.T) {
 	xDefinition, _ := BuiltinOAuth2ProviderDefinition("x")
 	if !strings.Contains(xDefinition.UserInfoEndpoint, "user.fields=profile_image_url") {
 		t.Fatalf("X user-info endpoint does not request profile_image_url: %s", xDefinition.UserInfoEndpoint)
+	}
+	githubDefinition, _ := BuiltinOAuth2ProviderDefinition("github")
+	if githubDefinition.ProfileHandleClaim != "login" || githubDefinition.ProfileURLClaim != "html_url" {
+		t.Fatalf("GitHub profile mapping=(%q, %q)", githubDefinition.ProfileHandleClaim, githubDefinition.ProfileURLClaim)
+	}
+	for _, provider := range []string{"discord", "twitch", "google", "facebook", "x"} {
+		definition, _ := BuiltinOAuth2ProviderDefinition(provider)
+		if definition.ProfileHandleClaim != "" || definition.ProfileURLClaim != "" {
+			t.Errorf("%s acquired synthetic profile mapping=(%q, %q)", provider, definition.ProfileHandleClaim, definition.ProfileURLClaim)
+		}
 	}
 	if config, err := BuiltinAuthProviderConfig("draugiem", BuiltinAuthProviderOptions{ClientID: "app", ClientSecret: "key", RedirectURI: "https://flop.example/callback"}); err != nil || config.Issuer != "https://www.draugiem.lv" {
 		t.Fatalf("Draugiem built-in config=%+v err=%v", config, err)
