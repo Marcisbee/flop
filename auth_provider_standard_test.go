@@ -83,6 +83,153 @@ func TestOAuth2ProviderProtocolFixture(t *testing.T) {
 	}
 }
 
+func TestOAuth2ProviderNormalizesOnlyGoogleUserInfoScopeAliases(t *testing.T) {
+	const (
+		emailAlias   = "https://www.googleapis.com/auth/userinfo.email"
+		profileAlias = "https://www.googleapis.com/auth/userinfo.profile"
+		unknownScope = "provider.example/arbitrary"
+	)
+	upstreamScopes := []string{GoogleScopeOpenID, emailAlias, profileAlias, GoogleScopeYouTubeReadonly, unknownScope}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": strings.Join(upstreamScopes, " ")})
+		case "/userinfo":
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "subject"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name, issuer string
+		want         []string
+	}{
+		{name: "google", issuer: "https://accounts.google.com", want: []string{GoogleScopeOpenID, GoogleScopeEmail, GoogleScopeProfile, GoogleScopeYouTubeReadonly, unknownScope}},
+		{name: "discord", issuer: "https://discord.com", want: upstreamScopes},
+		{name: "twitch", issuer: "https://id.twitch.tv/oauth2", want: upstreamScopes},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := &OAuth2AuthProvider{Definition: OAuth2ProviderDefinition{
+				TokenEndpoint: server.URL + "/token", UserInfoEndpoint: server.URL + "/userinfo",
+				Issuer: test.issuer, UserInfoSubjectClaim: "sub",
+			}, HTTPClient: server.Client()}
+			exchanged, err := adapter.ExchangeGrant(context.Background(), AuthProviderCallbackRequest{Provider: test.name, Code: "code"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			refreshed, err := adapter.RefreshGrant(context.Background(), AuthProviderRefreshRequest{Provider: test.name, RefreshToken: "refresh"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := canonicalStrings(test.want)
+			for operation, got := range map[string][]string{"exchange": exchanged.GrantedScopes, "refresh": refreshed.Scopes} {
+				if len(got) != len(want) || !scopeSubset(want, got) || !scopeSubset(got, want) {
+					t.Errorf("%s scopes=%v want %v", operation, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestGoogleLiveScopeAliasesCompleteAndPersistWithoutTokenExposure(t *testing.T) {
+	const (
+		accessSecret  = "google-access-secret"
+		refreshSecret = "google-refresh-secret"
+		emailAlias    = "https://www.googleapis.com/auth/userinfo.email"
+		profileAlias  = "https://www.googleapis.com/auth/userinfo.profile"
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = r.ParseForm()
+			scopes := []string{GoogleScopeOpenID, emailAlias, profileAlias}
+			if r.Form.Get("code") == "extra-scope" {
+				scopes = append(scopes, "provider.example/unrequested")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": accessSecret, "refresh_token": refreshSecret, "token_type": "Bearer",
+				"expires_in": 3600, "scope": strings.Join(scopes, " "),
+			})
+		case "/userinfo":
+			if r.Header.Get("Authorization") != "Bearer "+accessSecret {
+				t.Errorf("userinfo authorization=%q", r.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "google-subject", "name": "Google Person", "email": "google@example.com", "email_verified": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	definition, _ := BuiltinOAuth2ProviderDefinition("google")
+	definition.AuthorizationEndpoint = server.URL + "/authorize"
+	definition.TokenEndpoint = server.URL + "/token"
+	definition.UserInfoEndpoint = server.URL + "/userinfo"
+	definition.RevocationEndpoint = ""
+	adapter := &OAuth2AuthProvider{Definition: definition, HTTPClient: server.Client()}
+	app := New(Config{
+		DataDir: t.TempDir(), SyncMode: "normal",
+		AuthProviders: map[string]AuthProviderConfig{"google": {
+			Adapter: adapter, Issuer: definition.Issuer,
+			RedirectURI: "https://app.example/api/auth/provider/callback?provider=google",
+			ClientID:    "google-client", ClientSecret: "google-secret",
+			AllowedScopes:  []string{GoogleScopeOpenID, GoogleScopeEmail, GoogleScopeProfile},
+			DefaultScopes:  []string{GoogleScopeOpenID, GoogleScopeEmail, GoogleScopeProfile},
+			RequiredScopes: []string{GoogleScopeOpenID},
+		}},
+		ProviderSecretKeys: map[string][]byte{"v1": []byte("0123456789abcdef0123456789abcdef")}, ActiveProviderSecretKey: "v1",
+	})
+	defineGrantTestUsers(app)
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler := app.APIHandler(db)
+	token, _ := registerProviderTestUser(t, handler, "google-link@example.com")
+
+	state, _ := startProviderFlow(t, handler, "google", "link", token, "")
+	completion := callbackProviderFlow(t, handler, "google", state, "valid")
+	completed := completeProviderFlow(t, handler, completion, token, true)
+	if completed.Code != http.StatusOK {
+		t.Fatalf("Google completion status=%d body=%s", completed.Code, completed.Body.String())
+	}
+	for _, secret := range []string{accessSecret, refreshSecret} {
+		if strings.Contains(completed.Body.String(), secret) {
+			t.Fatalf("Google completion exposed provider token %q", secret)
+		}
+	}
+	grantView, _ := decodeProviderResponse(t, completed)["grant"].(map[string]any)
+	grantID := toString(grantView["id"])
+	grant, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || grant == nil {
+		t.Fatalf("Google grant=%#v err=%v", grant, err)
+	}
+	wantScopes := []string{GoogleScopeOpenID, GoogleScopeEmail, GoogleScopeProfile}
+	storedScopes := storedStrings(grant["granted_scopes"])
+	if len(storedScopes) != len(wantScopes) || !scopeSubset(wantScopes, storedScopes) || !scopeSubset(storedScopes, wantScopes) {
+		t.Fatalf("Google stored scopes=%v want %v", storedScopes, wantScopes)
+	}
+	for _, secret := range []string{accessSecret, refreshSecret} {
+		if strings.Contains(toString(grant["token_ciphertext"]), secret) {
+			t.Fatalf("Google grant stored provider token %q in plaintext", secret)
+		}
+	}
+
+	state, _ = startProviderFlow(t, handler, "google", "link", token, "")
+	completion = callbackProviderFlow(t, handler, "google", state, "extra-scope")
+	rejected := completeProviderFlow(t, handler, completion, token, true)
+	if rejected.Code != http.StatusBadRequest || decodeProviderResponse(t, rejected)["code"] != "provider_scope_invalid" {
+		t.Fatalf("Google extra scope status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+	if db.Table(systemAuthProviderGrantTableName).Count() != 1 {
+		t.Fatal("Google extra scope persisted a grant")
+	}
+}
+
 func TestOAuth2ProviderProfileExtractionIsOptionalAndNonFatal(t *testing.T) {
 	tests := []struct {
 		name, handleClaim, urlClaim, handle, profileURL string
@@ -189,33 +336,115 @@ func TestSteamOpenIDProtocolFixture(t *testing.T) {
 	if returnTo.Query().Get("state") != "state" {
 		t.Fatalf("return_to=%s", returnTo)
 	}
-	parameters := url.Values{
-		"state":              {"state"},
-		"openid.mode":        {"id_res"},
-		"openid.op_endpoint": {server.URL},
-		"openid.return_to":   {returnTo.String()},
-		"openid.claimed_id":  {"http://steamcommunity.com/openid/id/76561198000000000"},
-		"openid.identity":    {"http://steamcommunity.com/openid/id/76561198000000000"},
+	parametersFor := func(claimedID string) url.Values {
+		return url.Values{
+			"state":              {"state"},
+			"openid.mode":        {"id_res"},
+			"openid.op_endpoint": {server.URL},
+			"openid.return_to":   {returnTo.String()},
+			"openid.claimed_id":  {claimedID},
+			"openid.identity":    {claimedID},
+		}
 	}
-	identity, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: parameters})
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			parameters := parametersFor(scheme + "://steamcommunity.com/openid/id/76561198000000000")
+			identity, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: parameters})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if identity.Subject != "76561198000000000" || identity.Issuer != "https://steamcommunity.com/openid" {
+				t.Fatalf("identity=%+v", identity)
+			}
+		})
+	}
+
+	valid := parametersFor("https://steamcommunity.com/openid/id/76561198000000000")
+	tests := []struct {
+		name   string
+		mutate func(url.Values)
+	}{
+		{name: "mismatched identity", mutate: func(values url.Values) {
+			values.Set("openid.identity", "https://steamcommunity.com/openid/id/76561198000000001")
+		}},
+		{name: "non-Steam host", mutate: func(values url.Values) {
+			values.Set("openid.claimed_id", "https://attacker.example/openid/id/76561198000000000")
+			values.Set("openid.identity", values.Get("openid.claimed_id"))
+		}},
+		{name: "unsupported scheme", mutate: func(values url.Values) {
+			values.Set("openid.claimed_id", "ftp://steamcommunity.com/openid/id/76561198000000000")
+			values.Set("openid.identity", values.Get("openid.claimed_id"))
+		}},
+		{name: "bad endpoint", mutate: func(values url.Values) { values.Set("openid.op_endpoint", "https://attacker.example/openid") }},
+		{name: "bad return-to", mutate: func(values url.Values) {
+			values.Set("openid.return_to", "https://attacker.example/callback?state=state")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parameters := cloneURLValues(valid)
+			test.mutate(parameters)
+			if _, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: parameters}); err == nil {
+				t.Fatal("Steam accepted an invalid assertion")
+			}
+		})
+	}
+	if got := validationRequests.Load(); got != 2 {
+		t.Fatalf("Steam made %d requests, want one OpenID assertion validation request for each accepted scheme and no requests for rejected shapes", got)
+	}
+}
+
+func TestSteamHTTPSClaimedIDCompletesThroughProviderCallback(t *testing.T) {
+	var validationRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		validationRequests.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPost || !strings.Contains(string(body), "openid.mode=check_authentication") {
+			t.Errorf("Steam verification method=%s body=%s", r.Method, body)
+		}
+		_, _ = io.WriteString(w, "ns:http://specs.openid.net/auth/2.0\nis_valid:true\n")
+	}))
+	defer server.Close()
+
+	adapter := &SteamOpenIDProvider{HTTPClient: server.Client(), Endpoint: server.URL}
+	config := fakeProviderConfig(adapter, "steam", "https://steamcommunity.com/openid")
+	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"steam": config})
+	token, principalID := registerProviderTestUser(t, handler, "steam-link@example.com")
+	started := providerRequest(t, handler, http.MethodPost, "/api/auth/provider/start", `{"provider":"steam","intent":"link"}`, token)
+	if started.Code != http.StatusOK {
+		t.Fatalf("Steam start status=%d body=%s", started.Code, started.Body.String())
+	}
+	authorizationURL, _ := url.Parse(toString(decodeProviderResponse(t, started)["authorizationUrl"]))
+	returnTo := authorizationURL.Query().Get("openid.return_to")
+	parsedReturnTo, err := url.Parse(returnTo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.Subject != "76561198000000000" || identity.Issuer != "https://steamcommunity.com/openid" {
-		t.Fatalf("identity=%+v", identity)
+	claimedID := "https://steamcommunity.com/openid/id/76561198000000000"
+	parameters := url.Values{
+		"provider":           {"steam"},
+		"state":              {parsedReturnTo.Query().Get("state")},
+		"openid.mode":        {"id_res"},
+		"openid.op_endpoint": {server.URL},
+		"openid.return_to":   {returnTo},
+		"openid.claimed_id":  {claimedID},
+		"openid.identity":    {claimedID},
 	}
-	badReturnTo := cloneURLValues(parameters)
-	badReturnTo.Set("openid.return_to", "https://attacker.example/callback?state=state")
-	if _, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: badReturnTo}); err == nil {
-		t.Fatal("Steam accepted an assertion bound to another return URL")
+	callback := providerRequest(t, handler, http.MethodGet, "/api/auth/provider/callback?"+parameters.Encode(), "", "")
+	if callback.Code != http.StatusOK {
+		t.Fatalf("Steam callback status=%d body=%s", callback.Code, callback.Body.String())
 	}
-	badEndpoint := cloneURLValues(parameters)
-	badEndpoint.Set("openid.op_endpoint", "https://attacker.example/openid")
-	if _, err := adapter.Exchange(context.Background(), AuthProviderCallbackRequest{Provider: "steam", RedirectURI: "https://flop.example/callback?provider=steam", Parameters: badEndpoint}); err == nil {
-		t.Fatal("Steam accepted an assertion from another OpenID endpoint")
+	completionCode := toString(decodeProviderResponse(t, callback)["completionCode"])
+	completed := completeProviderFlow(t, handler, completionCode, token, true)
+	if completed.Code != http.StatusOK {
+		t.Fatalf("Steam completion status=%d body=%s", completed.Code, completed.Body.String())
 	}
-	if got := validationRequests.Load(); got != 1 {
-		t.Fatalf("Steam made %d requests, want only the OpenID assertion validation request and no playtime or owned-games request", got)
+	identity, ok := db.Table(systemAuthIdentityTableName).FindByUniqueCompositeIndex([]string{"issuer", "subject"}, "https://steamcommunity.com/openid", "76561198000000000")
+	if !ok || toString(identity["principal_id"]) != principalID {
+		t.Fatalf("Steam identity=%#v want principal %s", identity, principalID)
+	}
+	if validationRequests.Load() != 1 {
+		t.Fatalf("Steam verification requests=%d want 1", validationRequests.Load())
 	}
 }
 
