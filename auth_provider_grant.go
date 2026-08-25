@@ -691,9 +691,11 @@ func (s *providerAuthService) identityGrant(appID, backendCredential, grantID st
 		!appFound || !providerBool(app["enabled"]) {
 		return nil, providerError("grant_not_found", "provider grant not found", 404)
 	}
+	profileHandle, profileURL := normalizedProfilePair(toString(identity["profile_handle"]), identity["profile_url"])
 	return &ProviderIdentityGrant{
 		GrantID: grantID, AppID: appID, Provider: toString(grant["provider"]),
 		Issuer: toString(identity["issuer"]), Subject: toString(identity["subject"]),
+		ProfileHandle: profileHandle, ProfileURL: profileURL,
 	}, nil
 }
 

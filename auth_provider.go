@@ -115,6 +115,8 @@ type AuthProviderIdentity struct {
 	Subject       string
 	DisplayName   string
 	AvatarURL     string
+	ProfileHandle string
+	ProfileURL    string
 	Email         string
 	EmailVerified bool
 }
@@ -184,9 +186,11 @@ type ProviderTokenLease struct {
 // ProviderIdentityGrant is the verified provider identity resolved for one
 // app-isolated grant. It is returned only to an authenticated app backend.
 type ProviderIdentityGrant struct {
-	GrantID  string `json:"grantId"`
-	AppID    string `json:"appID"`
-	Provider string `json:"provider"`
-	Issuer   string `json:"issuer"`
-	Subject  string `json:"subject"`
+	GrantID       string `json:"grantId"`
+	AppID         string `json:"appID"`
+	Provider      string `json:"provider"`
+	Issuer        string `json:"issuer"`
+	Subject       string `json:"subject"`
+	ProfileHandle string `json:"profileHandle,omitempty"`
+	ProfileURL    string `json:"profileURL,omitempty"`
 }

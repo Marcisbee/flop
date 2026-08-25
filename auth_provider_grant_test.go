@@ -181,9 +181,9 @@ func TestIdentityOnlyProviderGrantsResolveForMatchingBackend(t *testing.T) {
 		clientSecretB = "provider-client-b-secret"
 	)
 	provider := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
-		"app-a":  {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person"},
-		"app-b":  {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person"},
-		"app-a2": {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person"},
+		"app-a":  {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person", ProfileHandle: " identity-person ", ProfileURL: " https://profiles.example/identity-person "},
+		"app-b":  {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person", ProfileHandle: "identity-person", ProfileURL: "https://profiles.example/identity-person"},
+		"app-a2": {Provider: "shared", Issuer: "https://issuer.example", Subject: subject, DisplayName: "Identity Person", ProfileHandle: "identity-person", ProfileURL: "https://profiles.example/identity-person"},
 	}}
 	if _, tokenCapable := any(provider).(AuthProviderGrantAdapter); tokenCapable {
 		t.Fatal("identity-only fixture unexpectedly implements token grant capability")
@@ -267,11 +267,11 @@ func TestIdentityOnlyProviderGrantsResolveForMatchingBackend(t *testing.T) {
 	}
 
 	resolvedA, err := db.ProviderIdentity(context.Background(), "app-a", backendA, grantA)
-	if err != nil || resolvedA.GrantID != grantA || resolvedA.AppID != "app-a" || resolvedA.Provider != "shared" || resolvedA.Issuer != "https://issuer.example" || resolvedA.Subject != subject {
+	if err != nil || resolvedA.GrantID != grantA || resolvedA.AppID != "app-a" || resolvedA.Provider != "shared" || resolvedA.Issuer != "https://issuer.example" || resolvedA.Subject != subject || resolvedA.ProfileHandle != "identity-person" || resolvedA.ProfileURL != "https://profiles.example/identity-person" {
 		t.Fatalf("app A identity=%+v err=%v", resolvedA, err)
 	}
 	resolvedB, err := db.ProviderIdentity(context.Background(), "app-b", backendB, grantB)
-	if err != nil || resolvedB.Subject != subject {
+	if err != nil || resolvedB.Subject != subject || resolvedB.ProfileHandle != "identity-person" || resolvedB.ProfileURL != "https://profiles.example/identity-person" {
 		t.Fatalf("app B identity=%+v err=%v", resolvedB, err)
 	}
 	if _, err := db.ProviderToken(context.Background(), "app-b", backendB, grantB); err == nil {
@@ -304,8 +304,15 @@ func TestIdentityOnlyProviderGrantsResolveForMatchingBackend(t *testing.T) {
 		}
 		return rec
 	}
-	if rec := resolveHTTP("app-a", grantA, backendA, "", false); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), subject) || strings.Contains(rec.Body.String(), principalID) {
+	if rec := resolveHTTP("app-a", grantA, backendA, "", false); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), subject) || !strings.Contains(rec.Body.String(), "https://profiles.example/identity-person") || strings.Contains(rec.Body.String(), principalID) {
 		t.Fatalf("app A backend identity status=%d body=%s", rec.Code, rec.Body.String())
+	} else {
+		payload := decodeProviderResponse(t, rec)
+		for _, forbidden := range []string{"principalId", "principalID", "identityId", "identityID", "email", "credential", "accessToken", "refreshToken", "token"} {
+			if _, exists := payload[forbidden]; exists {
+				t.Fatalf("app A backend identity exposed %s: %#v", forbidden, payload)
+			}
+		}
 	}
 	if rec := resolveHTTP("app-b", grantB, "", "Bearer "+backendB, false); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), subject) {
 		t.Fatalf("app B bearer identity status=%d body=%s", rec.Code, rec.Body.String())

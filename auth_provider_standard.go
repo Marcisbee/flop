@@ -47,7 +47,12 @@ type OAuth2ProviderDefinition struct {
 	UserInfoSubjectClaim     string
 	DisplayNameClaim         string
 	// AvatarURLClaim may be a top-level claim or a dot-separated object path.
-	AvatarURLClaim          string
+	AvatarURLClaim string
+	// ProfileHandleClaim and ProfileURLClaim may be top-level claims or
+	// dot-separated object paths. A profile handle is retained only when the
+	// provider also supplies a valid absolute HTTP(S) profile URL.
+	ProfileHandleClaim      string
+	ProfileURLClaim         string
 	EmailClaim              string
 	EmailVerifiedClaim      string
 	AuthorizationParameters map[string]string
@@ -180,7 +185,8 @@ func (p *OAuth2AuthProvider) ExchangeGrant(ctx context.Context, request AuthProv
 	if verifiedSubject != "" && subject != verifiedSubject {
 		return AuthProviderExchangeResult{}, fmt.Errorf("OIDC user-info subject mismatch")
 	}
-	identity := AuthProviderIdentity{Provider: request.Provider, Issuer: p.Definition.Issuer, Subject: subject, DisplayName: claimString(claims[p.Definition.DisplayNameClaim]), AvatarURL: normalizedAvatarURL(claimPath(claims, p.Definition.AvatarURLClaim)), Email: claimString(claims[p.Definition.EmailClaim]), EmailVerified: claimBool(claims[p.Definition.EmailVerifiedClaim])}
+	profileHandle, profileURL := normalizedProfilePair(claimString(claimPath(claims, p.Definition.ProfileHandleClaim)), claimPath(claims, p.Definition.ProfileURLClaim))
+	identity := AuthProviderIdentity{Provider: request.Provider, Issuer: p.Definition.Issuer, Subject: subject, DisplayName: claimString(claims[p.Definition.DisplayNameClaim]), AvatarURL: normalizedAvatarURL(claimPath(claims, p.Definition.AvatarURLClaim)), ProfileHandle: profileHandle, ProfileURL: profileURL, Email: claimString(claims[p.Definition.EmailClaim]), EmailVerified: claimBool(claims[p.Definition.EmailVerifiedClaim])}
 	return AuthProviderExchangeResult{Identity: identity, Tokens: tokens, GrantedScopes: tokens.Scopes, Capabilities: p.ProviderCapabilities()}, nil
 }
 
@@ -401,13 +407,26 @@ func normalizedAvatarURL(value any) string {
 	return raw
 }
 
+func normalizedProfilePair(handle string, value any) (string, string) {
+	raw, ok := value.(string)
+	if !ok {
+		return "", ""
+	}
+	raw = strings.TrimSpace(raw)
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" || (!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+		return "", ""
+	}
+	return strings.TrimSpace(handle), raw
+}
+
 // BuiltinOAuth2ProviderDefinition returns Flop's reviewed standard protocol
 // definition. YouTube deliberately has no entry; its scopes belong to Google.
 func BuiltinOAuth2ProviderDefinition(provider string) (OAuth2ProviderDefinition, bool) {
 	definitions := map[string]OAuth2ProviderDefinition{
 		"discord":  {AuthorizationEndpoint: "https://discord.com/oauth2/authorize", TokenEndpoint: "https://discord.com/api/v10/oauth2/token", UserInfoEndpoint: "https://discord.com/api/v10/users/@me", RevocationEndpoint: "https://discord.com/api/v10/oauth2/token/revoke", RevocationTokenType: "refresh_token", RefreshSupported: true, Issuer: "https://discord.com", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "id", DisplayNameClaim: "username", EmailClaim: "email", EmailVerifiedClaim: "verified"},
 		"twitch":   {AuthorizationEndpoint: "https://id.twitch.tv/oauth2/authorize", TokenEndpoint: "https://id.twitch.tv/oauth2/token", UserInfoEndpoint: "https://api.twitch.tv/helix/users", RevocationEndpoint: "https://id.twitch.tv/oauth2/revoke", OmitClientSecretOnRevoke: true, RefreshSupported: true, Issuer: "https://id.twitch.tv/oauth2", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "id", DisplayNameClaim: "display_name", AvatarURLClaim: "profile_image_url", EmailClaim: "email", UserInfoHeaders: map[string]string{"Client-Id": "{client_id}"}},
-		"github":   {AuthorizationEndpoint: "https://github.com/login/oauth/authorize", TokenEndpoint: "https://github.com/login/oauth/access_token", UserInfoEndpoint: "https://api.github.com/user", RevocationEndpoint: "https://api.github.com/applications/{client_id}/grant", RevocationStyle: "github_grant_delete", Issuer: "https://github.com", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "id", DisplayNameClaim: "login", AvatarURLClaim: "avatar_url", EmailClaim: "email"},
+		"github":   {AuthorizationEndpoint: "https://github.com/login/oauth/authorize", TokenEndpoint: "https://github.com/login/oauth/access_token", UserInfoEndpoint: "https://api.github.com/user", RevocationEndpoint: "https://api.github.com/applications/{client_id}/grant", RevocationStyle: "github_grant_delete", Issuer: "https://github.com", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "id", DisplayNameClaim: "login", AvatarURLClaim: "avatar_url", ProfileHandleClaim: "login", ProfileURLClaim: "html_url", EmailClaim: "email"},
 		"google":   {AuthorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth", TokenEndpoint: "https://oauth2.googleapis.com/token", UserInfoEndpoint: "https://openidconnect.googleapis.com/v1/userinfo", RevocationEndpoint: "https://oauth2.googleapis.com/revoke", RevocationTokenType: "refresh_token", RefreshSupported: true, Issuer: "https://accounts.google.com", Audience: "{client_id}", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "sub", DisplayNameClaim: "name", AvatarURLClaim: "picture", EmailClaim: "email", EmailVerifiedClaim: "email_verified", AuthorizationParameters: map[string]string{"access_type": "offline", "include_granted_scopes": "true"}},
 		"facebook": {AuthorizationEndpoint: "https://www.facebook.com/dialog/oauth", TokenEndpoint: "https://graph.facebook.com/oauth/access_token", UserInfoEndpoint: "https://graph.facebook.com/me?fields=id,name,email,picture", RevocationEndpoint: "https://graph.facebook.com/me/permissions", RevocationStyle: "bearer_delete", Issuer: "https://www.facebook.com", ClientAuthStyle: AuthProviderClientSecretPost, UserInfoSubjectClaim: "id", DisplayNameClaim: "name", AvatarURLClaim: "picture.data.url", EmailClaim: "email"},
 		"x":        {AuthorizationEndpoint: "https://x.com/i/oauth2/authorize", TokenEndpoint: "https://api.x.com/2/oauth2/token", UserInfoEndpoint: "https://api.x.com/2/users/me?user.fields=profile_image_url", RevocationEndpoint: "https://api.x.com/2/oauth2/revoke", RevocationTokenType: "refresh_token", RefreshSupported: true, Issuer: "https://x.com", ClientAuthStyle: AuthProviderClientSecretBasic, UserInfoSubjectClaim: "id", DisplayNameClaim: "username", AvatarURLClaim: "profile_image_url"},
