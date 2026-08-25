@@ -127,6 +127,7 @@ func (p *OAuth2AuthProvider) ExchangeGrant(ctx context.Context, request AuthProv
 	if err != nil {
 		return AuthProviderExchangeResult{}, err
 	}
+	tokens.Scopes = p.normalizedScopes(tokens.Scopes)
 	if len(tokens.Scopes) == 0 {
 		tokens.Scopes = canonicalStrings(request.RequestedScopes)
 	}
@@ -246,6 +247,23 @@ func (p *OAuth2AuthProvider) tokenRequest(ctx context.Context, form url.Values, 
 	return tokens, nil
 }
 
+func (p *OAuth2AuthProvider) normalizedScopes(scopes []string) []string {
+	if p.Definition.Issuer != "https://accounts.google.com" {
+		return canonicalStrings(scopes)
+	}
+	normalized := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		switch scope {
+		case "https://www.googleapis.com/auth/userinfo.email":
+			scope = GoogleScopeEmail
+		case "https://www.googleapis.com/auth/userinfo.profile":
+			scope = GoogleScopeProfile
+		}
+		normalized = append(normalized, scope)
+	}
+	return canonicalStrings(normalized)
+}
+
 func validateOIDCClaims(claims map[string]any, issuer, audience, nonce string, now time.Time) error {
 	if claimString(claims["iss"]) != issuer || claimString(claims["sub"]) == "" {
 		return fmt.Errorf("OIDC issuer or subject mismatch")
@@ -279,7 +297,12 @@ func (p *OAuth2AuthProvider) RefreshGrant(ctx context.Context, request AuthProvi
 	if len(request.Scopes) > 0 {
 		form.Set("scope", strings.Join(request.Scopes, " "))
 	}
-	return p.tokenRequest(ctx, form, request.ClientID, request.ClientSecret)
+	tokens, err := p.tokenRequest(ctx, form, request.ClientID, request.ClientSecret)
+	if err != nil {
+		return AuthProviderTokenSet{}, err
+	}
+	tokens.Scopes = p.normalizedScopes(tokens.Scopes)
+	return tokens, nil
 }
 
 func (p *OAuth2AuthProvider) RevokeGrant(ctx context.Context, request AuthProviderRevokeRequest) error {
@@ -577,8 +600,18 @@ func (p *SteamOpenIDProvider) AuthorizationURL(_ context.Context, request AuthPr
 func (p *SteamOpenIDProvider) Exchange(ctx context.Context, request AuthProviderCallbackRequest) (AuthProviderIdentity, error) {
 	values := cloneURLValues(request.Parameters)
 	claimed := values.Get("openid.claimed_id")
-	const claimedPrefix = "http://steamcommunity.com/openid/id/"
-	if !strings.HasPrefix(claimed, claimedPrefix) || values.Get("openid.identity") != claimed {
+	const (
+		claimedHTTPPrefix  = "http://steamcommunity.com/openid/id/"
+		claimedHTTPSPrefix = "https://steamcommunity.com/openid/id/"
+	)
+	claimedPrefix := ""
+	for _, prefix := range []string{claimedHTTPPrefix, claimedHTTPSPrefix} {
+		if strings.HasPrefix(claimed, prefix) {
+			claimedPrefix = prefix
+			break
+		}
+	}
+	if claimedPrefix == "" || values.Get("openid.identity") != claimed {
 		return AuthProviderIdentity{}, fmt.Errorf("invalid Steam claimed identity")
 	}
 	if values.Get("openid.op_endpoint") != p.endpoint() {
