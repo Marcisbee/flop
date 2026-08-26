@@ -390,8 +390,8 @@ func TestRepairIndexesRebuildsEqualSizeCorruptPrimaryIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get through corrupt primary index: %v", err)
 	}
-	if row == nil || fmt.Sprintf("%v", row["id"]) != "id-000001" {
-		t.Fatalf("expected corrupt lookup to resolve the wrong row, got %v", row)
+	if row == nil || fmt.Sprintf("%v", row["id"]) != "id-000000" {
+		t.Fatalf("expected corrupt lookup to self-repair, got %v", row)
 	}
 
 	if err := ti.RepairIndexesIfNeeded(); err != nil {
@@ -400,6 +400,62 @@ func TestRepairIndexesRebuildsEqualSizeCorruptPrimaryIndex(t *testing.T) {
 	row, err = ti.Get("id-000000")
 	if err != nil || row == nil || fmt.Sprintf("%v", row["id"]) != "id-000000" {
 		t.Fatalf("primary index was not repaired: row=%v err=%v", row, err)
+	}
+}
+
+func TestGetRepairsStalePrimaryPointerForExactKey(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+	seedMovies(t, ti, 4)
+
+	wrongPointer, ok := ti.primaryIndex.Get("id-000001")
+	if !ok {
+		t.Fatal("expected pointer for seeded row")
+	}
+	ti.primaryIndex.Set("id-000000", wrongPointer)
+
+	row, err := ti.Get("id-000000")
+	if err != nil {
+		t.Fatalf("get through stale primary pointer: %v", err)
+	}
+	if row == nil || fmt.Sprintf("%v", row["id"]) != "id-000000" {
+		t.Fatalf("stale primary lookup was not repaired: %v", row)
+	}
+
+	repairedPointer, ok := ti.primaryIndex.Get("id-000000")
+	if !ok || repairedPointer == wrongPointer {
+		t.Fatalf("primary pointer was not repaired: pointer=%v found=%v", repairedPointer, ok)
+	}
+	updated, err := ti.Update("id-000000", map[string]interface{}{"title": "Repaired"}, nil)
+	if err != nil || updated == nil || fmt.Sprintf("%v", updated["title"]) != "Repaired" {
+		t.Fatalf("update after lookup repair failed: row=%v err=%v", updated, err)
+	}
+}
+
+func TestGetRepairsPrimaryPointerToDeletedSlot(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+	seedMovies(t, ti, 4)
+
+	stalePointer, ok := ti.primaryIndex.Get("id-000001")
+	if !ok {
+		t.Fatal("expected pointer for seeded row")
+	}
+	page, err := ti.tableFile.GetPage(stalePointer.PageNumber)
+	if err != nil {
+		t.Fatalf("get stale-pointer page: %v", err)
+	}
+	page.DeleteRow(int(stalePointer.SlotIndex))
+	ti.primaryIndex.Set("id-000000", stalePointer)
+
+	row, err := ti.Get("id-000000")
+	if err != nil {
+		t.Fatalf("get through deleted-slot pointer: %v", err)
+	}
+	if row == nil || fmt.Sprintf("%v", row["id"]) != "id-000000" {
+		t.Fatalf("deleted-slot primary lookup was not repaired: %v", row)
 	}
 }
 
