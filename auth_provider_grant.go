@@ -500,7 +500,7 @@ func (s *providerAuthService) materializeGrant(tx *providerTxn, flow, identity m
 			if intent == "consent" || !providerGrantSecretsScrubbed(existing) {
 				return nil, fmt.Errorf("provider grant changed during authorization")
 			}
-		} else if state != "active" && !(state == "reconnect_required" && intent != "consent") {
+		} else if state != "active" && state != "reconnect_required" {
 			return nil, fmt.Errorf("provider grant changed during authorization")
 		}
 		if state == "active" &&

@@ -1006,6 +1006,54 @@ func TestProviderRefreshAndIncrementalConsentShareGrantSerialization(t *testing.
 	}
 }
 
+func TestProviderReconnectRequiredGrantCompletesConsentInPlace(t *testing.T) {
+	provider := &fakeGrantProvider{
+		issuer: "https://issuer.example",
+		tokens: map[string]AuthProviderTokenSet{
+			"expired":   {AccessToken: "expired", RefreshToken: "expired-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Second), Scopes: []string{"identity"}},
+			"reconnect": {AccessToken: "reconnected", RefreshToken: "reconnected-refresh", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour), Scopes: []string{"identity", "read"}},
+		},
+	}
+	db, handler := openGrantTestDatabase(t, t.TempDir(), provider, "client")
+	defer db.Close()
+	token, _, grantID, _ := linkGrantForTest(t, db, handler, "expired", "reconnect-consent@example.com", "identity")
+
+	provider.mu.Lock()
+	provider.refreshErr = &AuthProviderUpstreamError{Code: "invalid_grant", Terminal: true}
+	provider.mu.Unlock()
+	lease, err := db.ProviderToken(context.Background(), "app", "backend", grantID, "identity")
+	var providerErr *AuthProviderError
+	if lease != nil || !errors.As(err, &providerErr) || providerErr.Code != "reconnect_required" {
+		t.Fatalf("terminal refresh lease=%+v err=%v", lease, err)
+	}
+	grant, err := db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || grant == nil || toString(grant["state"]) != "reconnect_required" {
+		t.Fatalf("grant after terminal refresh=%#v err=%v", grant, err)
+	}
+
+	state := startAppFlow(t, handler, "app", "consent", token, grantID, "read")
+	completion := callbackProviderFlow(t, handler, "shared", state, "reconnect")
+	response := completeProviderFlow(t, handler, completion, token, true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("reconnect consent status=%d body=%s", response.Code, response.Body.String())
+	}
+	completedGrantID := toString(decodeProviderResponse(t, response)["grant"].(map[string]any)["id"])
+	if completedGrantID != grantID {
+		t.Fatalf("reconnect consent grant=%q want %q", completedGrantID, grantID)
+	}
+	grant, err = db.Table(systemAuthProviderGrantTableName).Get(grantID)
+	if err != nil || grant == nil || toString(grant["state"]) != "active" {
+		t.Fatalf("grant after reconnect consent=%#v err=%v", grant, err)
+	}
+	if _, unusable := db.providerAuth.unusableGrants.Load(grantID); unusable {
+		t.Fatal("reconnected grant remained unusable")
+	}
+	lease, err = db.ProviderToken(context.Background(), "app", "backend", grantID, "read")
+	if err != nil || lease.AccessToken != "reconnected" {
+		t.Fatalf("reconnected lease=%+v err=%v", lease, err)
+	}
+}
+
 func TestProviderIncrementalConsentPreservesRefreshToken(t *testing.T) {
 	provider := &fakeGrantProvider{
 		issuer: "https://issuer.example",
