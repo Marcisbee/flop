@@ -772,10 +772,18 @@ func (d *Database) GetDataDir() string {
 
 // FileHandler returns an http.Handler that serves files stored by flop.
 // Mount it at "/api/files/" on your mux.
+//
+// Files are public by default for tables without an access policy. When the
+// referencing table defines a read policy, the request must satisfy it:
+// files attached to rows the requester may not read are not served.
 func (d *Database) FileHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, "/api/files/")
 		if rel == "" || !d.filePathIsCurrentlyReferenced(rel) {
+			http.NotFound(w, r)
+			return
+		}
+		if !d.fileRequestMayReadRow(r, rel) {
 			http.NotFound(w, r)
 			return
 		}
@@ -880,6 +888,79 @@ func (d *Database) filePathIsCurrentlyReferenced(rel string) bool {
 		}
 	}
 	return false
+}
+
+// authFromHTTPRequest resolves the request's bearer token (header or
+// _token query) into an AuthContext, mirroring the API handler's rules:
+// session-backed user and superadmin tokens are honored, purpose tokens are
+// never accepted, and app-minted claims-only tokens are trusted as-is.
+func (d *Database) authFromHTTPRequest(r *http.Request) *AuthContext {
+	if d == nil {
+		return nil
+	}
+	token := server.ExtractBearerToken(r.Header.Get("Authorization"), r.URL.Query().Get("_token"))
+	if token == "" {
+		return nil
+	}
+	payload := server.VerifyJWT(token, d.jwtSecret)
+	if payload != nil && payload.Purpose != "" {
+		return nil
+	}
+	if d.authService != nil {
+		if auth, err := d.authService.ValidateAccessToken(token); err == nil && auth != nil {
+			return authContextFromSchema(auth)
+		}
+		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
+			return nil
+		}
+	}
+	if d.superadminService != nil {
+		if auth, err := d.superadminService.ValidateAccessToken(token); err == nil && auth != nil {
+			return authContextFromSchema(auth)
+		}
+		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
+			return nil
+		}
+	}
+	if payload == nil {
+		return nil
+	}
+	return &AuthContext{
+		ID:            payload.Sub,
+		Email:         payload.Email,
+		Roles:         append([]string(nil), payload.Roles...),
+		PrincipalType: payload.PrincipalType,
+		SessionID:     payload.SessionID,
+		InstanceID:    payload.InstanceID,
+	}
+}
+
+// fileRequestMayReadRow reports whether the requester may read the row that
+// references the file. Tables without a read policy stay public, matching
+// the previous behavior; tables with one require it to pass.
+func (d *Database) fileRequestMayReadRow(r *http.Request, rel string) bool {
+	if d == nil || d.db == nil {
+		return false
+	}
+	parts := strings.Split(strings.TrimSpace(rel), "/")
+	if len(parts) < 4 {
+		return false
+	}
+	tableName, rowID := parts[0], parts[1]
+	spec := d.tableSpecs[tableName]
+	if spec == nil || spec.Access.Read == nil {
+		// No read policy: files remain publicly addressable.
+		return true
+	}
+	ti := d.trackedAccessor(nil, d.authFromHTTPRequest(r)).Table(tableName)
+	if ti == nil {
+		return false
+	}
+	row, err := ti.ti.Get(rowID)
+	if err != nil || row == nil {
+		return false
+	}
+	return ti.allowRead(row)
 }
 
 // RequestAnalytics returns the process-local analytics collector for this DB.

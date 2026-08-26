@@ -70,7 +70,7 @@ func (db *Database) persistTransactionJournalLocked() error {
 	if err != nil {
 		return err
 	}
-	if err := storage.WriteFileAtomic(db.transactionJournalPath(), data, 0o644); err != nil {
+	if err := storage.WriteFileAtomic(db.transactionJournalPath(), data, 0o600); err != nil {
 		return fmt.Errorf("write transaction journal: %w", err)
 	}
 	return nil

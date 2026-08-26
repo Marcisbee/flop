@@ -116,6 +116,15 @@ func resizeImageBytes(data []byte, mime string, size images.ThumbSize) ([]byte, 
 }
 
 func resizeImageBytesWithMode(data []byte, mime string, size images.ThumbSize, mode images.ResizeMode) ([]byte, string, error) {
+	// Check the declared dimensions before decoding so a crafted header
+	// cannot force a huge allocation.
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode image config: %w", err)
+	}
+	if err := images.ValidateDimensions(cfg.Width, cfg.Height); err != nil {
+		return nil, "", err
+	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", fmt.Errorf("decode image: %w", err)

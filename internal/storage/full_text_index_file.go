@@ -73,7 +73,7 @@ func WriteFullTextIndexFile(path string, index *FullTextIndex, checkpointLSN uin
 	if index == nil {
 		return fmt.Errorf("full-text index is nil")
 	}
-	return writeFileAtomicFunc(path, 0o644, func(file *os.File) error {
+	return writeFileAtomicFunc(path, 0o600, func(file *os.File) error {
 		index.mu.RLock()
 		defer index.mu.RUnlock()
 
@@ -110,7 +110,7 @@ func WriteFullTextIndexFile(path string, index *FullTextIndex, checkpointLSN uin
 // WriteFullTextIndexData durably writes a snapshot returned by
 // MarshalFullTextIndex.
 func WriteFullTextIndexData(path string, data []byte) error {
-	return writeFileAtomic(path, data, 0o644)
+	return writeFileAtomic(path, data, 0o600)
 }
 
 // ReadFullTextIndexFile loads a durable full-text index snapshot.

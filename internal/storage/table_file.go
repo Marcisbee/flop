@@ -29,7 +29,7 @@ type TableFile struct {
 
 // OpenTableFile opens an existing .flop file.
 func OpenTableFile(path string, maxCachePages int) (*TableFile, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0644)
+	f, err := os.OpenFile(path, os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func OpenTableFile(path string, maxCachePages int) (*TableFile, error) {
 
 // CreateTableFile creates a new .flop file.
 func CreateTableFile(path string, schemaVersion uint16, maxCachePages int) (*TableFile, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return nil, err
 	}

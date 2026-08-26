@@ -762,6 +762,9 @@ func DeserializeIndex(data []byte) (*HashIndex, error) {
 	}
 
 	entryCount := binary.LittleEndian.Uint32(data[6:10])
+	if err := checkIndexEntryCount(entryCount, len(data), 9); err != nil {
+		return nil, err
+	}
 	index := NewHashIndex()
 	index.uuid = make(map[[16]byte]schema.RowPointer, int(entryCount))
 
@@ -815,8 +818,28 @@ func DeserializeIndex(data []byte) (*HashIndex, error) {
 	return index, nil
 }
 
+// checkIndexEntryCount rejects index files whose declared entry count is
+// impossible for their size. The count is attacker/disk-corruption
+// controlled and is used to pre-size maps, so trusting it lets a tiny
+// crafted file force a process-killing allocation. minEntry is the smallest
+// possible serialized entry for the format version (v1: 2+0+6=8 bytes;
+// v2: 1+2+0+6=9 bytes).
+func checkIndexEntryCount(entryCount uint32, dataLen, minEntry int) error {
+	if entryCount == 0 {
+		return nil
+	}
+	body := dataLen - 10
+	if body < 0 || uint64(entryCount)*uint64(minEntry) > uint64(body) {
+		return fmt.Errorf("invalid index file: entry count %d exceeds data size %d", entryCount, dataLen)
+	}
+	return nil
+}
+
 func deserializeIndexV1(data []byte) (*HashIndex, error) {
 	entryCount := binary.LittleEndian.Uint32(data[6:10])
+	if err := checkIndexEntryCount(entryCount, len(data), 8); err != nil {
+		return nil, err
+	}
 	index := NewHashIndex()
 	index.uuid = make(map[[16]byte]schema.RowPointer, int(entryCount))
 
@@ -862,5 +885,5 @@ func ReadIndexFile(path string) (*HashIndex, error) {
 // WriteIndexFile persists an index to disk.
 func WriteIndexFile(path string, index *HashIndex) error {
 	data := SerializeIndex(index)
-	return writeFileAtomic(path, data, 0o644)
+	return writeFileAtomic(path, data, 0o600)
 }

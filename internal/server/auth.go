@@ -27,8 +27,13 @@ type JWTPayload struct {
 	PrincipalType string   `json:"principalType,omitempty"`
 	SessionID     string   `json:"sessionId,omitempty"`
 	InstanceID    string   `json:"instanceId,omitempty"`
-	Iat           int64    `json:"iat"`
-	Exp           int64    `json:"exp"`
+	// Purpose is set only on purpose tokens (verification, email change,
+	// password reset). Such tokens must never authenticate API requests:
+	// they carry no session, are not revoked with sessions, and outlive
+	// account-state checks.
+	Purpose string `json:"purpose,omitempty"`
+	Iat     int64  `json:"iat"`
+	Exp     int64  `json:"exp"`
 }
 
 // --- JWT ---
@@ -321,6 +326,9 @@ func (as *AuthService) SetProviderSessionLocker(locker sync.Locker) {
 
 // Register creates a new user account.
 func (as *AuthService) Register(email, password, name string, extraFields map[string]interface{}) (token, refreshToken string, auth *schema.AuthContext, err error) {
+	// Emails are canonicalized to lowercase so accounts cannot collide or
+	// duplicate across case variants (real-world mail is case-insensitive).
+	email = normalizeEmail(email)
 	existing := as.findByEmail(email)
 	if existing != nil {
 		return "", "", nil, fmt.Errorf("email already registered")
@@ -601,6 +609,7 @@ func (as *AuthService) RequestEmailChange(userID, newEmail, password string) (st
 	if !VerifyPassword(password, toString(user["password"])) {
 		return "", fmt.Errorf("invalid password")
 	}
+	newEmail = normalizeEmail(newEmail)
 	existing := as.findByEmail(newEmail)
 	if existing != nil {
 		return "", fmt.Errorf("email already in use")
@@ -769,7 +778,7 @@ func (as *AuthService) revokeSessionsForPrincipal(principalID, reason string) {
 }
 
 func (as *AuthService) findByEmail(email string) map[string]interface{} {
-	pointer, ok := as.authTable.FindByIndex([]string{"email"}, email)
+	pointer, ok := as.authTable.FindByIndex([]string{"email"}, normalizeEmail(email))
 	if !ok {
 		return nil
 	}
