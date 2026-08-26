@@ -1947,25 +1947,9 @@ func (ti *TableInstance) getUnlocked(key string) (map[string]interface{}, error)
 		return nil, nil
 	}
 
-	row, sv, _, err := storage.DeserializeRow(rawData, 0, ti.def.CompiledSchema)
+	row, err := ti.deserializeCurrentRow(rawData)
 	if err != nil {
 		return nil, err
-	}
-
-	if int(sv) < ti.currentVersion {
-		chain := ti.migChains[int(sv)]
-		if chain != nil {
-			values, sv2, _, err := storage.DeserializeRawFields(rawData, 0)
-			if err != nil {
-				return nil, err
-			}
-			oldSchema := ti.tableMeta.Schemas[int(sv2)]
-			if oldSchema == nil {
-				return nil, fmt.Errorf("missing stored schema version %d for table %q", sv2, ti.Name)
-			}
-			oldRow := schema.DeserializeWithSchema(values, oldSchema)
-			row = chain.Migrate(oldRow)
-		}
 	}
 	if toString(row[ti.primaryKeyField()]) != key {
 		return ti.repairPrimaryKeyLookup(key)
