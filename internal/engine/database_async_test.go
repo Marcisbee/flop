@@ -403,6 +403,22 @@ func TestRepairIndexesRebuildsEqualSizeCorruptPrimaryIndex(t *testing.T) {
 	}
 }
 
+func TestForceRebuildIndexesDoesNotTrustPrimaryIndexHealth(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+	seedMovies(t, ti, 4)
+
+	ti.primaryIndex.Delete("id-000000")
+	if err := ti.ForceRebuildIndexes(); err != nil {
+		t.Fatalf("force rebuild indexes: %v", err)
+	}
+	row, err := ti.Get("id-000000")
+	if err != nil || row == nil || fmt.Sprintf("%v", row["id"]) != "id-000000" {
+		t.Fatalf("primary index was not rebuilt: row=%v err=%v", row, err)
+	}
+}
+
 func TestConcurrentInsertsPreserveAllRows(t *testing.T) {
 	db := openTestDB(t, t.TempDir(), false, true)
 	t.Cleanup(func() { _ = db.Close() })
