@@ -962,6 +962,19 @@ func (d *Database) RepairTableIndexes(name string) error {
 	return d.repairTableIndexes(name)
 }
 
+// RebuildTableIndexes rebuilds primary and secondary indexes for one table
+// directly from its stored rows without trusting the loaded index state.
+func (d *Database) RebuildTableIndexes(name string) error {
+	if d == nil || d.db == nil {
+		return fmt.Errorf("flop: database is nil")
+	}
+	ti, ok := d.db.Tables[name]
+	if !ok || ti == nil {
+		return fmt.Errorf("flop: unknown table: %s", name)
+	}
+	return ti.ForceRebuildIndexes()
+}
+
 // RebuildSecondaryIndexes forces a full secondary-index rebuild for one table.
 func (d *Database) RebuildSecondaryIndexes(name string) error {
 	if d == nil || d.db == nil {

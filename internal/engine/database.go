@@ -1185,6 +1185,11 @@ func (ti *TableInstance) primaryIndexHealthy() (bool, error) {
 	healthy := true
 	var validationErr error
 	ti.primaryIndex.Range(func(key string, pointer schema.RowPointer) bool {
+		resolved, ok := ti.primaryIndex.Get(key)
+		if !ok || resolved != pointer {
+			healthy = false
+			return false
+		}
 		row, err := ti.GetByPointer(pointer)
 		if err != nil {
 			validationErr = err
@@ -1206,6 +1211,30 @@ func (ti *TableInstance) primaryIndexHealthy() (bool, error) {
 // persisted indexes diverge from the table file row state.
 func (ti *TableInstance) RepairIndexesIfNeeded() error {
 	return ti.repairIndexesIfNeeded()
+}
+
+// ForceRebuildIndexes rebuilds primary and secondary indexes from the table
+// rows without trusting the currently loaded index state.
+func (ti *TableInstance) ForceRebuildIndexes() error {
+	if ti == nil {
+		return fmt.Errorf("table instance is nil")
+	}
+	ti.waitForSecondaryIndexBuild()
+	ti.mu.Lock()
+	defer ti.mu.Unlock()
+	if err := ti.rebuildIndex(); err != nil {
+		return err
+	}
+	if err := ti.rebuildSecondaryIndexesByKeys(nil); err != nil {
+		return err
+	}
+	if err := ti.persistSecondaryIndexesLocked(); err != nil {
+		return err
+	}
+	ti.indexesToRebuild = make(map[string]bool)
+	ti.setIndexesFresh(true)
+	ti.setIndexesReady(true)
+	return nil
 }
 
 // ForceRebuildSecondaryIndexes rebuilds all secondary indexes for the table
