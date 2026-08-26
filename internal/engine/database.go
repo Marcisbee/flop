@@ -1139,8 +1139,11 @@ func (ti *TableInstance) rebuildSecondaryIndexes() error {
 }
 
 func (ti *TableInstance) repairIndexesIfNeeded() error {
-	expected := int(atomic.LoadUint32(&ti.tableFile.TotalRows))
-	if ti.primaryIndex.Size() == expected {
+	primaryHealthy, err := ti.primaryIndexHealthy()
+	if err != nil {
+		return err
+	}
+	if primaryHealthy {
 		ok, err := ti.secondaryIndexesHealthy()
 		if err != nil {
 			return err
@@ -1151,7 +1154,11 @@ func (ti *TableInstance) repairIndexesIfNeeded() error {
 	}
 	ti.mu.Lock()
 	defer ti.mu.Unlock()
-	if ti.primaryIndex.Size() == expected {
+	primaryHealthy, err = ti.primaryIndexHealthy()
+	if err != nil {
+		return err
+	}
+	if primaryHealthy {
 		ok, err := ti.secondaryIndexesHealthy()
 		if err != nil {
 			return err
@@ -1169,8 +1176,34 @@ func (ti *TableInstance) repairIndexesIfNeeded() error {
 	return nil
 }
 
+func (ti *TableInstance) primaryIndexHealthy() (bool, error) {
+	expected := int(atomic.LoadUint32(&ti.tableFile.TotalRows))
+	if ti.primaryIndex.Size() != expected {
+		return false, nil
+	}
+	pkField := ti.primaryKeyField()
+	healthy := true
+	var validationErr error
+	ti.primaryIndex.Range(func(key string, pointer schema.RowPointer) bool {
+		row, err := ti.GetByPointer(pointer)
+		if err != nil {
+			validationErr = err
+			return false
+		}
+		if row == nil || toString(row[pkField]) != key {
+			healthy = false
+			return false
+		}
+		return true
+	})
+	if validationErr != nil {
+		return false, validationErr
+	}
+	return healthy, nil
+}
+
 // RepairIndexesIfNeeded rebuilds in-memory primary and secondary indexes when
-// the persisted primary index count diverges from the table file row count.
+// persisted indexes diverge from the table file row state.
 func (ti *TableInstance) RepairIndexesIfNeeded() error {
 	return ti.repairIndexesIfNeeded()
 }
