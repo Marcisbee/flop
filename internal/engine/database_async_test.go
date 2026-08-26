@@ -371,6 +371,38 @@ func TestRepairIndexesRebuildsCorruptSecondaryIndexes(t *testing.T) {
 	}
 }
 
+func TestRepairIndexesRebuildsEqualSizeCorruptPrimaryIndex(t *testing.T) {
+	db := openTestDB(t, t.TempDir(), false, true)
+	t.Cleanup(func() { _ = db.Close() })
+	ti := mustTable(t, db)
+	seedMovies(t, ti, 4)
+
+	wrongPointer, ok := ti.primaryIndex.Get("id-000001")
+	if !ok {
+		t.Fatal("expected pointer for seeded row")
+	}
+	ti.primaryIndex.Set("id-000000", wrongPointer)
+	if ti.primaryIndex.Size() != int(atomic.LoadUint32(&ti.tableFile.TotalRows)) {
+		t.Fatal("test corruption must preserve the primary-index entry count")
+	}
+
+	row, err := ti.Get("id-000000")
+	if err != nil {
+		t.Fatalf("get through corrupt primary index: %v", err)
+	}
+	if row == nil || fmt.Sprintf("%v", row["id"]) != "id-000001" {
+		t.Fatalf("expected corrupt lookup to resolve the wrong row, got %v", row)
+	}
+
+	if err := ti.RepairIndexesIfNeeded(); err != nil {
+		t.Fatalf("repair indexes: %v", err)
+	}
+	row, err = ti.Get("id-000000")
+	if err != nil || row == nil || fmt.Sprintf("%v", row["id"]) != "id-000000" {
+		t.Fatalf("primary index was not repaired: row=%v err=%v", row, err)
+	}
+}
+
 func TestConcurrentInsertsPreserveAllRows(t *testing.T) {
 	db := openTestDB(t, t.TempDir(), false, true)
 	t.Cleanup(func() { _ = db.Close() })
