@@ -1936,6 +1936,14 @@ func (ti *TableInstance) getUnlocked(key string) (map[string]interface{}, error)
 		return nil, err
 	}
 	if !ok {
+		// A primary-index entry can outlive the row pointer it originally
+		// referenced when an interrupted or older relocation leaves the persisted
+		// index stale. Repair only that known-corrupt key instead of treating the
+		// row as absent; otherwise a following insert reports a contradictory
+		// duplicate-primary-key error.
+		if ti.primaryIndex.Has(key) {
+			return ti.repairPrimaryKeyLookup(key)
+		}
 		return nil, nil
 	}
 
@@ -1956,11 +1964,44 @@ func (ti *TableInstance) getUnlocked(key string) (map[string]interface{}, error)
 				return nil, fmt.Errorf("missing stored schema version %d for table %q", sv2, ti.Name)
 			}
 			oldRow := schema.DeserializeWithSchema(values, oldSchema)
-			return chain.Migrate(oldRow), nil
+			row = chain.Migrate(oldRow)
 		}
+	}
+	if toString(row[ti.primaryKeyField()]) != key {
+		return ti.repairPrimaryKeyLookup(key)
 	}
 
 	return row, nil
+}
+
+// repairPrimaryKeyLookup repairs one primary-index entry after Get has proven
+// that its pointer is stale or resolves to a different row. This is a
+// corruption-only path: healthy misses do not scan the table.
+func (ti *TableInstance) repairPrimaryKeyLookup(key string) (map[string]interface{}, error) {
+	pkField := ti.primaryKeyField()
+	var found map[string]interface{}
+	var foundPointer schema.RowPointer
+	err := ti.tableFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		row, err := ti.deserializeCurrentRow(scanned.Data)
+		if err != nil || toString(row[pkField]) != key {
+			return true
+		}
+		found = row
+		foundPointer = schema.RowPointer{
+			PageNumber: scanned.PageNumber,
+			SlotIndex:  uint16(scanned.SlotIndex),
+		}
+		return false
+	})
+	if err != nil {
+		return nil, err
+	}
+	if found == nil {
+		ti.primaryIndex.Delete(key)
+		return nil, nil
+	}
+	ti.primaryIndex.Set(key, foundPointer)
+	return found, nil
 }
 
 func (ti *TableInstance) getRawUnlocked(key string) (schema.RowPointer, []byte, bool, error) {
