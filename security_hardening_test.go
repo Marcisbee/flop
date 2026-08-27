@@ -202,11 +202,15 @@ func TestSSESystemTablesHiddenFromAnonymous(t *testing.T) {
 	}
 }
 
-// A session-validated superadmin may still subscribe to system tables.
-// (Superadmin tokens are honored by the app API when no app auth table is
-// defined; with one, they are treated as anonymous by design.)
+// A session-validated superadmin may still subscribe to system tables, even
+// when the app also has a normal user auth service.
 func TestSSESystemTablesAllowedForSuperadmin(t *testing.T) {
 	app := New(Config{DataDir: t.TempDir(), SyncMode: "normal"})
+	Define(app, "users", func(s *SchemaBuilder) {
+		s.String("id").Primary("uuidv7")
+		s.String("email").Required().Unique().Email()
+		s.Bcrypt("password", 4).Required()
+	})
 	Define(app, "posts", func(s *SchemaBuilder) {
 		s.String("id").Primary().Required()
 		s.String("title").Required()

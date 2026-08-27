@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,30 @@ import (
 type ThumbSize struct {
 	Width  int
 	Height int
+}
+
+// Decode limits guard against decompression bombs: a tiny file can declare
+// enormous dimensions and force a multi-GB allocation during Decode. These
+// bounds are generous for real photos (100 MP) while keeping a decode under
+// ~400 MB of RGBA data.
+const (
+	MaxImageDimension = 20000
+	MaxImagePixels    = 100_000_000
+)
+
+// ValidateDimensions rejects images whose declared dimensions exceed the
+// decode limits.
+func ValidateDimensions(width, height int) error {
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("invalid image dimensions %dx%d", width, height)
+	}
+	if width > MaxImageDimension || height > MaxImageDimension {
+		return fmt.Errorf("image dimensions %dx%d exceed the %dpx side limit", width, height, MaxImageDimension)
+	}
+	if int64(width)*int64(height) > MaxImagePixels {
+		return fmt.Errorf("image dimensions %dx%d exceed the %d pixel limit", width, height, MaxImagePixels)
+	}
+	return nil
 }
 
 type ResizeMode string
@@ -59,6 +84,19 @@ func GenerateThumb(srcPath, destPath string, size ThumbSize) error {
 		return fmt.Errorf("open source: %w", err)
 	}
 	defer src.Close()
+
+	// Check the declared dimensions before decoding so a crafted header
+	// cannot force a huge allocation.
+	cfg, _, err := image.DecodeConfig(src)
+	if err != nil {
+		return fmt.Errorf("decode image config: %w", err)
+	}
+	if err := ValidateDimensions(cfg.Width, cfg.Height); err != nil {
+		return err
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind source: %w", err)
+	}
 
 	img, _, err := image.Decode(src)
 	if err != nil {

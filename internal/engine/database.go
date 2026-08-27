@@ -90,6 +90,50 @@ func NewDatabase(config DatabaseConfig) *Database {
 	}
 }
 
+// engineOwnedFile reports whether a top-level data-dir file belongs to the
+// engine's storage format (as opposed to something an app placed in a
+// shared directory).
+func engineOwnedFile(name string) bool {
+	if name == "_meta.flop" {
+		return true
+	}
+	for _, ext := range []string{".flop", ".wal", ".idx", ".midx", ".sidx", ".smidx", ".ckpt"} {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// tightenDataDirPermissions restricts the data directory and existing
+// engine-owned files to the current user. Public upload trees (_files,
+// _thumbs) keep their default permissions because they are served to
+// anonymous clients and may be shared with other local processes.
+func tightenDataDirPermissions(dataDir string) {
+	// Best effort only: a chmod failure must not block startup.
+	_ = os.Chmod(dataDir, 0o700)
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !entry.Type().IsRegular() || !engineOwnedFile(entry.Name()) {
+			continue
+		}
+		_ = os.Chmod(filepath.Join(dataDir, entry.Name()), 0o600)
+	}
+	backupEntries, err := os.ReadDir(filepath.Join(dataDir, "backups"))
+	if err != nil {
+		return
+	}
+	for _, entry := range backupEntries {
+		if entry.IsDir() || !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".zip") {
+			continue
+		}
+		_ = os.Chmod(filepath.Join(dataDir, "backups", entry.Name()), 0o600)
+	}
+}
+
 // Open initializes the database, opens all tables, replays WALs.
 func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	if db.opened {
@@ -102,6 +146,11 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	if err := os.MkdirAll(db.dataDir, 0755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
+	// Engine files hold credential material (the JWT secret in _meta.flop,
+	// password hashes in table files, session rows, provider tokens), so
+	// they must not be readable by other local users. Tighten the directory
+	// and repair the permissions of any files created by older versions.
+	tightenDataDirPermissions(db.dataDir)
 	lock, err := storage.AcquireDirLock(db.dataDir)
 	if err != nil {
 		return fmt.Errorf("lock data dir: %w", err)

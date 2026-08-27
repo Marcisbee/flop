@@ -27,8 +27,13 @@ type JWTPayload struct {
 	PrincipalType string   `json:"principalType,omitempty"`
 	SessionID     string   `json:"sessionId,omitempty"`
 	InstanceID    string   `json:"instanceId,omitempty"`
-	Iat           int64    `json:"iat"`
-	Exp           int64    `json:"exp"`
+	// Purpose is set only on purpose tokens (verification, email change,
+	// password reset). Such tokens must never authenticate API requests:
+	// they carry no session, are not revoked with sessions, and outlive
+	// account-state checks.
+	Purpose string `json:"purpose,omitempty"`
+	Iat     int64  `json:"iat"`
+	Exp     int64  `json:"exp"`
 }
 
 // --- JWT ---

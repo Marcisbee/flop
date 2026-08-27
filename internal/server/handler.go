@@ -2090,7 +2090,7 @@ func (h *Handler) enforceAccess(w http.ResponseWriter, r *http.Request, route *R
 				}
 			} else {
 				payload := VerifyJWT(token, h.config.JWTSecret)
-				if payload != nil {
+				if payload != nil && payload.Purpose == "" {
 					return JWTToAuthContext(payload), false
 				}
 			}
@@ -2105,7 +2105,7 @@ func (h *Handler) enforceAccess(w http.ResponseWriter, r *http.Request, route *R
 
 	if h.authService == nil {
 		payload := VerifyJWT(token, h.config.JWTSecret)
-		if payload == nil {
+		if payload == nil || payload.Purpose != "" {
 			jsonError(w, "Invalid or expired token", 401)
 			return nil, true
 		}

@@ -759,8 +759,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			Scopes      []string `json:"scopes"`
 			GrantID     string   `json:"grantId"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		if in.AppID == "" {
@@ -810,8 +810,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			CompletionCode string `json:"completionCode"`
 			Confirm        bool   `json:"confirm"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		if in.Code != "" && in.CompletionCode != "" {
@@ -900,12 +900,15 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			GrantID        string   `json:"grantId"`
 			RequiredScopes []string `json:"requiredScopes"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		if in.AppID == "" {
 			in.AppID = in.LegacyAppID
+		}
+		if !h.allowAuthAttempt(w, r, "provider-backend") {
+			return
 		}
 		credential := r.Header.Get("X-Flop-Backend-Credential")
 		if credential == "" {
@@ -927,8 +930,11 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			AppID   string `json:"appID"`
 			GrantID string `json:"grantId"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
+			return
+		}
+		if !h.allowAuthAttempt(w, r, "provider-backend") {
 			return
 		}
 		credential := r.Header.Get("X-Flop-Backend-Credential")
@@ -947,8 +953,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body map[string]any
-		if err := decodeStrictJSONBody(r, &body); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &body, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		email, _ := body["email"].(string)
@@ -1008,8 +1014,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			Email    string `json:"email"`
 			Password string `json:"password"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		if strings.TrimSpace(in.Email) == "" || in.Password == "" {
@@ -1064,8 +1070,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			NewEmail string `json:"newEmail"`
 			Password string `json:"password"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		if strings.TrimSpace(in.NewEmail) == "" || in.Password == "" {
@@ -1089,8 +1095,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			var in struct {
 				Token string `json:"token"`
 			}
-			if err := decodeStrictJSONBody(r, &in); err != nil {
-				jsonError(w, err.Error(), http.StatusBadRequest)
+			if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+				writeJSONBodyError(w, err)
 				return
 			}
 			token = in.Token
@@ -1154,8 +1160,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			var in struct {
 				Token string `json:"token"`
 			}
-			if err := decodeStrictJSONBody(r, &in); err != nil {
-				jsonError(w, err.Error(), http.StatusBadRequest)
+			if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+				writeJSONBodyError(w, err)
 				return
 			}
 			token = in.Token
@@ -1200,8 +1206,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Email string `json:"email"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		if strings.TrimSpace(in.Email) == "" {
@@ -1230,8 +1236,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			Token    string `json:"token"`
 			Password string `json:"password"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		if strings.TrimSpace(in.Token) == "" || in.Password == "" {
@@ -1254,8 +1260,8 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			RefreshToken string `json:"refreshToken"`
 		}
-		if err := decodeStrictJSONBody(r, &in); err != nil {
-			jsonError(w, err.Error(), http.StatusBadRequest)
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
 			return
 		}
 		if strings.TrimSpace(in.RefreshToken) == "" {
@@ -1475,8 +1481,12 @@ func (h *APIHandler) handleViewBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in req
-	if err := decodeStrictJSONBody(r, &in); err != nil {
-		jsonError(w, err.Error(), http.StatusBadRequest)
+	if err := decodeStrictJSONBody(r, &in, h.maxRequestBodyBytes()); err != nil {
+		writeJSONBodyError(w, err)
+		return
+	}
+	if len(in.Calls) > maxBatchCalls {
+		jsonError(w, "too many calls in batch", http.StatusRequestEntityTooLarge)
 		return
 	}
 	if len(in.Calls) == 0 {
@@ -1741,8 +1751,14 @@ func (h *APIHandler) handleReducer(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), status)
 		return
 	}
-	body, err := readAllAndClose(r)
+	body, err := readAllAndClose(r, h.maxRequestBodyBytes())
 	if err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			statusCode = http.StatusRequestEntityTooLarge
+			errMessage = errRequestBodyTooLarge.Error()
+			jsonError(w, errMessage, statusCode)
+			return
+		}
 		statusCode = http.StatusBadRequest
 		errMessage = "failed to read body"
 		jsonError(w, "failed to read body", http.StatusBadRequest)
@@ -1858,37 +1874,39 @@ func (h *APIHandler) authFromRequest(r *http.Request) *AuthContext {
 		return nil
 	}
 	payload := server.VerifyJWT(token, h.db.jwtSecret)
-	if h.db.authService != nil {
-		if auth, err := h.db.authService.ValidateAccessToken(token); err == nil && auth != nil {
-			return &AuthContext{
-				ID:            auth.ID,
-				Email:         auth.Email,
-				Roles:         append([]string(nil), auth.Roles...),
-				PrincipalType: auth.PrincipalType,
-				SessionID:     auth.SessionID,
-				InstanceID:    auth.InstanceID,
-			}
-		}
-		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
-			return nil
-		}
-	}
-	if h.db.superadminService != nil {
-		if auth, err := h.db.superadminService.ValidateAccessToken(token); err == nil && auth != nil {
-			return &AuthContext{
-				ID:            auth.ID,
-				Email:         auth.Email,
-				Roles:         append([]string(nil), auth.Roles...),
-				PrincipalType: auth.PrincipalType,
-				SessionID:     auth.SessionID,
-				InstanceID:    auth.InstanceID,
-			}
-		}
-		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
-			return nil
-		}
+	if payload != nil && payload.Purpose != "" {
+		// Purpose tokens (verification, email change, password reset) are
+		// single-intent credentials for their confirm endpoints only. They
+		// have no session row, skip ban/instance checks, and cannot be
+		// revoked, so accepting them as access tokens would bypass session
+		// revocation and account-state enforcement.
+		return nil
 	}
 	if payload == nil {
+		return nil
+	}
+	switch payload.PrincipalType {
+	case principalTypeUser:
+		if h.db.authService == nil {
+			return nil
+		}
+		if auth, err := h.db.authService.ValidateAccessToken(token); err == nil && auth != nil {
+			return authContextFromSchema(auth)
+		}
+		return nil
+	case principalTypeSuperadmin:
+		if h.db.superadminService == nil {
+			return nil
+		}
+		if auth, err := h.db.superadminService.ValidateAccessToken(token); err == nil && auth != nil {
+			return authContextFromSchema(auth)
+		}
+		return nil
+	case "":
+		if payload.SessionID != "" || payload.InstanceID != "" {
+			return nil
+		}
+	default:
 		return nil
 	}
 	return &AuthContext{
@@ -1950,17 +1968,68 @@ func authContextFromSchema(auth *schema.AuthContext) *AuthContext {
 	}
 }
 
-func decodeStrictJSONBody(r *http.Request, out any) error {
-	body, err := readAllAndClose(r)
+func decodeStrictJSONBody(r *http.Request, out any, limit int64) error {
+	body, err := readAllAndClose(r, limit)
 	if err != nil {
 		return err
 	}
 	return decodeStrictJSON(body, out)
 }
 
-func readAllAndClose(r *http.Request) ([]byte, error) {
+// errRequestBodyTooLarge is returned when a request body exceeds the
+// configured limit.
+var errRequestBodyTooLarge = errors.New("request body too large")
+
+// authRequestBodyLimit caps credential and account-management payloads.
+// None of these endpoints has a legitimate use for large bodies.
+const authRequestBodyLimit = 1 << 20
+
+// defaultMaxRequestBodyBytes bounds JSON request bodies when the app does
+// not configure Config.MaxRequestBodyBytes. It is generous enough for
+// base64 file uploads through reducers while stopping trivial multi-GB
+// memory exhaustion.
+const defaultMaxRequestBodyBytes = 32 << 20
+
+// maxBatchCalls bounds the number of view calls a single batch request may
+// fan out to. Browser clients batch per animation frame (tens of calls).
+const maxBatchCalls = 1000
+
+func (h *APIHandler) maxRequestBodyBytes() int64 {
+	if h != nil && h.app != nil && h.app.config.MaxRequestBodyBytes > 0 {
+		return h.app.config.MaxRequestBodyBytes
+	}
+	return defaultMaxRequestBodyBytes
+}
+
+func readAllAndClose(r *http.Request, limit int64) ([]byte, error) {
 	defer r.Body.Close()
-	return io.ReadAll(r.Body)
+	if limit > 0 && r.ContentLength > limit {
+		// Drain a small amount so the connection can be reused, then refuse.
+		_, _ = io.CopyN(io.Discard, r.Body, 1<<20)
+		return nil, errRequestBodyTooLarge
+	}
+	reader := io.Reader(r.Body)
+	if limit > 0 {
+		reader = io.LimitReader(r.Body, limit+1)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && int64(len(data)) > limit {
+		return nil, errRequestBodyTooLarge
+	}
+	return data, nil
+}
+
+// writeJSONBodyError reports a body read/decode failure, mapping oversized
+// bodies to 413.
+func writeJSONBodyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errRequestBodyTooLarge) {
+		jsonError(w, errRequestBodyTooLarge.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
+	jsonError(w, err.Error(), http.StatusBadRequest)
 }
 
 func jsonResponse(w http.ResponseWriter, status int, payload any) {

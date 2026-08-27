@@ -59,7 +59,7 @@ type WAL struct {
 
 // OpenWAL opens or creates a WAL file.
 func OpenWAL(path string) (*WAL, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, err
 	}

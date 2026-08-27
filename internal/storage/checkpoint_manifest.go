@@ -75,7 +75,7 @@ func WriteCheckpointManifest(dataDir, tableName string, manifest *CheckpointMani
 	if m.Generation%2 == 0 {
 		path = pathB
 	}
-	return writeFileAtomic(path, encoded, 0o644)
+	return writeFileAtomic(path, encoded, 0o600)
 }
 
 func readCheckpointManifestFile(path string) (*CheckpointManifest, error) {

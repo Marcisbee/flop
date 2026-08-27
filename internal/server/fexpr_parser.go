@@ -38,11 +38,22 @@ const (
 	StepJoin
 )
 
+// maxExprGroupDepth bounds parenthesized-group nesting so a deeply nested
+// filter cannot exhaust the goroutine stack through recursive descent.
+const maxExprGroupDepth = 32
+
 // Parse parses the provided text and returns its processed AST
 // in the form of `ExprGroup` slice(s).
 //
 // Comments and whitespaces are ignored.
 func Parse(text string) ([]ExprGroup, error) {
+	return parseDepth(text, 0)
+}
+
+func parseDepth(text string, depth int) ([]ExprGroup, error) {
+	if depth > maxExprGroupDepth {
+		return nil, fmt.Errorf("filter expression exceeds the maximum nesting depth of %d", maxExprGroupDepth)
+	}
 	result := []ExprGroup{}
 	scanner := NewScanner([]byte(text))
 	step := stepBeforeSign
@@ -65,7 +76,7 @@ func Parse(text string) ([]ExprGroup, error) {
 		}
 
 		if t.Type == TokenGroup {
-			groupResult, err := Parse(t.Literal)
+			groupResult, err := parseDepth(t.Literal, depth+1)
 			if err != nil {
 				return nil, err
 			}

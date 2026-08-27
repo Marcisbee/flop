@@ -23,6 +23,18 @@ var ErrNotImplemented = errors.New("flop: not implemented")
 // ErrAccessDenied is returned when table/field access policy rejects an operation.
 var ErrAccessDenied = errors.New("flop: access denied")
 
+// validateTableName panics when a table name is unsafe. Table names become
+// file stems in the data directory, so path separators, dot segments, and
+// NUL bytes must never reach storage.
+func validateTableName(name string) {
+	if name == "" {
+		panic("flop: table name is empty")
+	}
+	if !storage.IsSafePathSegment(name) {
+		panic("flop: unsafe table name: " + name)
+	}
+}
+
 type Config struct {
 	DataDir               string                        `json:"dataDir,omitempty"`
 	SyncMode              string                        `json:"syncMode,omitempty"`
@@ -44,6 +56,9 @@ type Config struct {
 	ProviderSecretKeys      map[string][]byte `json:"-"`
 	ActiveProviderSecretKey string            `json:"-"`
 	Workflow                *WorkflowConfig   `json:"-"`
+	// MaxRequestBodyBytes bounds JSON request bodies on the public API
+	// (views, reducers, batches). Values <= 0 use a 32 MiB default.
+	MaxRequestBodyBytes int64 `json:"-"`
 }
 
 type AuthPayloadConfig struct {
@@ -195,9 +210,7 @@ func AutoTable[T any](app *App, name string, configure func(*TableBuilder[T])) *
 	if app == nil {
 		panic("flop: app is nil")
 	}
-	if name == "" {
-		panic("flop: table name is empty")
-	}
+	validateTableName(name)
 	if _, exists := app.tables[name]; exists {
 		panic("flop: duplicate table name: " + name)
 	}
@@ -416,9 +429,7 @@ func Define(app *App, name string, configure func(*SchemaBuilder)) *Table[map[st
 	if app == nil {
 		panic("flop: app is nil")
 	}
-	if name == "" {
-		panic("flop: table name is empty")
-	}
+	validateTableName(name)
 	if _, exists := app.tables[name]; exists {
 		panic("flop: duplicate table name: " + name)
 	}

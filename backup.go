@@ -195,6 +195,9 @@ func (m *backupManager) List(ctx context.Context) ([]AdminBackupFile, error) {
 }
 
 func (m *backupManager) Stat(ctx context.Context, key string) (AdminBackupFile, error) {
+	if err := validateBackupKey(key); err != nil {
+		return AdminBackupFile{}, err
+	}
 	storage, err := m.storage()
 	if err != nil {
 		return AdminBackupFile{}, err
@@ -203,6 +206,9 @@ func (m *backupManager) Stat(ctx context.Context, key string) (AdminBackupFile, 
 }
 
 func (m *backupManager) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	if err := validateBackupKey(key); err != nil {
+		return nil, err
+	}
 	storage, err := m.storage()
 	if err != nil {
 		return nil, err
@@ -211,8 +217,8 @@ func (m *backupManager) Open(ctx context.Context, key string) (io.ReadCloser, er
 }
 
 func (m *backupManager) Delete(ctx context.Context, key string) error {
-	if strings.TrimSpace(key) == "" {
-		return fmt.Errorf("backup key is required")
+	if err := validateBackupKey(key); err != nil {
+		return err
 	}
 	return m.withBusy(func() error {
 		storage, err := m.storage()
@@ -341,8 +347,8 @@ func (m *backupManager) create(ctx context.Context, auto bool) (string, error) {
 }
 
 func (m *backupManager) Restore(ctx context.Context, key string) error {
-	if strings.TrimSpace(key) == "" {
-		return fmt.Errorf("backup key is required")
+	if err := validateBackupKey(key); err != nil {
+		return err
 	}
 	return m.withBusy(func() error {
 		storage, err := m.storage()
@@ -853,6 +859,21 @@ func generateBackupName(auto bool) string {
 	return fmt.Sprintf("%s_flop_backup_%s.zip", prefix, time.Now().UTC().Format("20060102150405"))
 }
 
+// validateBackupKey rejects keys that could escape the backup storage
+// namespace. Keys are joined into a local directory by the filesystem
+// backend, so any separator, traversal segment, or NUL is refused. Admin
+// endpoints pass URL path segments that may be double-percent-encoded, so
+// this check must run after every decode step.
+func validateBackupKey(key string) error {
+	if key == "" || key == "." || key == ".." {
+		return fmt.Errorf("invalid backup key")
+	}
+	if strings.ContainsAny(key, "/\\\x00") || strings.Contains(key, "..") {
+		return fmt.Errorf("invalid backup key")
+	}
+	return nil
+}
+
 func generateUploadedBackupName(filename string) string {
 	base := strings.TrimSpace(filepath.Base(filename))
 	if base == "" || base == "." || base == string(filepath.Separator) {
@@ -978,7 +999,9 @@ type localBackupStorage struct {
 }
 
 func (s *localBackupStorage) ensureDir() error {
-	return os.MkdirAll(s.dir, 0o755)
+	// Backup archives contain a full database copy (including password
+	// hashes and session rows), so they are kept private to this user.
+	return os.MkdirAll(s.dir, 0o700)
 }
 
 func (s *localBackupStorage) List(_ context.Context) ([]AdminBackupFile, error) {
@@ -1010,6 +1033,9 @@ func (s *localBackupStorage) List(_ context.Context) ([]AdminBackupFile, error) 
 func (s *localBackupStorage) Save(_ context.Context, key, localPath string) error {
 	startedAt := time.Now()
 	log.Printf("flop backup upload: local save start key=%q path=%q", key, localPath)
+	if err := validateBackupKey(key); err != nil {
+		return err
+	}
 	if err := s.ensureDir(); err != nil {
 		log.Printf("flop backup upload: local save ensure dir failed key=%q err=%v", key, err)
 		return err
@@ -1021,7 +1047,7 @@ func (s *localBackupStorage) Save(_ context.Context, key, localPath string) erro
 	}
 	defer src.Close()
 	dstPath := filepath.Join(s.dir, key)
-	dst, err := os.Create(dstPath)
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		log.Printf("flop backup upload: local save create dst failed key=%q dst=%q err=%v", key, dstPath, err)
 		return err
@@ -1040,14 +1066,23 @@ func (s *localBackupStorage) Save(_ context.Context, key, localPath string) erro
 }
 
 func (s *localBackupStorage) Open(_ context.Context, key string) (io.ReadCloser, error) {
+	if err := validateBackupKey(key); err != nil {
+		return nil, err
+	}
 	return os.Open(filepath.Join(s.dir, key))
 }
 
 func (s *localBackupStorage) Delete(_ context.Context, key string) error {
+	if err := validateBackupKey(key); err != nil {
+		return err
+	}
 	return os.Remove(filepath.Join(s.dir, key))
 }
 
 func (s *localBackupStorage) Exists(_ context.Context, key string) (bool, error) {
+	if err := validateBackupKey(key); err != nil {
+		return false, err
+	}
 	_, err := os.Stat(filepath.Join(s.dir, key))
 	if err == nil {
 		return true, nil
@@ -1059,6 +1094,9 @@ func (s *localBackupStorage) Exists(_ context.Context, key string) (bool, error)
 }
 
 func (s *localBackupStorage) Stat(_ context.Context, key string) (AdminBackupFile, error) {
+	if err := validateBackupKey(key); err != nil {
+		return AdminBackupFile{}, err
+	}
 	info, err := os.Stat(filepath.Join(s.dir, key))
 	if err != nil {
 		return AdminBackupFile{}, err
