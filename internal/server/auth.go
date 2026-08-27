@@ -326,9 +326,6 @@ func (as *AuthService) SetProviderSessionLocker(locker sync.Locker) {
 
 // Register creates a new user account.
 func (as *AuthService) Register(email, password, name string, extraFields map[string]interface{}) (token, refreshToken string, auth *schema.AuthContext, err error) {
-	// Emails are canonicalized to lowercase so accounts cannot collide or
-	// duplicate across case variants (real-world mail is case-insensitive).
-	email = normalizeEmail(email)
 	existing := as.findByEmail(email)
 	if existing != nil {
 		return "", "", nil, fmt.Errorf("email already registered")
@@ -609,7 +606,6 @@ func (as *AuthService) RequestEmailChange(userID, newEmail, password string) (st
 	if !VerifyPassword(password, toString(user["password"])) {
 		return "", fmt.Errorf("invalid password")
 	}
-	newEmail = normalizeEmail(newEmail)
 	existing := as.findByEmail(newEmail)
 	if existing != nil {
 		return "", fmt.Errorf("email already in use")
@@ -778,7 +774,7 @@ func (as *AuthService) revokeSessionsForPrincipal(principalID, reason string) {
 }
 
 func (as *AuthService) findByEmail(email string) map[string]interface{} {
-	pointer, ok := as.authTable.FindByIndex([]string{"email"}, normalizeEmail(email))
+	pointer, ok := as.authTable.FindByIndex([]string{"email"}, email)
 	if !ok {
 		return nil
 	}

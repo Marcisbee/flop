@@ -1882,37 +1882,31 @@ func (h *APIHandler) authFromRequest(r *http.Request) *AuthContext {
 		// revocation and account-state enforcement.
 		return nil
 	}
-	if h.db.authService != nil {
-		if auth, err := h.db.authService.ValidateAccessToken(token); err == nil && auth != nil {
-			return &AuthContext{
-				ID:            auth.ID,
-				Email:         auth.Email,
-				Roles:         append([]string(nil), auth.Roles...),
-				PrincipalType: auth.PrincipalType,
-				SessionID:     auth.SessionID,
-				InstanceID:    auth.InstanceID,
-			}
-		}
-		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
-			return nil
-		}
-	}
-	if h.db.superadminService != nil {
-		if auth, err := h.db.superadminService.ValidateAccessToken(token); err == nil && auth != nil {
-			return &AuthContext{
-				ID:            auth.ID,
-				Email:         auth.Email,
-				Roles:         append([]string(nil), auth.Roles...),
-				PrincipalType: auth.PrincipalType,
-				SessionID:     auth.SessionID,
-				InstanceID:    auth.InstanceID,
-			}
-		}
-		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
-			return nil
-		}
-	}
 	if payload == nil {
+		return nil
+	}
+	switch payload.PrincipalType {
+	case principalTypeUser:
+		if h.db.authService == nil {
+			return nil
+		}
+		if auth, err := h.db.authService.ValidateAccessToken(token); err == nil && auth != nil {
+			return authContextFromSchema(auth)
+		}
+		return nil
+	case principalTypeSuperadmin:
+		if h.db.superadminService == nil {
+			return nil
+		}
+		if auth, err := h.db.superadminService.ValidateAccessToken(token); err == nil && auth != nil {
+			return authContextFromSchema(auth)
+		}
+		return nil
+	case "":
+		if payload.SessionID != "" || payload.InstanceID != "" {
+			return nil
+		}
+	default:
 		return nil
 	}
 	return &AuthContext{

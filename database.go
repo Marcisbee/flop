@@ -773,25 +773,40 @@ func (d *Database) GetDataDir() string {
 // FileHandler returns an http.Handler that serves files stored by flop.
 // Mount it at "/api/files/" on your mux.
 //
-// Files are public by default for tables without an access policy. When the
-// referencing table defines a read policy, the request must satisfy it:
-// files attached to rows the requester may not read are not served.
+// Files are publicly addressable by design, including files referenced by
+// rows with read policies. Use PolicyFileHandler when file requests should
+// enforce the referencing row's read policy.
 func (d *Database) FileHandler() http.Handler {
+	return d.fileHandler(false)
+}
+
+// PolicyFileHandler returns an http.Handler that serves files only when the
+// requester may read the referencing row. It accepts the same bearer-header
+// and _token query authentication as the app API.
+//
+// This handler adds a row-policy check to every file request. Apps whose files
+// are intentionally public should keep using FileHandler.
+func (d *Database) PolicyFileHandler() http.Handler {
+	return d.fileHandler(true)
+}
+
+func (d *Database) fileHandler(enforceReadPolicy bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, "/api/files/")
-		if rel == "" || !d.filePathIsCurrentlyReferenced(rel) {
-			http.NotFound(w, r)
-			return
-		}
-		if !d.fileRequestMayReadRow(r, rel) {
+		if rel == "" || (enforceReadPolicy && !d.fileRequestMayReadReferencedRow(r, rel)) ||
+			(!enforceReadPolicy && !d.filePathIsCurrentlyReferenced(rel)) {
 			http.NotFound(w, r)
 			return
 		}
 		parts := strings.SplitN(rel, "/", 4)
 		thumbParam := r.URL.Query().Get("thumb")
+		serveFile := serveMediaFile
+		if enforceReadPolicy {
+			serveFile = servePolicyMediaFile
+		}
 		if thumbParam == "" || len(parts) < 4 {
 			filePath := filepath.Join(d.db.GetDataDir(), "_files", rel)
-			serveMediaFile(w, r, filePath)
+			serveFile(w, r, filePath)
 			return
 		}
 
@@ -814,7 +829,7 @@ func (d *Database) FileHandler() http.Handler {
 
 		thumbPath := images.ThumbPath(d.db.GetDataDir(), tableName, rowID, fieldName, filename, size)
 		if _, err := os.Stat(thumbPath); err == nil {
-			serveMediaFile(w, r, thumbPath)
+			serveFile(w, r, thumbPath)
 			return
 		}
 
@@ -827,7 +842,7 @@ func (d *Database) FileHandler() http.Handler {
 			http.Error(w, "thumbnail generation failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		serveMediaFile(w, r, thumbPath)
+		serveFile(w, r, thumbPath)
 	})
 }
 
@@ -847,7 +862,15 @@ var inlineSafeMediaMimes = map[string]bool{
 }
 
 func serveMediaFile(w http.ResponseWriter, r *http.Request, filePath string) {
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	serveMediaFileWithCache(w, r, filePath, "public, max-age=31536000, immutable")
+}
+
+func servePolicyMediaFile(w http.ResponseWriter, r *http.Request, filePath string) {
+	serveMediaFileWithCache(w, r, filePath, "private, max-age=31536000, immutable")
+}
+
+func serveMediaFileWithCache(w http.ResponseWriter, r *http.Request, filePath, cacheControl string) {
+	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if !inlineSafeMediaMimes[storage.MimeFromExtension(filePath)] {
 		name := storage.SanitizeFilename(filepath.Base(filePath))
@@ -890,8 +913,8 @@ func (d *Database) filePathIsCurrentlyReferenced(rel string) bool {
 	return false
 }
 
-// authFromHTTPRequest resolves the request's bearer token (header or
-// _token query) into an AuthContext, mirroring the API handler's rules:
+// authFromHTTPRequest resolves the request's bearer token (header or _token
+// query) into an AuthContext, mirroring the API handler's rules:
 // session-backed user and superadmin tokens are honored, purpose tokens are
 // never accepted, and app-minted claims-only tokens are trusted as-is.
 func (d *Database) authFromHTTPRequest(r *http.Request) *AuthContext {
@@ -906,23 +929,31 @@ func (d *Database) authFromHTTPRequest(r *http.Request) *AuthContext {
 	if payload != nil && payload.Purpose != "" {
 		return nil
 	}
-	if d.authService != nil {
+	if payload == nil {
+		return nil
+	}
+	switch payload.PrincipalType {
+	case principalTypeUser:
+		if d.authService == nil {
+			return nil
+		}
 		if auth, err := d.authService.ValidateAccessToken(token); err == nil && auth != nil {
 			return authContextFromSchema(auth)
 		}
-		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
+		return nil
+	case principalTypeSuperadmin:
+		if d.superadminService == nil {
 			return nil
 		}
-	}
-	if d.superadminService != nil {
 		if auth, err := d.superadminService.ValidateAccessToken(token); err == nil && auth != nil {
 			return authContextFromSchema(auth)
 		}
-		if payload == nil || payload.PrincipalType != "" || payload.SessionID != "" || payload.InstanceID != "" {
+		return nil
+	case "":
+		if payload.SessionID != "" || payload.InstanceID != "" {
 			return nil
 		}
-	}
-	if payload == nil {
+	default:
 		return nil
 	}
 	return &AuthContext{
@@ -935,10 +966,10 @@ func (d *Database) authFromHTTPRequest(r *http.Request) *AuthContext {
 	}
 }
 
-// fileRequestMayReadRow reports whether the requester may read the row that
-// references the file. Tables without a read policy stay public, matching
-// the previous behavior; tables with one require it to pass.
-func (d *Database) fileRequestMayReadRow(r *http.Request, rel string) bool {
+// fileRequestMayReadReferencedRow reports whether the requested path is still
+// referenced and the requester may read its row. It performs both checks from
+// one row lookup so policy enforcement adds no duplicate database read.
+func (d *Database) fileRequestMayReadReferencedRow(r *http.Request, rel string) bool {
 	if d == nil || d.db == nil {
 		return false
 	}
@@ -946,21 +977,28 @@ func (d *Database) fileRequestMayReadRow(r *http.Request, rel string) bool {
 	if len(parts) < 4 {
 		return false
 	}
-	tableName, rowID := parts[0], parts[1]
-	spec := d.tableSpecs[tableName]
-	if spec == nil || spec.Access.Read == nil {
-		// No read policy: files remain publicly addressable.
-		return true
-	}
+	tableName, rowID, fieldName := parts[0], parts[1], parts[2]
 	ti := d.trackedAccessor(nil, d.authFromHTTPRequest(r)).Table(tableName)
 	if ti == nil {
+		return false
+	}
+	field := ti.ti.GetDef().CompiledSchema.FieldMap[fieldName]
+	if field == nil {
 		return false
 	}
 	row, err := ti.ti.Get(rowID)
 	if err != nil || row == nil {
 		return false
 	}
-	return ti.allowRead(row)
+	targetPath := "_files/" + strings.Join(parts[:4], "/")
+	referenced := false
+	for _, ref := range adminCollectMediaRefs(row[fieldName], field.Kind) {
+		if strings.TrimSpace(ref.Path) == targetPath {
+			referenced = true
+			break
+		}
+	}
+	return referenced && ti.allowRead(row)
 }
 
 // RequestAnalytics returns the process-local analytics collector for this DB.
