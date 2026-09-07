@@ -2,12 +2,12 @@ package server
 
 import (
 	"bytes"
+	jsonstd "encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/marcisbee/flop/internal/engine"
-	"github.com/marcisbee/flop/internal/jsonstd"
 	"github.com/marcisbee/flop/internal/jsonx"
 )
 

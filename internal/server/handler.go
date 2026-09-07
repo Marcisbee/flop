@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	jsonstd "encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/marcisbee/flop/internal/engine"
 	"github.com/marcisbee/flop/internal/images"
-	"github.com/marcisbee/flop/internal/jsonstd"
 	"github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/reqtrace"
 	"github.com/marcisbee/flop/internal/schema"

@@ -841,10 +841,3 @@ func boolToFloat(v bool) float64 {
 	}
 	return 0
 }
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

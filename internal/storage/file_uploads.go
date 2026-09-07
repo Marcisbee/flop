@@ -111,10 +111,6 @@ func largestThumbIndex(sizes []images.ThumbSize) int {
 	return best
 }
 
-func resizeImageBytes(data []byte, mime string, size images.ThumbSize) ([]byte, string, error) {
-	return resizeImageBytesWithMode(data, mime, size, images.ResizeContain)
-}
-
 func resizeImageBytesWithMode(data []byte, mime string, size images.ThumbSize, mode images.ResizeMode) ([]byte, string, error) {
 	// Check the declared dimensions before decoding so a crafted header
 	// cannot force a huge allocation.
@@ -167,11 +163,4 @@ func mimeForOutputExt(ext string) string {
 
 func isImageMime(mime string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mime)), "image/")
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

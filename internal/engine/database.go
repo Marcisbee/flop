@@ -3669,13 +3669,6 @@ func (ti *TableInstance) searchFullTextByScan(fields []string, query string, lim
 	return results, nil
 }
 
-func btoi(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
 // Checkpoint flushes all dirty pages, indexes, and WAL.
 func (ti *TableInstance) Checkpoint() error {
 	// Fast path: if WAL has no new entries since last checkpoint, skip heavy index rewrite.

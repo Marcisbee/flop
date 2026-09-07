@@ -314,31 +314,6 @@ func validateAuthProviderAppConfigs(legacy map[string]AuthProviderConfig, apps m
 	return nil
 }
 
-func (s *providerAuthService) providerConfig(provider string) (AuthProviderConfig, error) {
-	if s == nil {
-		return AuthProviderConfig{}, providerError("provider_auth_unavailable", "provider authentication unavailable", 404)
-	}
-	if provider == "" || provider != strings.TrimSpace(provider) {
-		return AuthProviderConfig{}, providerError("invalid_provider", "invalid provider", 400)
-	}
-	config, ok := s.providers[provider]
-	if !ok || config.Adapter == nil {
-		return AuthProviderConfig{}, providerError("provider_not_configured", "provider not configured", 404)
-	}
-	if config.Issuer == "" || config.Issuer != strings.TrimSpace(config.Issuer) {
-		return AuthProviderConfig{}, providerError("provider_misconfigured", "provider authentication unavailable", 503)
-	}
-	if err := validateConfiguredURL(config.RedirectURI, false); err != nil {
-		return AuthProviderConfig{}, providerError("provider_misconfigured", "provider authentication unavailable", 503, err)
-	}
-	for _, returnTo := range config.AllowedReturnURLs {
-		if err := validateConfiguredURL(returnTo, true); err != nil {
-			return AuthProviderConfig{}, providerError("provider_misconfigured", "provider authentication unavailable", 503, err)
-		}
-	}
-	return config, nil
-}
-
 func (s *providerAuthService) descriptors() []providerDescriptor {
 	if s == nil {
 		return []providerDescriptor{}
