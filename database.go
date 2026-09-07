@@ -3677,101 +3677,6 @@ func (d *Database) enrichAdminMediaRows(rows []AdminMediaRow) error {
 	return nil
 }
 
-func scanAdminMediaFilesOnDisk(dataDir string, itemsByPath map[string]*AdminMediaRow, existingPaths map[string]bool) {
-	filesRoot := filepath.Join(dataDir, "_files")
-	_ = filepath.Walk(filesRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil || info.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(dataDir, path)
-		if err != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if !strings.HasPrefix(rel, "_files/") {
-			return nil
-		}
-		existingPaths[rel] = true
-		if _, exists := itemsByPath[rel]; exists {
-			return nil
-		}
-		ref := schema.FileRef{
-			Path: rel,
-			Name: filepath.Base(path),
-			URL:  "/api/files/" + strings.TrimPrefix(filepath.ToSlash(rel), "_files/"),
-			Size: info.Size(),
-			Mime: storage.MimeFromExtension(path),
-		}
-		item := ensureAdminMediaItem(itemsByPath, dataDir, ref)
-		if item != nil {
-			item.Orphaned = true
-		}
-		return nil
-	})
-}
-
-func ensureAdminMediaItem(items map[string]*AdminMediaRow, dataDir string, ref schema.FileRef) *AdminMediaRow {
-	ref.Path = strings.TrimSpace(ref.Path)
-	if ref.Path == "" {
-		return nil
-	}
-	if item := items[ref.Path]; item != nil {
-		if item.Name == "" {
-			item.Name = ref.Name
-		}
-		if item.URL == "" {
-			item.URL = ref.URL
-		}
-		if item.Mime == "" {
-			item.Mime = ref.Mime
-		}
-		if item.RefSize == 0 {
-			item.RefSize = ref.Size
-		}
-		return item
-	}
-
-	item := &AdminMediaRow{
-		Path:    ref.Path,
-		Name:    ref.Name,
-		URL:     ref.URL,
-		Mime:    ref.Mime,
-		RefSize: ref.Size,
-	}
-	fillAdminMediaItemDetails(item, dataDir)
-	items[ref.Path] = item
-	return item
-}
-
-func fillAdminMediaItemDetails(item *AdminMediaRow, dataDir string) {
-	fullPath := filepath.Join(dataDir, filepath.FromSlash(item.Path))
-	if stat, err := os.Stat(fullPath); err == nil {
-		item.DiskSize = stat.Size()
-	}
-	if strings.HasPrefix(item.Mime, "image/") || adminLooksLikeImagePath(item.Path) {
-		if w, h, err := images.ReadDimensions(fullPath); err == nil {
-			item.Width = w
-			item.Height = h
-		}
-	}
-
-	parts := strings.Split(strings.TrimPrefix(item.Path, "_files/"), "/")
-	if len(parts) != 4 {
-		return
-	}
-	thumbDir := filepath.Join(dataDir, "_thumbs", parts[0], parts[1], parts[2])
-	matches, err := filepath.Glob(filepath.Join(thumbDir, "*_"+parts[3]))
-	if err != nil {
-		return
-	}
-	item.ThumbCount = len(matches)
-	for _, match := range matches {
-		if stat, err := os.Stat(match); err == nil {
-			item.ThumbBytes += stat.Size()
-		}
-	}
-}
-
 func adminCollectMediaRefs(value interface{}, kind schema.FieldKind) []schema.FileRef {
 	switch kind {
 	case schema.KindFileSingle:
@@ -4340,14 +4245,4 @@ func toStringSlice(v any) []string {
 	default:
 		return nil
 	}
-}
-
-// contains checks if a string slice contains a value.
-func contains(ss []string, s string) bool {
-	for _, v := range ss {
-		if strings.EqualFold(v, s) {
-			return true
-		}
-	}
-	return false
 }
