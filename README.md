@@ -86,6 +86,9 @@ run, err := db.RunWorkflow(workflowID, input)
 
 ## Development
 
+Start with [the development and verification guide](VERIFY.md) for setup,
+focused checks, repeatable performance comparisons, and handoff requirements.
+
 Run the Go test suite:
 
 ```sh
@@ -120,6 +123,6 @@ make -C examples/twitter-go-react dev
 
 ## Notes
 
-- [deno.json](/Users/marcisbee/Documents/GitHub/flop/deno.json) remains only for benchmark helper tasks.
+- [deno.json](deno.json) remains only for benchmark helper tasks.
 - Some React demos ship checked-in browser assets so they can run without a root TypeScript runtime.
 - Generated admin HTML under `internal/server/` is refreshed via `go generate`.

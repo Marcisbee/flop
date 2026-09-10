@@ -13,32 +13,13 @@ import (
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
+	"github.com/marcisbee/flop/internal/quickbenchreport"
 	"github.com/marcisbee/flop/internal/schema"
 )
 
-type metric struct {
-	Name  string  `json:"name"`
-	Value float64 `json:"value"`
-	Unit  string  `json:"unit"`
-}
-
-type gitMeta struct {
-	Commit string `json:"commit,omitempty"`
-	Branch string `json:"branch,omitempty"`
-	Dirty  bool   `json:"dirty,omitempty"`
-}
-
-type report struct {
-	CreatedAt string   `json:"createdAt"`
-	GoVersion string   `json:"goVersion"`
-	Git       gitMeta  `json:"git"`
-	DataDir   string   `json:"dataDir"`
-	Rows      int      `json:"rows"`
-	Lookups   int      `json:"lookups"`
-	Searches  int      `json:"searches"`
-	SyncMode  string   `json:"syncMode"`
-	Metrics   []metric `json:"metrics"`
-}
+type metric = quickbenchreport.Metric
+type gitMeta = quickbenchreport.GitMeta
+type report = quickbenchreport.Report
 
 func main() {
 	var (
@@ -236,7 +217,15 @@ func main() {
 		fmt.Printf("RESULT %s=%.3f %s\n", m.Name, m.Value, m.Unit)
 	}
 
+	host, _ := os.Hostname()
 	reportData := report{
+		Comparison: &quickbenchreport.Config{
+			Version: 1, Batch: *batch, SearchLimit: *searchLimit, Seed: *seed,
+			WarmTimeout: warmTimeout.String(), Host: host,
+			OS: runtime.GOOS, Arch: runtime.GOARCH, CPUs: runtime.NumCPU(),
+			Procs: runtime.GOMAXPROCS(0), TempDir: os.TempDir(),
+			GOFLAGS: os.Getenv("GOFLAGS"), GODEBUG: os.Getenv("GODEBUG"),
+		},
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		GoVersion: runtime.Version(),
 		Git:       detectGitMeta(),

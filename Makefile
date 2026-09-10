@@ -98,7 +98,7 @@ quickbench-compare-last:
 		-sync-mode $(QB_SYNC_MODE) \
 		-warm-timeout $(QB_WARM_TIMEOUT) \
 		-json \
-		-out "$$new"; \
+		-out "$$new" || exit; \
 	GOCACHE=$(GOCACHE) go run ./cmd/quickbenchcmp -old "$$old" -new "$$new"
 
 quickbench-list:
@@ -162,3 +162,14 @@ pillar-gate:
 		-max-delete-p99-us $(PB_GATE_MAX_DELETE_P99_US) \
 		-max-alloc-per-op $(PB_GATE_MAX_ALLOC_PER_OP) \
 		-max-recovery-ms $(PB_GATE_MAX_RECOVERY_MS)
+
+# Explicit, immutable baseline/candidate directories for local iteration.
+QB_RUNS ?= 5
+QB_SERIES_DIR ?=
+QB_SEED ?= 42
+.PHONY: quickbench-series
+quickbench-series:
+	GOCACHE=$(GOCACHE) sh scripts/quickbench-series.sh "$(QB_SERIES_DIR)" "$(QB_RUNS)" \
+		-rows $(QB_ROWS) -lookups $(QB_LOOKUPS) -searches $(QB_SEARCHES) \
+		-batch $(QB_BATCH) -search-limit $(QB_SEARCH_LIMIT) -seed $(QB_SEED) \
+		-sync-mode $(QB_SYNC_MODE) -warm-timeout $(QB_WARM_TIMEOUT)

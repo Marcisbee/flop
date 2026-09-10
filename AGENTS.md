@@ -2,6 +2,10 @@
 
 This repository is the Flop engine itself.
 
+Read [VERIFY.md](VERIFY.md) for setup, the code/test map, explicit baseline and
+candidate measurement loops, and production qualification. Choose the closest
+observable check before editing and rerun it on the final revision.
+
 Primary Go module location:
 - repository root
 
