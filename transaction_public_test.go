@@ -1,6 +1,9 @@
 package flop
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 type txUser struct {
 	ID    string `json:"id"`
@@ -74,5 +77,65 @@ func TestPublicTransactionRollsBackTypedTableWrites(t *testing.T) {
 	row, ok := db.Table("users").FindByUniqueIndex("email", "fresh@example.com")
 	if ok || row != nil {
 		t.Fatalf("expected fresh@example.com insert to roll back")
+	}
+}
+
+func TestPublicTransactionRollsBackArchives(t *testing.T) {
+	for _, failure := range []string{"callback", "commit"} {
+		t.Run(failure, func(t *testing.T) {
+			app := New(Config{DataDir: t.TempDir(), SyncMode: "normal"})
+			users := AutoTable[txUser](app, "users", func(tb *TableBuilder[txUser]) {
+				tb.Field("ID").Primary()
+				tb.Field("Email").Required().Unique()
+				tb.Field("Name").Required()
+			})
+			db, err := app.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			ctx := &ReducerCtx{DB: db.trackedAccessor(nil, nil)}
+			want := txUser{ID: "u1", Email: "ada@example.com", Name: "Ada"}
+			if _, err := users.Insert(ctx, want); err != nil {
+				t.Fatal(err)
+			}
+			failureErr := errors.New("transaction failed after archive")
+			if failure == "commit" {
+				testArchiveCommitHook = func() error { return failureErr }
+				defer func() { testArchiveCommitHook = nil }()
+			}
+			_, err = Transaction(ctx, func(tx *Tx) (bool, error) {
+				record, err := users.Archive(tx, want.ID)
+				if err != nil {
+					return false, err
+				}
+				if record == nil {
+					t.Fatal("expected archived row")
+				}
+				if failure == "callback" {
+					return false, failureErr
+				}
+				return true, nil
+			})
+			if !errors.Is(err, failureErr) {
+				t.Fatalf("expected injected failure, got %v", err)
+			}
+			got, err := users.Get(ctx, want.ID)
+			if err != nil || got == nil || *got != want {
+				t.Fatalf("archived row must be readable after rollback: got %#v, err %v", got, err)
+			}
+			rows, err := users.Scan(ctx, 10, 0)
+			if err != nil || len(rows) != 1 || rows[0] != want {
+				t.Fatalf("scan after rollback: got %#v, err %v", rows, err)
+			}
+			indexed, ok := db.Table("users").FindByUniqueIndex("email", want.Email)
+			if !ok || indexed["id"] != want.ID {
+				t.Fatalf("unique lookup after rollback: %#v", indexed)
+			}
+			records, _, err := db.db.GetTable("users").ScanArchived(10, 0)
+			if err != nil || len(records) != 0 {
+				t.Fatalf("archive after rollback: %#v, err %v", records, err)
+			}
+		})
 	}
 }
