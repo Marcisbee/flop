@@ -2311,6 +2311,8 @@ func (tx *archiveTxn) rollback() {
 	for i := len(tx.undo) - 1; i >= 0; i-- {
 		tx.undo[i]()
 	}
+	// Make restored rows visible only after all mutations have been undone.
+	tx.db.db.DiscardTransaction(tx.txBuf)
 	tx.closed = true
 }
 
