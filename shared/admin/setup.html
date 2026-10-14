@@ -4,109 +4,12 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin - Setup</title>
 <style>
-/* One neutral palette, with blue reserved for selection and primary actions. */
-:root {
-  color-scheme: light dark;
-  --accent:#0969da; --accent-hover:#0759bc; --error:#bb303b;
-  --bg:#f6f7f9; --bg-surface:#ffffff; --bg-elevated:#f8f9fb;
-  --bg-hover:#edf0f5; --bg-active:#e5efff; --bg-input:#ffffff;
-  --border:#dfe3e9; --border-input:#c7ced8; --row-border:#edf0f4;
-  --text:#303846; --text-heading:#17202e; --text-muted:#596577;
-  --text-faint:#657184; --text-dimmed:#657184; --text-ghost:#657184;
-  --danger:#bb303b; --danger-hover-bg:#ffebed; --danger-hover-text:#a7222e;
-  --scrollbar-thumb:#c7ced8; --scrollbar-thumb-hover:#a7b2c2;
-  --panel-2:var(--bg-elevated); --shadow:0 16px 48px #17202e18;
-}
-@media (prefers-color-scheme:dark) {
-  :root {
-    --accent:#83b5ff; --accent-hover:#a4caff; --error:#ff9ca5;
-    --bg:#15181e; --bg-surface:#1d222a; --bg-elevated:#232933;
-    --bg-hover:#2b3340; --bg-active:#253d5e; --bg-input:#191e26;
-    --border:#343d49; --border-input:#495566; --row-border:#2b323d;
-    --text:#d4dbe5; --text-heading:#f3f6fb; --text-muted:#aab6c7;
-    --text-faint:#9ba9bd; --text-dimmed:#9ba9bd; --text-ghost:#9ba9bd;
-    --danger:#ff9ca5; --danger-hover-bg:#41282f; --danger-hover-text:#ffb2b9;
-    --scrollbar-thumb:#495566; --scrollbar-thumb-hover:#627187;
-    --shadow:0 16px 48px #0005;
-  }
-}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100dvh;padding:24px}
-.login-container{width:100%;max-width:420px;padding:40px;border:1px solid var(--border);border-radius:20px;background:var(--bg-surface);box-shadow:var(--shadow)}
-.logo{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:32px}
-.logo-text{font-size:24px;font-weight:700;color:var(--text-heading);letter-spacing:-0.5px}
-.subtitle{text-align:center;color:var(--text-faint);font-size:14px;margin-bottom:20px}
-.field{margin-bottom:16px}
-.field label{display:block;font-size:14px;color:var(--text-muted);margin-bottom:6px;font-weight:550}
-.field input{width:100%;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;color:var(--text);font-size:16px;outline:none}
-.field input:focus{border-color:var(--accent)}
-button[type="submit"]{width:100%;padding:10px;background:#0969da;border:none;border-radius:8px;color:#ffffff;font-size:14px;font-weight:500;cursor:pointer;margin-top:4px}
-button[type="submit"]:hover{background:#0759bc}
-.error{color:var(--error);font-size:14px;margin-top:12px;text-align:center}
-.hidden{display:none}
-.auth-title{font-size:26px;letter-spacing:-.7px;text-align:center;color:var(--text-heading);margin-bottom:8px}
-.auth-description{font-size:14px;line-height:1.6;text-align:center;color:var(--text-muted);margin-bottom:28px}
-button[type=submit]{min-height:46px;font-weight:600}button:disabled{opacity:.6;cursor:wait}
-:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-@media(max-width:480px){.login-container,.setup-container{padding:28px 24px}body{padding:16px}}
+/* Console foundation. One token set, one desktop layout, one compact layout. */
+:root{color-scheme:dark;--accent:#64d8a2;--accent-hover:#83e2b6;--bg:#141414;--bg-surface:#181818;--bg-elevated:#202020;--bg-input:#1b1b1b;--bg-hover:#252525;--bg-active:#20362b;--border:#303030;--border-input:#424242;--row-border:#2b2b2b;--text:#dedede;--text-heading:#f3f3f3;--text-muted:#a9a9a9;--text-faint:#a9a9a9;--text-dimmed:#a9a9a9;--text-ghost:#999;--danger:#ffa0a0;--error:#ffa0a0;--danger-hover-bg:#3c2222;--danger-hover-text:#ffb7b7;--scrollbar-thumb:#444;--scrollbar-thumb-hover:#666;--panel-2:var(--bg-elevated);--shadow:0 16px 48px #0005;--page-gutter:24px}
+*{box-sizing:border-box;margin:0;padding:0}body{font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}button,input,select,textarea{font:inherit}button,a,input,select,textarea{touch-action:manipulation}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}a{color:inherit;text-decoration:none}small{font-size:14px}h1,h2,h3{color:var(--text-heading)}h1{font-size:22px;font-weight:600;letter-spacing:-.5px}h2{font-size:17px;font-weight:600;letter-spacing:-.2px}svg.icon-tabler{display:block;flex:0 0 auto;width:18px;height:18px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:active:not(:disabled){transform:translateY(1px)}input::placeholder,textarea::placeholder{color:var(--text-faint);opacity:1}input:not([type=checkbox]):not([type=file]),select,textarea{font-size:16px;min-height:38px}input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}.btn,.btn-icon,.btn-filter{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;line-height:20px;border-radius:5px;font-size:14px;flex-shrink:0}.btn{padding:7px 12px;font-weight:500;border:1px solid var(--border-input);background:var(--bg-input);color:var(--text);white-space:nowrap}.btn:hover{background:var(--bg-hover)}.btn-primary,.row-editor-field label.btn-primary{background:#52c18c;border-color:#52c18c;color:#0c2618}.btn-primary:hover{background:#6cd29f;border-color:#6cd29f;color:#0c2618}.btn-icon{width:36px;height:36px;padding:0;background:none;border:1px solid transparent;color:var(--text-muted)}.btn-icon:hover,.btn-icon.active{background:var(--bg-hover);color:var(--text-heading)}.btn-icon.danger:hover{color:var(--danger);background:var(--danger-hover-bg)}.btn-filter{width:32px;height:32px;min-height:32px;padding:0;background:none;border:0;color:var(--text-muted)}.btn-filter:hover{background:var(--bg-hover)}.btn-sm{min-height:32px;padding:5px 8px}
 
-:root{--accent:#346c59;--accent-hover:#285644;--bg:#f3f4f2;--text-heading:#202b25}
-body{padding:0;background:var(--bg-surface)}.auth-shell{display:grid;grid-template-columns:1fr 1fr;min-height:100dvh;width:100%}.auth-intro{background:var(--bg);padding:48px 64px;display:flex;flex-direction:column;justify-content:space-between;gap:60px}.auth-brand{text-decoration:none;color:var(--text-heading);font-size:32px;letter-spacing:-1px;font-weight:700}.auth-brand span{font-size:14px;font-weight:400;letter-spacing:0;margin-left:24px;color:var(--text-muted)}.auth-kicker{font-size:14px;letter-spacing:.13em;color:var(--accent);font-weight:600}.auth-intro h2{font-size:48px;line-height:1.12;font-weight:550;letter-spacing:-2px;margin:22px 0}.auth-intro p{font-size:14px;line-height:1.7;color:var(--text-muted)}.auth-intro small{font-size:14px;color:var(--text-muted)}.auth-outline{display:grid;grid-template-columns:32px 1fr;margin-top:42px;gap:4px 12px}.auth-outline>span{grid-row:span 2;font-size:14px;color:var(--accent);padding-top:4px}.auth-outline strong{font-size:14px;font-weight:600}.auth-outline p{font-size:14px;margin-bottom:20px}.login-container{border:0;box-shadow:none;border-radius:0;width:100%;max-width:460px;padding:48px;align-self:center;justify-self:center}.auth-title{text-align:left;font-size:30px;font-weight:600;letter-spacing:-1px;line-height:1.15;margin-bottom:14px}.auth-description{text-align:left;margin-bottom:32px;font-size:14px}.field{margin-bottom:24px}.field input{background:var(--bg-surface);border-radius:7px;padding:13px}.field label{font-size:14px}.login-container button[type=submit]{background:var(--accent);border-radius:7px;min-height:48px;margin-top:8px}.login-container button[type=submit]:hover{background:var(--accent-hover)}
-@media(prefers-color-scheme:dark){:root{--accent:#9ac9b1;--accent-hover:#b5ddc7;--bg:#141b17;--bg-surface:#1c2520;--text-heading:#eef4ee}.login-container button[type=submit]{color:#14271d}}
-@media(max-width:900px){.auth-intro{padding:36px}.auth-intro h2{font-size:38px}.login-container{padding:36px}}
-@media(max-width:640px){.auth-shell{grid-template-columns:1fr;align-content:start}.auth-intro{padding:28px;gap:0}.auth-intro>div,.auth-intro>small{display:none}.auth-brand{font-size:26px}.login-container{padding:48px 28px;max-width:460px}.auth-title{font-size:28px}}
-/* Console visual system: neutral hierarchy, blue selection, Tabler outline icons. */
-:root {
-  --accent: #3158d3; --accent-hover: #2445b0;
-  --bg: #f7f8fa; --bg-surface: #fff; --bg-elevated: #fafbfc;
-  --bg-hover: #f0f2f5; --bg-active: #eef2ff; --bg-input: #fff;
-  --border: #e3e6eb; --border-input: #cdd2db; --row-border: #eceef2;
-  --text-heading: #1a1f2c; --text: #303747; --text-muted: #626b7c;
-  --text-faint: #667085; --text-dimmed: #667085; --text-ghost: #667085;
-  --shadow: 0 8px 32px #14213d12;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --accent: #9ab4ff; --accent-hover: #b5c8ff;
-    --bg: #14171c; --bg-surface: #1b1e25; --bg-elevated: #20242c;
-    --bg-hover: #282d37; --bg-active: #263350; --bg-input: #191d24;
-    --border: #333945; --border-input: #485161; --row-border: #2d333e;
-    --text-heading: #f1f3f7; --text: #d9dee7; --text-muted: #a9b2c2;
-    --text-faint: #a0aabb; --text-dimmed: #a0aabb; --text-ghost: #a0aabb;
-    --shadow: 0 8px 32px #0004;
-  }
-}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}.auth-intro{background:var(--bg)}.auth-intro h2{font-size:40px;font-weight:550;letter-spacing:-1.5px}.auth-title{font-size:28px;letter-spacing:-.6px}.auth-brand{font-weight:650}.auth-outline>span{color:var(--text-muted)}.auth-kicker{color:var(--text-muted);letter-spacing:.08em}.login-container button[type=submit]{background:var(--accent);color:light-dark(#fff,#152344);border-radius:6px}.field input{border-radius:6px}.auth-description{font-size:14px}
-.auth-shell{display:flex;flex-direction:column;min-height:100dvh}.auth-intro{background:var(--bg-surface);padding:20px 32px;border-bottom:1px solid var(--border);gap:0}.auth-brand{font-size:24px}.login-container{margin:auto;padding:56px 32px;max-width:420px}.auth-title{font-size:26px}.auth-brand span{font-size:14px}@media(max-width:640px){.auth-intro{padding:18px 24px}.login-container{padding:40px 24px;margin:32px auto}.auth-title{font-size:25px}}
-/* Compact console density, shared across data and operational workspaces. */
-:root {
-  --accent:#27272a; --accent-hover:#3f3f46;
-  --bg:#f5f5f6; --bg-surface:#fff; --bg-elevated:#fafafa;
-  --bg-hover:#f1f1f3; --bg-active:#ebebee;
-  --border:#e4e4e7; --border-input:#d4d4d8; --row-border:#ededf0;
-  --text-heading:#202023; --text:#35353b; --text-muted:#71717a;
-  --text-faint:#71717a; --text-dimmed:#71717a; --text-ghost:#71717a;
-}
-@media(prefers-color-scheme:dark) {
-  :root {
-    --accent:#e4e4e7; --accent-hover:#fff;
-    --bg:#18181b; --bg-surface:#1f1f23; --bg-elevated:#242428;
-    --bg-hover:#2c2c32; --bg-active:#34343b;
-    --border:#36363d; --border-input:#4b4b55; --row-border:#303037;
-    --text-heading:#f4f4f5; --text:#dedee3; --text-muted:#aaaab4;
-    --text-faint:#aaaab4; --text-dimmed:#aaaab4; --text-ghost:#aaaab4;
-  }
-}
-.auth-intro{padding:16px 24px;background:var(--bg)}.login-container{padding:40px 28px;max-width:400px}.auth-title{font-size:23px}.field{margin-bottom:18px}.field input{padding:10px}.login-container button[type=submit]{background:var(--accent);color:light-dark(#fff,#202023);min-height:42px}.login-container button[type=submit]:hover{background:var(--accent-hover)}
-/* Readability floors apply at every viewport size, including compact controls. */
-small {font-size:14px}
-input,select,textarea {font-size:16px !important}
-/* Entry screens share the charcoal workspace palette. */
-:root {color-scheme:dark; --accent:#81b8ff; --accent-hover:#a5ccff; --bg:#0e0e0f; --bg-surface:#141415; --bg-input:#171719; --border:#29292c; --border-input:#3b3b40; --text:#e2e2e5; --text-heading:#f4f4f5; --text-muted:#a1a1aa; --text-faint:#a1a1aa; --error:#ff9ca5;}
-.login-container {background:var(--bg-surface); border:1px solid var(--border); border-radius:16px;}
-.login-container button[type=submit] {background:#f4f4f5; color:#171719; border-radius:9px;}
-.login-container button[type=submit]:hover {background:#dedee3;}
-.field input {background:var(--bg-input); border-radius:9px;}
+body{overflow:auto;min-height:100dvh}.auth-shell{min-height:100dvh;display:flex;flex-direction:column}.auth-intro{height:56px;min-height:56px;padding:0 24px;display:flex;align-items:center;border-bottom:1px solid var(--border)}.auth-intro>div,.auth-intro>small{display:none}.auth-brand{font-size:22px;font-weight:650;letter-spacing:-.8px}.auth-brand span{font-size:14px;letter-spacing:0;font-weight:400;color:var(--text-muted);margin-left:16px}.login-container{width:100%;max-width:400px;margin:clamp(40px,12vh,120px) auto;padding:0 24px}.auth-title{font-size:24px;line-height:1.3;font-weight:600;letter-spacing:-.6px;margin-bottom:10px}.auth-description{color:var(--text-muted);margin-bottom:28px}.field{margin-bottom:20px}.field label{display:block;font-size:14px;color:var(--text);margin-bottom:7px}.field input,.field select{width:100%;font-size:16px;min-height:44px;line-height:22px;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:5px;color:var(--text)}.login-container button[type=submit]{display:flex;align-items:center;justify-content:center;min-height:44px;width:100%;padding:10px 16px;border:1px solid #52c18c;border-radius:5px;background:#52c18c;color:#0c2618;font-size:16px;font-weight:550;cursor:pointer}.login-container button[type=submit]:hover{background:#6cd29f}.error{font-size:14px;color:var(--error);padding:12px;background:var(--danger-hover-bg);border-radius:5px;margin-bottom:16px}.hidden{display:none}.hint{font-size:14px;color:var(--text-muted);margin-top:6px}.subtitle{color:var(--text-muted)}.logo{display:none}@media(max-width:640px){.auth-intro{padding:0 20px;height:48px;min-height:48px}.login-container{margin:40px auto;padding:0 20px}.auth-title{font-size:24px}}
+
 </style>
 </head>
 <body><div class="auth-shell"><header class="auth-intro"><a class="auth-brand" href="/_">flop<span>Console</span></a></header>
