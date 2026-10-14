@@ -55,11 +55,34 @@ body{padding:0;background:var(--bg-surface)}.auth-shell{display:grid;grid-templa
 @media(prefers-color-scheme:dark){:root{--accent:#9ac9b1;--accent-hover:#b5ddc7;--bg:#141b17;--bg-surface:#1c2520;--text-heading:#eef4ee}.login-container button[type=submit]{color:#14271d}}
 @media(max-width:900px){.auth-intro{padding:36px}.auth-intro h2{font-size:38px}.login-container{padding:36px}}
 @media(max-width:640px){.auth-shell{grid-template-columns:1fr;align-content:start}.auth-intro{padding:28px;gap:0}.auth-intro>div,.auth-intro>small{display:none}.auth-brand{font-size:26px}.login-container{padding:48px 28px;max-width:460px}.auth-title{font-size:28px}}
+/* Console visual system: neutral hierarchy, blue selection, Tabler outline icons. */
+:root {
+  --accent: #3158d3; --accent-hover: #2445b0;
+  --bg: #f7f8fa; --bg-surface: #fff; --bg-elevated: #fafbfc;
+  --bg-hover: #f0f2f5; --bg-active: #eef2ff; --bg-input: #fff;
+  --border: #e3e6eb; --border-input: #cdd2db; --row-border: #eceef2;
+  --text-heading: #1a1f2c; --text: #303747; --text-muted: #626b7c;
+  --text-faint: #667085; --text-dimmed: #667085; --text-ghost: #667085;
+  --shadow: 0 8px 32px #14213d12;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #9ab4ff; --accent-hover: #b5c8ff;
+    --bg: #14171c; --bg-surface: #1b1e25; --bg-elevated: #20242c;
+    --bg-hover: #282d37; --bg-active: #263350; --bg-input: #191d24;
+    --border: #333945; --border-input: #485161; --row-border: #2d333e;
+    --text-heading: #f1f3f7; --text: #d9dee7; --text-muted: #a9b2c2;
+    --text-faint: #a0aabb; --text-dimmed: #a0aabb; --text-ghost: #a0aabb;
+    --shadow: 0 8px 32px #0004;
+  }
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}.auth-intro{background:var(--bg)}.auth-intro h2{font-size:40px;font-weight:550;letter-spacing:-1.5px}.auth-title{font-size:28px;letter-spacing:-.6px}.auth-brand{font-weight:650}.auth-outline>span{color:var(--text-muted)}.auth-kicker{color:var(--text-muted);letter-spacing:.08em}.login-container button[type=submit]{background:var(--accent);color:light-dark(#fff,#152344);border-radius:6px}.field input{border-radius:6px}.auth-description{font-size:14px}
+.auth-shell{display:flex;flex-direction:column;min-height:100dvh}.auth-intro{background:var(--bg-surface);padding:20px 32px;border-bottom:1px solid var(--border);gap:0}.auth-brand{font-size:24px}.login-container{margin:auto;padding:56px 32px;max-width:420px}.auth-title{font-size:26px}.auth-brand span{font-size:13px}@media(max-width:640px){.auth-intro{padding:18px 24px}.login-container{padding:40px 24px;margin:32px auto}.auth-title{font-size:25px}}
 </style>
 </head>
-<body><div class="auth-shell"><aside class="auth-intro"><a class="auth-brand" href="/_">flop<span>Workspace</span></a><div><span class="auth-kicker">YOUR APPLICATION. IN FOCUS.</span><h2>Everything behind<br>what you build.</h2><p>Your data, activity, and operations.<br>One considered workspace.</p><div class="auth-outline"><span>01</span><strong>Data</strong><p>Explore collections and work with records.</p><span>02</span><strong>Activity</strong><p>Understand requests and performance.</p><span>03</span><strong>Operations</strong><p>Manage workflows, mail, and backups.</p></div></div><small>Flop database console</small></aside>
+<body><div class="auth-shell"><header class="auth-intro"><a class="auth-brand" href="/_">flop<span>Console</span></a></header>
 <div class="login-container">
-  <h1 class="auth-title">Welcome to your workspace</h1><p class="auth-description">Sign in to manage your Flop database.</p>
+  <h1 class="auth-title">Sign in to Flop</h1><p class="auth-description">Sign in to manage your Flop database.</p>
   <form id="login-form">
     <div class="field">
       <label for="email">Email</label>
