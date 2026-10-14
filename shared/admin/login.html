@@ -101,6 +101,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-
 /* Readability floors apply at every viewport size, including compact controls. */
 small {font-size:14px}
 input,select,textarea {font-size:16px !important}
+/* Entry screens share the charcoal workspace palette. */
+:root {color-scheme:dark; --accent:#81b8ff; --accent-hover:#a5ccff; --bg:#0e0e0f; --bg-surface:#141415; --bg-input:#171719; --border:#29292c; --border-input:#3b3b40; --text:#e2e2e5; --text-heading:#f4f4f5; --text-muted:#a1a1aa; --text-faint:#a1a1aa; --error:#ff9ca5;}
+.login-container {background:var(--bg-surface); border:1px solid var(--border); border-radius:16px;}
+.login-container button[type=submit] {background:#f4f4f5; color:#171719; border-radius:9px;}
+.login-container button[type=submit]:hover {background:#dedee3;}
+.field input {background:var(--bg-input); border-radius:9px;}
 </style>
 </head>
 <body><div class="auth-shell"><header class="auth-intro"><a class="auth-brand" href="/_">flop<span>Console</span></a></header>

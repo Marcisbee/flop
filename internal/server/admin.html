@@ -863,6 +863,121 @@ input,select,textarea {font-size:16px !important; line-height:24px;}
  .mail-inline-actions>* {width:100%;}
  .record-list td.td-actions .btn-icon {width:44px; height:44px;}
 }
+
+/* Reference workspace: charcoal surfaces, persistent navigation, blue selected tabs. */
+:root {
+ color-scheme:dark; --accent:#81b8ff; --accent-hover:#a5ccff;
+ --bg:#0e0e0f; --bg-surface:#141415; --bg-elevated:#202022; --bg-input:#171719;
+ --bg-hover:#252527; --bg-active:#15335c; --border:#29292c; --border-input:#3b3b40; --row-border:#28282b;
+ --text-heading:#f4f4f5; --text:#e2e2e5; --text-muted:#a1a1aa; --text-faint:#a1a1aa; --text-dimmed:#a1a1aa; --text-ghost:#a1a1aa;
+ --danger:#ff9ca5; --error:#ff9ca5; --danger-hover-bg:#3b2026; --danger-hover-text:#ffb2b9;
+ --scrollbar-thumb:#404045; --scrollbar-thumb-hover:#57575e; --page-gutter:32px;
+}
+#app {display:grid; grid-template-columns:240px minmax(0,1fr); grid-template-rows:64px minmax(0,1fr); gap:0; padding:12px; background:var(--bg);}
+.workspace-header {grid-column:1; grid-row:1/3; width:100%; height:auto; min-height:0; padding:4px 12px 12px 0; display:flex; flex-direction:column; align-items:stretch; gap:24px; border:0; background:transparent;}
+.workspace-brand {min-height:64px; padding:12px; gap:12px; background:var(--bg-surface); border-radius:12px;}
+.workspace-brand strong {display:grid; place-items:center; width:42px; height:42px; border-radius:10px; background:#f4f4f5; color:#141415; font-size:21px; letter-spacing:-1px;}
+.workspace-brand>span {display:block; padding:0; margin:0; border:0; font-size:15px; line-height:22px; font-weight:600; color:var(--text-heading);}
+.workspace-brand small {font-size:14px; font-weight:400; color:var(--text-muted);}
+.workspace-nav {position:static; display:flex; flex-direction:column; align-items:stretch; width:100%; height:auto; gap:6px; margin:0; padding:0; background:none; border:0;}
+.workspace-nav a {flex:none; flex-direction:row; justify-content:flex-start; height:42px; padding:0 14px; gap:12px; border-radius:8px; font-size:14px;}
+.workspace-nav a.active {background:var(--bg-elevated); color:var(--text-heading); box-shadow:none;}
+.workspace-nav svg {width:20px; height:20px;}
+.signout {margin:auto 0 0 8px;}
+.workspace-header .collection-rail {width:100%; min-height:0; flex:1; padding:0; border:0; background:none;}
+.collection-back {padding:0 12px 12px; font-weight:600; color:var(--text-heading);}
+.collection-back svg {display:none;}
+.collection-rail .sidebar-search {margin:0 8px 12px;}
+.collection-link {min-height:40px; padding:8px 12px; gap:12px;}
+.collection-link.active {background:var(--bg-elevated); color:var(--text-heading); box-shadow:none;}
+.collection-link>svg {width:18px; height:18px;}
+.rail-foot {padding:12px;}
+.workspace-subnav {grid-column:2; grid-row:1; background:var(--bg-surface); height:64px; padding:12px 32px; align-items:center; gap:8px; border:0; border-radius:16px 16px 0 0;}
+.workspace-subnav a {border:0; min-height:36px; padding:6px 14px; border-radius:20px; line-height:20px;}
+.workspace-subnav a.active {background:var(--bg-active); color:var(--accent);}
+.workspace-content {grid-column:2; grid-row:2; margin:0; border:0; border-radius:0 0 16px 16px; background:var(--bg-surface);}
+#app:not(:has(.workspace-subnav)) .workspace-content {grid-row:1/3; border-radius:16px;}
+.collection-library {background:var(--bg-surface); padding:28px 32px;}
+.library-heading {margin-bottom:28px;}
+.library-heading h1,.panel-title h1,.workflow-title,.backups-title,.analytics-title {font-size:28px; line-height:36px; letter-spacing:-.7px; font-weight:600;}
+.library-heading h1 {margin:0 0 8px;}
+.library-toolbar {margin-bottom:24px;}
+.library-total {padding:14px 20px; border-radius:12px; background:var(--bg-elevated); text-align:left; gap:2px;}
+.library-total strong {font-size:24px;}
+.segmented {border:0; background:none; padding:0; gap:8px;}
+.segmented button {padding:8px 16px; min-height:40px; border-radius:24px; background:var(--bg-elevated);}
+.segmented button[aria-pressed=true] {background:var(--bg-active); color:var(--accent); box-shadow:none;}
+.library-search,.search-box {background:var(--bg-input); border:1px solid var(--border-input); border-radius:10px;}
+.collection-directory {border-color:var(--border); border-radius:12px; overflow:hidden;}
+.collection-directory-head {background:var(--bg-elevated); padding-top:14px; padding-bottom:14px;}
+.collection-card {min-height:66px; background:transparent; padding-top:14px; padding-bottom:14px;}
+.collection-card:hover {background:var(--bg-elevated);}
+.btn {border-radius:9px; box-shadow:none;}
+.btn-primary,.row-editor-field label.btn-primary {background:#f4f4f5; color:#171719; border-color:#f4f4f5;}
+.btn-primary:hover {background:#dedee3; color:#171719;}
+.panel-toolbar,.analytics-toolbar {padding-top:28px; padding-bottom:24px;}
+.collection-breadcrumb {font-weight:400; letter-spacing:0;}
+.data-viewbar {border:0; padding-bottom:20px;}
+.view-tabs {gap:8px;}
+.view-tabs button {padding:8px 16px; min-height:40px; border:0; border-radius:24px; background:var(--bg-elevated);}
+.view-tabs button[aria-pressed=true] {background:var(--bg-active); color:var(--accent); border:0;}
+.records-table:not(.record-list) th {background:var(--bg-elevated); border-right:0;}
+.records-table:not(.record-list) td {border-right:0; height:48px;}
+.records-table:not(.record-list) .th-actions {background:var(--bg-elevated);}
+.record-list tbody tr {padding:18px 32px;}
+.analytics-cards {border:0; gap:12px;}
+.analytics-card {background:var(--bg-elevated); border:0; border-radius:12px; padding:20px;}
+.analytics-card-value {font-size:28px;}
+.analytics-chart-wrap,.workflow-card,.workflow-form,.mail-template-card,.backup-option-block {background:var(--bg-elevated); border:1px solid var(--border); border-radius:12px;}
+.workflow-page,.backups-page,.mail-page {padding-top:28px;}
+.row-editor-header {padding-top:24px; padding-bottom:24px;}
+.row-editor-title {font-size:24px; line-height:32px;}
+.row-editor-actions {background:var(--bg-surface);}
+@media(min-width:1200px) {
+ .analytics-section-overview .analytics-main {display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:24px; align-items:start;}
+ .analytics-section-overview .analytics-cards {grid-column:2; grid-row:1/3; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0; background:var(--bg-elevated); border-radius:12px; padding:8px; margin:0;}
+ .analytics-section-overview .analytics-card {padding:16px 12px; min-width:0;}
+ .analytics-section-overview .analytics-card-value {font-size:24px;}
+ .analytics-section-overview .analytics-chart-wrap {grid-column:1; grid-row:1;}
+ .analytics-section-overview .analytics-main>.analytics-route-list {grid-column:1;}
+ .analytics-section-overview .analytics-chart {height:280px;}
+ .analytics-section-overview .analytics-chart-title {flex-wrap:wrap; gap:8px;}
+}
+@media(max-width:1100px) and (min-width:761px) {
+ #app {grid-template-columns:208px minmax(0,1fr);}
+ .workspace-brand {padding:10px 8px; gap:8px;}
+ .workspace-brand>span {font-size:14px;}
+ .workspace-subnav {padding-left:24px; padding-right:24px;}
+ :root {--page-gutter:24px;}
+ .collection-library {padding:24px;}
+}
+@media(max-width:760px) {
+ :root {--page-gutter:16px;}
+ #app {display:flex; padding:0 0 calc(72px + env(safe-area-inset-bottom)); gap:0;}
+ .workspace-header {height:72px; min-height:72px; padding:8px 16px; flex-direction:row; align-items:center; gap:12px;}
+ .workspace-brand {min-height:0; padding:0; background:none;}
+ .workspace-brand strong {width:36px; height:36px; font-size:18px;}
+ .workspace-brand>span {font-size:14px; line-height:20px;}
+ .workspace-brand small {font-size:14px;}
+ .signout {margin:0 0 0 auto;}
+ .workspace-header .collection-rail {display:none;}
+ .workspace-nav {position:fixed; bottom:0; left:0; right:0; width:100%; flex-direction:row; height:calc(72px + env(safe-area-inset-bottom)); padding:6px 8px max(6px,env(safe-area-inset-bottom)); background:var(--bg); border-top:1px solid var(--border); gap:4px; z-index:10;}
+ .workspace-nav a {flex:1; height:58px; min-height:44px; flex-direction:column; justify-content:center; gap:4px; padding:6px 2px;}
+ .workspace-nav a.active {background:var(--bg-elevated); color:var(--text-heading);}
+ .workspace-subnav {height:56px; padding:8px 16px; border-radius:14px 14px 0 0; gap:6px;}
+ .workspace-subnav a {padding:6px 12px;}
+ .workspace-content,#app:not(:has(.workspace-subnav)) .workspace-content {border-radius:0; margin:0;}
+ .collection-library {padding:24px 16px;}
+ .library-heading h1,.panel-title h1,.workflow-title,.backups-title,.analytics-title {font-size:24px; line-height:32px;}
+ .library-heading {margin-bottom:24px;}
+ .library-total {display:none;}
+ .panel-toolbar,.analytics-toolbar {padding-top:20px; padding-bottom:20px;}
+ .view-tabs {gap:6px;}
+ .view-tabs button {padding:10px 14px; min-height:44px;}
+ .data-viewbar {padding-bottom:16px;}
+ .record-list tbody tr {padding:16px;}
+ .analytics-card {padding:16px;}
+}
 </style>
 </head>
 <body>
@@ -1103,7 +1218,7 @@ function Toasts() {
 
 // ── Components ──
 
-function WorkspaceNavigation({ viewMode, analyticsEnabled, observeEnabled, workflowEnabled, mediaEnabled }) {
+function WorkspaceNavigation({ viewMode, analyticsEnabled, observeEnabled, workflowEnabled, mediaEnabled, tables, archiveTables, currentTable, currentArchive, selectTable, selectArchive }) {
   const group = ['mail','backups'].includes(viewMode) ? 'settings' : viewMode.startsWith('analytics') || viewMode === 'observe' ? 'activity' : viewMode === 'workflow' ? 'automation' : 'data';
   const entries = [
     ['data', 'Data', '', icons.db],
@@ -1115,8 +1230,9 @@ function WorkspaceNavigation({ viewMode, analyticsEnabled, observeEnabled, workf
     : group === 'activity' ? [...(analyticsEnabled ? [['Requests','_analytics-volume'],['Performance','_analytics-performance']] : []), ...(observeEnabled ? [['Indexes','_observe']] : [])]
     : group === 'settings' ? [['Backups','_backups'],['Mail','_mail']] : [];
   return html`<header class="workspace-header">
-    <a class="workspace-brand" href="#" aria-label="Flop collections"><strong>flop</strong><span>Console</span></a>
+    <a class="workspace-brand" href="#" aria-label="Flop collections"><strong>flop</strong><span>Workspace<br/><small>Database console</small></span></a>
     <nav class="workspace-nav" aria-label="Workspaces">${entries.map(([id,label,route,icon]) => html`<a href=${'#'+route} aria-current=${group === id ? 'page' : undefined} class=${group === id ? 'active' : ''}>${icon}<span>${label}</span></a>`)}</nav>
+    ${group === 'data' && html`<${CollectionRail} tables=${tables} archiveTables=${archiveTables} currentTable=${currentTable} archive=${currentArchive} onSelect=${selectTable} onSelectArchive=${selectArchive} />`}
     <button class="btn-icon signout" aria-label="Sign out" title="Sign out" onClick=${logout}>${icons.signout}</button>
   </header>
   ${secondary.length > 0 && html`<nav class="workspace-subnav" aria-label="Workspace pages">${secondary.map(([label,route]) => html`<a href=${'#'+route} class=${(route === '' ? viewMode === 'table' : route === '_'+viewMode) ? 'active' : ''}>${label}</a>`)}</nav>`}`;
@@ -3989,9 +4105,8 @@ function App() {
   }, [tables, archiveTables, currentTable, currentArchive]);
 
   return html`
-    <${WorkspaceNavigation} viewMode=${viewMode} analyticsEnabled=${analyticsEnabled} observeEnabled=${observeEnabled} workflowEnabled=${workflowEnabled} mediaEnabled=${mediaEnabled} />
+    <${WorkspaceNavigation} viewMode=${viewMode} analyticsEnabled=${analyticsEnabled} observeEnabled=${observeEnabled} workflowEnabled=${workflowEnabled} mediaEnabled=${mediaEnabled} tables=${tables} archiveTables=${archiveTables} currentTable=${currentTable} currentArchive=${currentArchive} selectTable=${selectTable} selectArchive=${selectArchive} />
     <div class="workspace-content">
-      ${viewMode === 'table' && currentTable && html`<${CollectionRail} tables=${tables} archiveTables=${archiveTables} currentTable=${currentTable} archive=${currentArchive} onSelect=${selectTable} onSelectArchive=${selectArchive} />`}
       <main class="main" id="main-content">
       ${(viewMode === 'analytics-volume' || viewMode === 'analytics-performance') && analyticsEnabled
         ? html`<${AnalyticsPanel} page=${viewMode === 'analytics-performance' ? 'performance' : 'volume'} />`
