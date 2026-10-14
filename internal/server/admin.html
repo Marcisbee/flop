@@ -4,73 +4,44 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin</title>
 <style>
+/* One neutral palette, with blue reserved for selection and primary actions. */
 :root {
-  --accent: #0078d4;
-  --accent-hover: #006cbd;
-  --error: #f48771;
-
-  /* Dark theme (default) */
-  --bg: #1e1e1e;
-  --bg-surface: #252526;
-  --bg-hover: #2a2d2e;
-  --bg-active: #37373d;
-  --bg-input: #3c3c3c;
-  --border: #3c3c3c;
-  --border-input: #4a4a4a;
-  --text: #cccccc;
-  --text-heading: #ffffff;
-  --text-muted: #999999;
-  --text-faint: #888888;
-  --text-dimmed: #666666;
-  --text-ghost: #555555;
-  --row-border: #2a2a2a;
-  --danger: #cc6666;
-  --danger-hover-bg: #2d1f1f;
-  --danger-hover-text: #f48771;
-  --scrollbar-thumb: #424242;
-  --scrollbar-thumb-hover: #4a4a4a;
+  color-scheme: light dark;
+  --accent:#0969da; --accent-hover:#0759bc; --error:#bb303b;
+  --bg:#f6f7f9; --bg-surface:#ffffff; --bg-elevated:#f8f9fb;
+  --bg-hover:#edf0f5; --bg-active:#e5efff; --bg-input:#ffffff;
+  --border:#dfe3e9; --border-input:#c7ced8; --row-border:#edf0f4;
+  --text:#303846; --text-heading:#17202e; --text-muted:#596577;
+  --text-faint:#657184; --text-dimmed:#657184; --text-ghost:#657184;
+  --danger:#bb303b; --danger-hover-bg:#ffebed; --danger-hover-text:#a7222e;
+  --scrollbar-thumb:#c7ced8; --scrollbar-thumb-hover:#a7b2c2;
+  --panel-2:var(--bg-elevated); --shadow:0 16px 48px #17202e18;
 }
-
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme:dark) {
   :root {
-    --accent: #0078d4;
-    --accent-hover: #106ebe;
-    --error: #d32f2f;
-
-    --bg: #f3f3f3;
-    --bg-surface: #ffffff;
-    --bg-hover: #e8e8e8;
-    --bg-active: #d6ebff;
-    --bg-input: #ffffff;
-    --border: #e0e0e0;
-    --border-input: #cecece;
-    --text: #333333;
-    --text-heading: #1e1e1e;
-    --text-muted: #666666;
-    --text-faint: #888888;
-    --text-dimmed: #999999;
-    --text-ghost: #aaaaaa;
-    --row-border: #f0f0f0;
-    --danger: #d32f2f;
-    --danger-hover-bg: #fdecea;
-    --danger-hover-text: #c62828;
-    --scrollbar-thumb: #c1c1c1;
-    --scrollbar-thumb-hover: #a8a8a8;
+    --accent:#83b5ff; --accent-hover:#a4caff; --error:#ff9ca5;
+    --bg:#15181e; --bg-surface:#1d222a; --bg-elevated:#232933;
+    --bg-hover:#2b3340; --bg-active:#253d5e; --bg-input:#191e26;
+    --border:#343d49; --border-input:#495566; --row-border:#2b323d;
+    --text:#d4dbe5; --text-heading:#f3f6fb; --text-muted:#aab6c7;
+    --text-faint:#9ba9bd; --text-dimmed:#9ba9bd; --text-ghost:#9ba9bd;
+    --danger:#ff9ca5; --danger-hover-bg:#41282f; --danger-hover-text:#ffb2b9;
+    --scrollbar-thumb:#495566; --scrollbar-thumb-hover:#627187;
+    --shadow:0 16px 48px #0005;
   }
 }
-
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px;overflow:hidden}
-#app{display:flex;height:100vh;width:100vw}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;overflow:hidden}
+#app{display:flex;height:100dvh;width:100%;min-height:0}
 
 /* Sidebar */
-.sidebar{width:240px;background:var(--bg-surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;user-select:none}
+.sidebar{width:248px;background:var(--bg);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;user-select:none}
 .sidebar-header{padding:12px 16px;display:flex;align-items:center;border-bottom:1px solid var(--border)}
 .logo-sm{display:flex;align-items:center;gap:8px;color:var(--text);font-size:15px;font-weight:600}
 .logo-sm svg{color:var(--accent)}
 .sidebar-section-label{padding:8px 16px 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-faint)}
 .sidebar-tables{flex:1;overflow-y:auto;padding:4px 8px}
-.sidebar-item{display:flex;align-items:center;width:100%;padding:5px 8px;background:none;border:none;border-radius:4px;color:var(--text);font-size:13px;cursor:pointer;gap:6px;text-align:left}
+.sidebar-item{display:flex;align-items:center;width:100%;padding:9px 12px;background:none;border:none;border-radius:8px;color:var(--text);font-size:13px;cursor:pointer;gap:6px;text-align:left}
 .sidebar-item:hover{background:var(--bg-hover)}
 .sidebar-item.active{background:var(--bg-active);color:var(--text-heading)}
 .sidebar-item-icon{color:var(--text-faint);display:flex;flex-shrink:0}
@@ -79,7 +50,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .sidebar-item-count{color:var(--text-dimmed);font-size:11px;font-variant-numeric:tabular-nums}
 .sidebar-item.active .sidebar-item-count{color:var(--text-muted)}
 .sidebar-footer{border-top:1px solid var(--border);padding:8px;display:flex;flex-direction:column;gap:2px}
-.sidebar-action{display:flex;align-items:center;gap:6px;padding:5px 8px;background:none;border:none;border-radius:4px;color:var(--text-muted);font-size:12px;cursor:pointer;text-align:left}
+.sidebar-action{display:flex;align-items:center;gap:6px;padding:9px 12px;background:none;border:none;border-radius:8px;color:var(--text-muted);font-size:12px;cursor:pointer;text-align:left}
 .sidebar-action:hover{background:var(--bg-hover);color:var(--text)}
 .sidebar-action.danger{color:var(--danger)}
 .sidebar-action.danger:hover{background:var(--danger-hover-bg);color:var(--danger-hover-text)}
@@ -96,7 +67,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 
 /* Panel (table view) */
 .panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
-.panel-toolbar{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0}
+.panel-toolbar{display:flex;align-items:center;justify-content:space-between;padding:20px 24px;background:var(--bg-surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0}
 .panel-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--text-heading)}
 .panel-title-icon{color:var(--text-faint);display:flex}
 .panel-meta{color:var(--text-dimmed);font-size:12px;font-weight:400}
@@ -106,20 +77,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .panel-actions{display:flex;align-items:center;gap:8px}
 
 /* Search */
-.search-box{display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;padding:0 8px}
+.search-box{display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;padding:0 8px}
 .search-box:focus-within{border-color:var(--accent)}
 .search-box svg{color:var(--text-faint);flex-shrink:0}
 .search-box input{background:none;border:none;color:var(--text);font-size:13px;padding:5px 0;outline:none;width:220px}
 .filter-help{color:var(--text-ghost);cursor:help;font-size:11px;user-select:none;flex-shrink:0}
-.btn-filter{background:var(--accent);border:none;border-radius:3px;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;flex-shrink:0}
+.btn-filter{background:var(--accent);border:none;border-radius:8px;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;flex-shrink:0}
 .btn-filter:hover{background:var(--accent-hover)}
 
 /* Buttons */
-.btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:12px;cursor:pointer;white-space:nowrap}
+.btn{display:inline-flex;align-items:center;gap:4px;padding:8px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;color:var(--text);font-size:12px;cursor:pointer;white-space:nowrap}
 .btn:hover{background:var(--bg-hover)}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#ffffff}
 .btn-primary:hover{background:var(--accent-hover)}
-.btn-icon{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;background:none;border:1px solid transparent;border-radius:4px;color:var(--text-faint);cursor:pointer;padding:0}
+.btn-icon{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;background:none;border:1px solid transparent;border-radius:8px;color:var(--text-faint);cursor:pointer;padding:0}
 .btn-icon:hover{background:var(--bg-hover);color:var(--text)}
 .btn-icon.danger:hover{background:var(--danger-hover-bg);color:var(--danger-hover-text)}
 .btn-icon:disabled{opacity:0.3;cursor:default;background:none}
@@ -129,11 +100,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .table-container{flex:1;overflow:auto;min-width:0}
 table{width:100%;border-collapse:collapse}
 thead{position:sticky;top:0;z-index:1}
-th{text-align:left;padding:6px 12px;background:var(--bg-surface);border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap}
+th{text-align:left;padding:12px 16px;background:var(--bg-elevated);border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap}
 .th-name{color:var(--text)}
 .th-type{color:var(--text-ghost);font-weight:400;font-size:11px;margin-left:4px}
 .th-actions{width:40px}
-td{padding:5px 12px;border-bottom:1px solid var(--row-border);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
+td{padding:12px 16px;border-bottom:1px solid var(--row-border);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
 tbody tr{cursor:pointer}
 tbody tr:hover{background:var(--bg-hover)}
 tbody tr.selected{background:var(--bg-active)}
@@ -143,20 +114,20 @@ tbody tr.selected{background:var(--bg-active)}
 .empty-row{color:var(--text-dimmed);text-align:center;padding:32px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:13px}
 
 /* Row editor */
-.row-editor{width:360px;max-width:48vw;border-left:1px solid var(--border);background:var(--bg-surface);display:flex;flex-direction:column}
+.row-editor{width:400px;max-width:45vw;border-left:1px solid var(--border);background:var(--bg-surface);display:flex;flex-direction:column}
 .row-editor-header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px}
 .row-editor-title{font-size:13px;font-weight:600;color:var(--text-heading)}
 .row-editor-meta{font-size:11px;color:var(--text-muted)}
-.row-editor-body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.row-editor-body{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:18px}
 .row-editor-field label{display:block;font-size:11px;color:var(--text-muted);margin-bottom:4px}
-.row-editor-field input,.row-editor-field select,.row-editor-field textarea{width:100%;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:3px;color:var(--text);font-size:12px;outline:none}
+.row-editor-field input,.row-editor-field select,.row-editor-field textarea{width:100%;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;color:var(--text);font-size:12px;outline:none}
 .row-editor-field input:focus,.row-editor-field select:focus,.row-editor-field textarea:focus{border-color:var(--accent)}
 .row-editor-field textarea{min-height:80px;resize:vertical;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace}
-.row-editor-readonly{padding:6px 8px;border:1px solid var(--border-input);border-radius:3px;background:var(--bg);color:var(--text-faint);min-height:30px}
+.row-editor-readonly{padding:6px 8px;border:1px solid var(--border-input);border-radius:8px;background:var(--bg);color:var(--text-faint);min-height:30px}
 .row-editor-actions{padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
 
 /* Pagination */
-.pagination{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 16px;background:var(--bg-surface);border-top:1px solid var(--border);flex-shrink:0}
+.pagination{display:flex;align-items:center;justify-content:center;gap:8px;padding:20px 24px;background:var(--bg-surface);border-top:1px solid var(--border);flex-shrink:0}
 .page-info{color:var(--text-faint);font-size:12px}
 
 /* Create form */
@@ -165,78 +136,78 @@ tbody tr.selected{background:var(--bg-active)}
 .create-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:10px}
 .form-field label{display:block;font-size:11px;color:var(--text-muted);margin-bottom:4px}
 .type-badge{color:var(--text-dimmed);font-size:10px}
-.form-field input,.form-field select{width:100%;padding:5px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:3px;color:var(--text);font-size:13px;outline:none}
+.form-field input,.form-field select{width:100%;padding:5px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;color:var(--text);font-size:13px;outline:none}
 .form-field input:focus,.form-field select:focus{border-color:var(--accent)}
 .create-actions{display:flex;align-items:center;gap:8px}
 .create-error{color:var(--error);font-size:12px}
 
 /* Analytics */
 .analytics-panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
-.analytics-toolbar{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0}
+.analytics-toolbar{display:flex;align-items:center;justify-content:space-between;padding:20px 24px;background:var(--bg-surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0}
 .analytics-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--text-heading)}
 .analytics-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.analytics-select{padding:5px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:12px}
-.analytics-body{flex:1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
+.analytics-select{padding:5px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;color:var(--text);font-size:12px}
+.analytics-body{flex:1;overflow:auto;padding:24px;display:flex;flex-direction:column;gap:20px}
 .analytics-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
-.analytics-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;padding:10px}
+.analytics-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:10px}
 .analytics-card-label{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.6px}
 .analytics-card-value{margin-top:4px;color:var(--text-heading);font-size:18px;font-variant-numeric:tabular-nums}
-.analytics-chart-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;padding:10px}
+.analytics-chart-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:10px}
 .analytics-chart-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:var(--text-muted);font-size:12px}
 .analytics-chart-box{position:relative}
 .analytics-chart{width:100%;height:156px;display:block}
 .analytics-legend{display:flex;gap:14px;color:var(--text-muted);font-size:11px;margin-top:6px}
 .legend-item{display:flex;align-items:center;gap:6px}
 .legend-line{width:14px;height:2px;border-radius:1px}
-.analytics-tooltip{position:absolute;z-index:5;min-width:180px;max-width:260px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:6px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);pointer-events:none}
+.analytics-tooltip{position:absolute;z-index:5;min-width:180px;max-width:260px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);pointer-events:none}
 .tooltip-time{color:var(--text-heading);font-size:11px;margin-bottom:6px}
 .tooltip-row{display:flex;justify-content:space-between;gap:8px;color:var(--text-muted);font-size:11px}
 .analytics-route-list{display:flex;flex-wrap:wrap;gap:6px}
 .analytics-route-chip{font-size:11px;padding:2px 6px;border:1px solid var(--border-input);border-radius:999px;background:var(--bg-input);color:var(--text-muted);cursor:pointer}
 .analytics-route-chip.active{border-color:var(--accent);color:var(--text-heading)}
-.analytics-logs{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.analytics-logs{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .analytics-empty{padding:24px;color:var(--text-muted);text-align:center}
 .log-row{cursor:pointer}
 .log-row:hover{background:var(--bg-hover)}
 .analytics-layout{display:flex;gap:12px;min-height:0}
 .analytics-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px}
-.analytics-detail{width:320px;max-width:38vw;background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;max-height:min(72vh,780px)}
+.analytics-detail{width:320px;max-width:38vw;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;max-height:min(72vh,780px)}
 .analytics-detail-header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px}
 .analytics-detail-title{font-size:13px;font-weight:600;color:var(--text-heading)}
 .analytics-detail-body{padding:10px 12px;overflow:auto;display:flex;flex-direction:column;gap:8px}
 .detail-row{display:grid;grid-template-columns:90px minmax(0,1fr);gap:8px;align-items:start}
 .detail-key{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px}
 .detail-val{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px;color:var(--text);word-break:break-word;white-space:pre-wrap}
-.detail-pre{margin:0;padding:8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;max-height:260px;overflow:auto}
+.detail-pre{margin:0;padding:8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;max-height:260px;overflow:auto}
 .slow-badge{display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;background:var(--danger-hover-bg);color:var(--danger-hover-text);font-size:10px;font-weight:600}
 .trace-list{display:flex;flex-direction:column;gap:6px}
-.trace-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px}
+.trace-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px}
 .trace-name{font-size:11px;color:var(--text)}
 .trace-meta{font-size:10px;color:var(--text-faint)}
 .trace-timeline{display:flex;flex-direction:column;gap:6px}
-.trace-axis{position:relative;height:18px;border:1px solid var(--border-input);border-radius:4px;background:linear-gradient(90deg, rgba(130,150,170,0.08) 0%, rgba(130,150,170,0.02) 100%)}
+.trace-axis{position:relative;height:18px;border:1px solid var(--border-input);border-radius:8px;background:linear-gradient(90deg, rgba(130,150,170,0.08) 0%, rgba(130,150,170,0.02) 100%)}
 .trace-axis-grid{position:absolute;top:0;bottom:0;width:1px;background:var(--border-input);opacity:0.55}
 .trace-axis-labels{display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);padding:0 1px}
 .trace-bar-wrap{display:flex;flex-direction:column;gap:2px}
-.trace-bar-track{position:relative;height:16px;border:1px solid var(--border-input);border-radius:4px;background:rgba(127,127,127,0.06);overflow:hidden}
-.trace-bar{position:absolute;top:1px;bottom:1px;border-radius:3px;min-width:2px;background:linear-gradient(90deg, rgba(41,179,255,0.95), rgba(30,130,220,0.95))}
+.trace-bar-track{position:relative;height:16px;border:1px solid var(--border-input);border-radius:8px;background:rgba(127,127,127,0.06);overflow:hidden}
+.trace-bar{position:absolute;top:1px;bottom:1px;border-radius:8px;min-width:2px;background:linear-gradient(90deg, rgba(41,179,255,0.95), rgba(30,130,220,0.95))}
 .trace-row-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .trace-row-ms{font-size:10px;color:var(--text-muted)}
 .observe-panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
-.observe-body{flex:1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
-.observe-table-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.observe-body{flex:1;overflow:auto;padding:24px;display:flex;flex-direction:column;gap:20px}
+.observe-table-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .panel-table-scroll{flex:1;min-height:0;max-height:min(52vh,560px);overflow:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 .mono-sm{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px}
 
 /* Backups */
-.workflow-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:16px}
+.workflow-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:28px 32px;gap:16px}
 .workflow-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .workflow-title{font-size:24px;font-weight:600;color:var(--text-heading)}
 .workflow-subtitle{margin-top:4px;color:var(--text-muted);line-height:1.4}
 .workflow-tabs{display:flex;gap:4px;border-bottom:1px solid var(--border)}
 .workflow-tab{padding:8px 12px;border:none;border-bottom:2px solid transparent;background:none;color:var(--text-muted);cursor:pointer}
 .workflow-tab.active{border-bottom-color:var(--accent);color:var(--text-heading)}
-.workflow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.workflow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:12px}
 .workflow-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px}
 .workflow-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .workflow-name{font-size:15px;font-weight:600;color:var(--text-heading)}
@@ -249,7 +220,7 @@ tbody tr.selected{background:var(--bg-active)}
 .workflow-form .row-editor-field textarea{min-height:96px}
 .workflow-checks{display:flex;flex-wrap:wrap;gap:14px}
 .workflow-check{display:flex;align-items:center;gap:6px;color:var(--text)}
-.workflow-warning{padding:10px 12px;border:1px solid rgba(244,135,113,.35);border-radius:6px;background:rgba(244,135,113,.08);color:var(--error)}
+.workflow-warning{padding:10px 12px;border:1px solid rgba(244,135,113,.35);border-radius:10px;background:rgba(244,135,113,.08);color:var(--error)}
 .workflow-run-detail{white-space:normal;line-height:1.4;min-width:220px;max-width:420px}
 .workflow-run-label{font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);margin-bottom:3px}
 .workflow-run-action-state{font-weight:600;color:var(--text-heading)}
@@ -269,7 +240,7 @@ tbody tr.selected{background:var(--bg-active)}
 .status-pill.error{color:var(--error)}
 .status-pill.awaiting_approval{color:#e5b567}
 
-.backups-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:18px}
+.backups-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:28px 32px;gap:18px}
 .backups-hero{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .backups-title{font-size:24px;font-weight:600;color:var(--text-heading)}
 .backups-actions{display:flex;align-items:center;gap:8px}
@@ -292,7 +263,7 @@ tbody tr.selected{background:var(--bg-active)}
 .backup-option-row.backup-option-row-3{grid-template-columns:2fr 1fr 1fr}
 .backup-label{display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600}
 .backup-help{font-size:12px;color:var(--text-muted);line-height:1.35}
-.backup-input,.backup-select{width:100%;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:6px;color:var(--text);font-size:14px;outline:none}
+.backup-input,.backup-select{width:100%;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:10px;color:var(--text);font-size:14px;outline:none}
 .backup-input:focus,.backup-select:focus{border-color:var(--accent)}
 .backup-checkbox{display:flex;align-items:center;gap:8px;color:var(--text)}
 .backup-footer{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-height:36px}
@@ -301,15 +272,15 @@ tbody tr.selected{background:var(--bg-active)}
 .backup-empty{padding:22px 16px;color:var(--text-muted);text-align:center}
 .toggle{position:relative;width:40px;height:22px;border-radius:999px;border:none;background:var(--border-input);cursor:pointer;transition:background .15s ease}
 .toggle.on{background:#39b980}
-.toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:999px;background:#fff;transition:left .15s ease}
-.toggle.on .toggle-knob{left:21px}
+.toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:999px;background:#fff;transition:transform .15s ease}
+.toggle.on .toggle-knob{transform:translateX(18px)}
 .toggle:disabled{opacity:0.5;cursor:default}
-.mail-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:18px}
+.mail-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:28px 32px;gap:18px}
 .mail-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:18px}
 .mail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
 .mail-grid.mail-grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
 .mail-section{display:flex;flex-direction:column;gap:14px}
-.mail-textarea{width:100%;min-height:180px;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:6px;color:var(--text);font-size:13px;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;outline:none;resize:vertical}
+.mail-textarea{width:100%;min-height:180px;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:10px;color:var(--text);font-size:13px;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;outline:none;resize:vertical}
 .mail-textarea:focus{border-color:var(--accent)}
 .mail-template-card{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-elevated)}
 .mail-template-title{font-size:14px;font-weight:600;color:var(--text-heading)}
@@ -346,23 +317,185 @@ tbody tr.selected{background:var(--bg-active)}
 
 /* Toast */
 .toast-container{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;z-index:1000;pointer-events:none}
-.toast{padding:8px 14px;border-radius:4px;font-size:12px;color:#fff;pointer-events:auto}
+.toast{padding:8px 14px;border-radius:8px;font-size:12px;color:#fff;pointer-events:auto}
 .toast-success{background:#16825d}
 .toast-error{background:#c72e2e}
 
 /* Scrollbar */
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:4px}
+::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:8px}
 ::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-hover)}
 ::-webkit-scrollbar-corner{background:transparent}
+
+/* Layout scale: controls 8px, groups 12px, floating panels 16px.
+   Layers: table header 1, drawer scrim 20, navigation 21, dialogs 900, toasts 1000. */
+button,input,select,textarea{font:inherit}
+button{touch-action:manipulation}
+button:disabled{opacity:.5;cursor:not-allowed}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+button:active:not(:disabled){transform:scale(.98)}
+input::placeholder,textarea::placeholder{color:var(--text-faint);opacity:1}
+.btn{font-weight:550;min-height:36px;justify-content:center}
+.btn-primary,.btn-filter{background:#0969da;border-color:#0969da;color:#fff}
+.btn-primary:hover,.btn-filter:hover{background:#0759bc;color:#fff}
+.btn-icon{flex-shrink:0}
+.sidebar-header{min-height:80px;padding:20px;border:0;justify-content:space-between}
+.logo-sm{font-size:24px;letter-spacing:-1px;color:var(--text-heading);gap:10px}
+.logo-sm svg{width:24px;height:24px}
+.brand-caption{font-size:11px;letter-spacing:.02em;color:var(--text-muted);font-weight:500}
+.sidebar-section-label{font-size:10px;letter-spacing:.1em;padding:20px 12px 8px}
+.sidebar-tables{padding:0 12px 16px;overscroll-behavior:contain}
+.sidebar-item{gap:10px;min-height:40px;margin:2px 0;font-size:13px;border-radius:8px}
+.sidebar-item.active{font-weight:600;color:var(--accent)}
+.sidebar-item.active .sidebar-item-icon{color:var(--accent)}
+.sidebar-item-count{font-size:11px}
+.sidebar-footer{padding:12px 16px}
+.sidebar-action{min-height:40px}
+.sidebar-search{margin:0 16px 12px;padding:0 10px;min-height:38px;display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg-surface)}
+.sidebar-search input{width:100%;min-width:0;background:none;border:0;outline:none;color:var(--text);font-size:12px}
+.main{min-width:0;background:var(--bg-surface)}
+.panel,.analytics-panel,.observe-panel{min-height:0;min-width:0}
+.panel-toolbar,.analytics-toolbar{flex-wrap:wrap;min-height:90px;gap:16px}
+.panel-title,.analytics-title{font-size:20px;font-weight:650;letter-spacing:-.5px;flex-wrap:wrap;min-width:0;overflow-wrap:anywhere}
+.panel-title-icon{display:none}
+.panel-meta{font-size:12px;letter-spacing:0;font-weight:400}
+.panel-actions{flex-wrap:wrap}
+.search-box{min-height:38px;padding:0 8px 0 12px;gap:8px}
+.search-box input{width:220px;padding:8px 0;min-width:0}
+.btn-filter{width:28px;height:28px}
+.filter-guide{border-bottom:1px solid var(--border);background:var(--bg-elevated);padding:12px 24px;color:var(--text-muted);font-size:12px}
+.filter-guide code{color:var(--text-heading)}
+.data-caption{display:flex;justify-content:space-between;gap:12px;padding:10px 24px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:12px}
+.table-container{background:var(--bg-surface);overscroll-behavior:contain}
+th{font-size:12px;font-weight:600}
+.th-type{display:block;margin:2px 0 0;font-size:10px}
+td{height:49px;font-size:12px;max-width:320px}
+.td-actions{white-space:nowrap}
+.row-editor{box-shadow:-8px 0 24px #17202e08;min-height:0}
+.row-editor-header,.row-editor-actions{padding:16px 20px}
+.row-editor-title{font-size:17px;letter-spacing:-.3px}
+.row-editor-meta{margin-top:4px;overflow-wrap:anywhere}
+.row-editor-field label{font-size:12px;margin-bottom:6px}
+.row-editor-field input,.row-editor-field textarea,.row-editor-field select{font-size:13px;min-height:40px}
+.row-editor-readonly{padding:10px 12px;overflow-wrap:anywhere}
+.row-editor-actions .btn-primary{min-width:110px}
+.pagination{justify-content:space-between;padding:12px 24px}
+.page-controls{display:flex;align-items:center;gap:12px}
+.analytics-body,.observe-body{background:var(--bg)}
+.analytics-cards{gap:12px}
+.analytics-card{padding:18px;border-radius:12px}
+.analytics-card-label{text-transform:none;letter-spacing:0;font-size:12px}
+.analytics-card-value{font-size:28px;letter-spacing:-1px;font-weight:600}
+.analytics-chart-wrap{padding:20px;border-radius:12px}
+.analytics-chart-title{font-size:13px;font-weight:550}
+.analytics-chart{height:200px}
+.analytics-select{min-height:36px}
+.analytics-detail{border-radius:12px}
+.workflow-page,.backups-page,.mail-page{background:var(--bg);gap:24px}
+.workflow-title,.backups-title{font-size:28px;letter-spacing:-.8px}
+.workflow-card,.workflow-form,.mail-card{padding:22px;border-radius:12px}
+.workflow-tabs{overflow-x:auto;flex-shrink:0}
+.workflow-tab{white-space:nowrap;min-height:44px;font-weight:550}
+.workflow-badge,.status-pill{font-size:11px}
+.workflow-badge.on,.status-pill.completed,.backup-status-ok{color:light-dark(#16704d,#81d9ad)}
+.status-pill.awaiting_approval{color:light-dark(#855b08,#edc56e)}
+.materialized-badge{color:var(--accent);text-transform:none;letter-spacing:0}
+.materialized-banner{margin:16px 24px}
+.mail-template-card{background:var(--bg-elevated)}
+.backups-hero,.workflow-hero{flex-wrap:wrap}
+.toast{border-radius:12px;padding:14px 18px;font-size:13px;box-shadow:var(--shadow);max-width:min(440px,calc(100vw - 32px))}
+.overview{padding:40px;overflow:auto;flex:1;background:var(--bg)}
+.overview-heading{max-width:900px;margin:0 auto 28px}
+.overview h1{font-size:32px;letter-spacing:-1px;font-weight:650;color:var(--text-heading)}
+.overview p{color:var(--text-muted);margin-top:8px}
+.overview-summary{display:flex;gap:32px;margin-top:24px;padding-top:24px;border-top:1px solid var(--border)}
+.overview-summary strong{font-size:24px;color:var(--text-heading);font-variant-numeric:tabular-nums;font-weight:600}
+.overview-summary span{display:block;font-size:12px;color:var(--text-muted)}
+.table-directory{max-width:900px;margin:auto;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface);overflow:hidden}
+.directory-heading,.directory-row{display:grid;grid-template-columns:minmax(0,1fr) 100px 100px 20px;gap:16px;align-items:center;padding:16px 20px}
+.directory-heading{background:var(--bg-elevated);color:var(--text-muted);font-size:12px}
+.directory-row{width:100%;border:0;border-top:1px solid var(--row-border);background:none;text-align:left;color:var(--text);cursor:pointer}
+.directory-row:hover{background:var(--bg-hover)}
+.directory-name{display:flex;align-items:center;gap:12px;font-weight:550;min-width:0;overflow-wrap:anywhere;color:var(--text-heading)}
+.directory-name svg{color:var(--accent);flex-shrink:0}
+.directory-number{font-variant-numeric:tabular-nums;color:var(--text-muted);font-size:13px}
+.state-message{padding:32px;text-align:center;color:var(--text-muted)}
+.state-message .btn{margin-top:12px}
+.mobile-bar,.mobile-close,.nav-scrim{display:none}
+@media (hover:hover) and (prefers-reduced-motion:no-preference){
+  .btn,.btn-icon,.sidebar-item,.directory-row{transition:background-color 120ms ease-out,transform 120ms ease-out}
+}
+@media(max-width:1100px){
+  .panel-actions{width:100%}.search-box{flex:1}.search-box input{width:100%}
+  .analytics-actions{width:100%}.analytics-layout{flex-direction:column}.analytics-detail{width:100%;max-width:none}
+}
+@media(max-width:760px){
+  #app{flex-direction:column}
+  .mobile-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:60px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--bg);flex-shrink:0}
+  .mobile-bar strong{font-size:18px;letter-spacing:-.5px}
+  .mobile-bar .btn{min-height:40px}
+  .sidebar{display:none;position:fixed;inset:0 auto 0 0;width:min(320px,88vw);z-index:21;box-shadow:var(--shadow)}
+  .sidebar.is-open{display:flex}
+  .mobile-close{display:inline-flex}
+  .nav-scrim{display:block;position:fixed;inset:0;background:#10182866;border:0;z-index:20}
+  .main{min-height:0}
+  .panel-toolbar,.analytics-toolbar{padding:20px 16px;gap:16px}
+  .panel-title,.analytics-title{font-size:22px}
+  .panel-actions{gap:8px}.search-box{min-width:0}.search-box input{font-size:16px;width:100%}
+  .btn,.btn-icon{min-height:44px}.btn-icon{min-width:44px}.btn-filter{width:36px;height:36px}
+  .sidebar-item{min-height:44px}
+  .table-layout{position:relative;flex-direction:column}
+  .row-editor{position:absolute;inset:0;width:100%;max-width:none;max-height:none;border:0;z-index:2}
+  .row-editor-field input,.row-editor-field textarea,.row-editor-field select,.backup-input,.backup-select,.mail-textarea,.analytics-select{font-size:16px}
+  .row-editor-header,.row-editor-actions{padding:12px 16px}.row-editor-body{padding:20px 16px}
+  .row-editor-actions{padding-bottom:max(12px,env(safe-area-inset-bottom))}
+  .data-caption,.filter-guide{padding:10px 16px}.data-caption{flex-wrap:wrap}
+  .pagination{padding:8px 16px;gap:8px}.page-controls{gap:4px}.page-info{font-size:11px}
+  .workflow-page,.backups-page,.mail-page,.analytics-body,.observe-body{padding:20px 16px;gap:18px}
+  .workflow-title,.backups-title{font-size:26px}
+  .workflow-form-grid,.backup-option-row,.mail-grid{grid-template-columns:1fr}
+  .workflow-card,.workflow-form,.mail-card{padding:16px}
+  .workflow-card-header,.backup-row{flex-wrap:wrap}
+  .backup-row-actions{width:100%;justify-content:flex-end}
+  .analytics-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .analytics-card{padding:14px}.analytics-card-value{font-size:24px}
+  .analytics-legend{flex-wrap:wrap}.analytics-chart-wrap{padding:14px}
+  .materialized-banner{margin:12px 16px;flex-wrap:wrap}
+  .workflow-source-backdrop{padding:12px}.workflow-source-dialog{max-height:calc(100dvh - 24px)}
+  .overview{padding:28px 16px}.overview h1{font-size:28px}.overview-summary{gap:24px}
+  .directory-heading,.directory-row{grid-template-columns:minmax(0,1fr) 60px 16px;gap:10px;padding:14px 16px}
+  .directory-fields{display:none}
+  .toast-container{bottom:max(16px,env(safe-area-inset-bottom));right:16px;left:16px}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}button:active:not(:disabled){transform:none}}
+
+
+.archive-nav{margin:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:6px 0}
+.archive-nav summary{cursor:pointer;color:var(--text-muted);font-size:12px;padding:8px 12px;min-height:36px}
+.archive-nav summary span{float:right;font-variant-numeric:tabular-nums}
+.archive-nav summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:8px}
+@media(max-width:760px){
+  .panel:has(.row-editor)>.panel-toolbar,.panel:has(.row-editor)>.data-caption,.panel:has(.row-editor)>.pagination,.panel:has(.row-editor)>.filter-guide,.panel:has(.row-editor)>.materialized-banner{display:none}
+  .panel-actions{display:grid;grid-template-columns:minmax(0,1fr) 44px;width:100%}
+  .panel-actions .btn-primary{grid-column:1/-1;justify-self:start}
+  .records-table,.records-table tbody{display:block;width:100%}
+  .records-table thead{display:none}
+  .records-table tbody tr{display:flex;flex-direction:column;padding:16px;border-bottom:1px solid var(--border);gap:8px}
+  .records-table td{display:none;max-width:none;height:auto;border:0;padding:0;white-space:normal;overflow-wrap:anywhere;font-family:inherit;font-size:13px}
+  .records-table td.mobile-preview{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--text-muted)}
+  .records-table td.mobile-preview::before{content:attr(data-label);font-size:11px;color:var(--text-faint);display:block;margin-bottom:2px}
+  .records-table td.mobile-primary{font-size:16px;font-weight:600;color:var(--text-heading);letter-spacing:-.2px}
+  .records-table td.td-actions{display:flex;order:4;justify-content:flex-end}
+  .records-table td.empty-row{display:block;padding:24px 0}
+}
 </style>
 </head>
 <body>
 <div id="app"></div>
 <script type="module">
 import { h, render, Component } from 'https://esm.sh/preact@10.25.4';
-import { useState, useEffect, useRef, useCallback, useMemo } from 'https://esm.sh/preact@10.25.4/hooks';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'https://esm.sh/preact@10.25.4/hooks';
 import htm from 'https://esm.sh/htm@3.1.1';
 
 const html = htm.bind(h);
@@ -559,14 +692,14 @@ function Toasts() {
     return () => clearTimeout(t);
   }, [items]);
   if (items.length === 0) return null;
-  return html`<div class="toast-container">
+  return html`<div class="toast-container" role="status" aria-live="polite">
     ${items.map(t => html`<div key=${t.id} class=${"toast toast-" + t.type}>${t.message}</div>`)}
   </div>`;
 }
 
 // ── Components ──
 
-function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, workflowEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectWorkflow, onSelectMail, onSelectBackups, onLogout }) {
+function Sidebar({ open, onClose, onHome, tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, workflowEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectWorkflow, onSelectMail, onSelectBackups, onLogout }) {
   const [tableSearch, setTableSearch] = useState('');
   
   const filteredTables = useMemo(() => {
@@ -576,16 +709,19 @@ function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode
   }, [tables, tableSearch]);
 
   return html`
-    <div class="sidebar">
+    <nav id="navigation" aria-label="Main navigation" class=${"sidebar" + (open ? " is-open" : "")}>
       <div class="sidebar-header">
-        <div class="logo-sm">${icons.db}<span>flop</span></div>
+        <div class="logo-sm">${icons.db}<span>flop</span><span class="brand-caption">Console</span></div>
+        <button class="btn-icon mobile-close" aria-label="Close navigation" onClick=${onClose}>×</button>
       </div>
-      <div style="padding:8px;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;margin:8px;">
+      <div class="sidebar-search">
         ${icons.search}
-        <input type="text" placeholder="Filter tables..." value=${tableSearch} onInput=${e => setTableSearch(e.target.value)} style="background:none;border:none;color:var(--text);font-size:12px;padding:4px 0;outline:none;width:100%;" />
+        <input type="search" aria-label="Filter tables" placeholder="Find a table…" value=${tableSearch} onInput=${e => setTableSearch(e.target.value)} />
       </div>
-      <div class="sidebar-section-label">TABLES ${tableSearch && html`<span style="color:var(--text-dimmed);font-weight:400">(${filteredTables.length}/${tables.length})</span>`}</div>
       <div class="sidebar-tables">
+        <button class=${"sidebar-item" + (!currentTable && viewMode === "table" ? " active" : "")} onClick=${onHome}>${icons.db}<span class="sidebar-item-label">Overview</span></button>
+      <div class="sidebar-section-label">TABLES ${tableSearch && html`<span style="color:var(--text-dimmed);font-weight:400">(${filteredTables.length}/${tables.length})</span>`}</div>
+
         ${filteredTables.map(t => html`
           <button
             key=${t.name}
@@ -600,7 +736,7 @@ function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode
         `)}
         ${filteredTables.length === 0 && html`<div style="padding:8px 16px;color:var(--text-dimmed);font-size:12px;">No tables match "${tableSearch}"</div>`}
         ${archiveTables && archiveTables.length > 0 && html`
-          <div class="sidebar-section-label" style="padding:10px 8px 4px">ARCHIVE</div>
+          <details class="archive-nav" open=${currentArchive}><summary>Archive <span>${archiveTables.reduce((n,t) => n + (Number(t.rowCount) || 0), 0)}</span></summary>
           ${archiveTables.map(t => html`
             <button
               key=${"archive-" + t.name}
@@ -612,6 +748,7 @@ function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode
               <span class="sidebar-item-count">${t.rowCount}</span>
             </button>
           `)}
+          </details>
         `}
         ${mediaEnabled && html`
           <div class="sidebar-section-label" style="padding:10px 8px 4px">ASSETS</div>
@@ -677,18 +814,31 @@ function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode
       <div class="sidebar-footer">
         <button class="sidebar-action danger" onClick=${onLogout}>${icons.signout} Sign Out</button>
       </div>
-    </div>
+    </nav>
   `;
 }
 
-function EmptyState() {
-  return html`
-    <div class="empty-state">
-      <div class="empty-icon">${icons.table}</div>
-      <div class="empty-title">Select a table</div>
-      <div class="empty-desc">Choose a table from the sidebar to browse its data</div>
+function Overview({ tables, loading, error, onRetry, onSelect }) {
+  return html`<section class="overview" aria-label="Database overview">
+    <div class="overview-heading">
+      <h1>Your database, at a glance.</h1>
+      <p>Browse your tables, inspect records, and manage your database.</p>
+      <div class="overview-summary">
+        <div><strong>${loading ? '…' : tables.length}</strong><span>Tables</span></div>
+        <div><strong>${loading ? '…' : tables.reduce((sum, t) => sum + (Number(t.rowCount) || 0), 0).toLocaleString()}</strong><span>Total rows</span></div>
+      </div>
     </div>
-  `;
+    <div class="table-directory">
+      <div class="directory-heading"><span>Table</span><span>Rows</span><span class="directory-fields">Fields</span><span></span></div>
+      ${loading ? html`<div class="state-message" role="status">Loading your tables…</div>`
+        : error ? html`<div class="state-message" role="alert">${error}<br/><button class="btn" onClick=${onRetry}>Try again</button></div>`
+        : tables.length === 0 ? html`<div class="state-message">No tables yet. Define a table in your application to see it here.</div>`
+        : tables.map(t => html`<button class="directory-row" onClick=${() => onSelect(t.name)}>
+          <span class="directory-name">${icons.table}${t.name}</span><span class="directory-number">${Number(t.rowCount || 0).toLocaleString()}</span>
+          <span class="directory-number directory-fields">${Object.keys(t.schema || {}).length}</span>${icons.chevRight}
+        </button>`)}
+    </div>
+  </section>`;
 }
 
 function valueToEditorInput(field, value) {
@@ -722,8 +872,26 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
   const [refOptions, setRefOptions] = useState({});
   const [saving, setSaving] = useState(false);
   const [uploadingCol, setUploadingCol] = useState('');
-
+  const editorRef = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
+    const previous = document.activeElement;
+    const editor = editorRef.current;
+    editor.querySelector('button').focus();
+    const onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); closeRef.current(); }
+      if (e.key !== 'Tab' || !window.matchMedia('(max-width:760px)').matches) return;
+      const items = [...editor.querySelectorAll('button,input,select,textarea,a')].filter(el => !el.disabled && el.getClientRects().length);
+      if (e.shiftKey && document.activeElement === items[0]) { e.preventDefault(); items[items.length - 1].focus(); }
+      if (!e.shiftKey && document.activeElement === items[items.length - 1]) { e.preventDefault(); items[0].focus(); }
+    };
+    editor.addEventListener('keydown', onKey);
+    return () => { editor.removeEventListener('keydown', onKey); if (previous?.isConnected) previous.focus(); };
+  }, [pk, isCreate]);
+
+  // Initialize only when the record changes; live refreshes must not erase a draft.
+  useLayoutEffect(() => {
     if (!schema) return;
     const next = {};
     for (const col of cols) {
@@ -731,7 +899,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
     }
     setForm(next);
     setPendingFiles({});
-  }, [row, schema, cols, isCreate]);
+  }, [tableName, pk, isCreate, !!schema]);
 
   useEffect(() => {
     if (!schema) return;
@@ -869,13 +1037,13 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
   }, [tableName, pk, onReload, isCreate, setCol, readOnly, schema]);
 
   return html`
-    <aside class="row-editor">
+    <aside class="row-editor" ref=${editorRef} aria-label=${isCreate ? "Create record" : "Record details"}>
       <div class="row-editor-header">
         <div>
-          <div class="row-editor-title">${isCreate ? 'New Row' : 'Edit Row'}</div>
+          <div class="row-editor-title">${isCreate ? 'New Row' : readOnly ? 'View Row' : 'Edit Row'}</div>
           <div class="row-editor-meta">${isCreate ? ('table: ' + tableName) : (pkField + ': ' + String(pk))}</div>
         </div>
-        <button class="btn-icon" onClick=${onClose}>&times;</button>
+        <button class="btn-icon" aria-label="Close record" onClick=${onClose}>×</button>
       </div>
       <div class="row-editor-body">
         ${cols.map(col => {
@@ -921,7 +1089,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
                 ${!readOnly && html`
                 <label class="btn btn-sm btn-primary file-upload-btn">
                   ${uploadingCol === col ? 'Uploading...' : html`${icons.upload} Upload`}
-                  <input type="file" accept=${accept} multiple=${field.type === 'fileMulti'} onChange=${e => onUploadFile(col, e)} hidden />
+                  <input aria-label=${col} type="file" accept=${accept} multiple=${field.type === 'fileMulti'} onChange=${e => onUploadFile(col, e)} hidden />
                 </label>
                 ${field.type === 'fileSingle' && html`<button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col)}>${icons.trash} Remove</button>`}
                 `}
@@ -942,14 +1110,14 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
           if (field && field.type === 'bcrypt') {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <input type="password" value=${inputVal} onInput=${e => setCol(col, e.target.value)} />
+              <input aria-label=${col} type="password" value=${inputVal} onInput=${e => setCol(col, e.target.value)} />
             </div>`;
           }
 
           if (field && field.type === 'boolean') {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <select value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
+              <select aria-label=${col} value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
                 <option value="">null</option>
                 <option value="true">true</option>
                 <option value="false">false</option>
@@ -960,7 +1128,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
           if (field && field.type === 'enum' && field.enumValues) {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <select value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
+              <select aria-label=${col} value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
                 <option value="">--</option>
                 ${field.enumValues.map(v => html`<option key=${v} value=${v}>${v}</option>`)}
               </select>
@@ -971,24 +1139,24 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
             const options = refOptions[col] || [];
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <select value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
+              <select aria-label=${col} value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
                 <option value="">--</option>
                 ${options.map(o => html`<option key=${o.id} value=${o.id}>${o.id}${o.label !== o.id ? ' - ' + o.label : ''}</option>`)}
               </select>
             </div>`;
           }
 
-          if (field && ['json', 'vector', 'roles', 'set', 'refMulti'].includes(field.type)) {
+          if (field && (['json', 'vector', 'roles', 'set', 'refMulti'].includes(field.type) || (field.type === 'string' && (/^(body|description|content)$/i.test(col) || String(row?.[col] || '').length > 120)))) {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <textarea value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)}></textarea>
+              <textarea aria-label=${col} value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)}></textarea>
             </div>`;
           }
 
           const inputType = field && (field.type === 'number' || field.type === 'integer' || field.type === 'timestamp') ? 'number' : 'text';
           return html`<div key=${col} class="row-editor-field">
             <label>${col} <span class="type-badge">${typeLabel}</span></label>
-            <input type=${inputType} value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)} />
+            <input aria-label=${col} type=${inputType} value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)} />
           </div>`;
         })}
       </div>
@@ -1012,6 +1180,10 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshingMaterialized, setRefreshingMaterialized] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [filterHelp, setFilterHelp] = useState(false);
+  const requestId = useRef(0);
 
   const isMaterialized = !!tableMeta?.materialized;
   const isReadOnlyTable = !!tableMeta?.readOnly || archive;
@@ -1019,7 +1191,20 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
 
   const cols = useMemo(() => schema ? Object.keys(schema) : (rows.length > 0 ? Object.keys(rows[0]) : []), [schema, rows]);
 
+  const previewCols = useMemo(() => {
+    const preferred = ['title', 'name', 'email', 'slug', 'body', 'description', 'status'];
+    const available = cols.filter(c => c !== cols[0] && !['bcrypt', 'ref', 'refMulti', 'fileSingle', 'fileMulti'].includes(schema?.[c]?.type));
+    const ordered = [...available].sort((a,b) => {
+      const rank = c => preferred.includes(c.toLowerCase()) ? preferred.indexOf(c.toLowerCase()) : preferred.length;
+      return rank(a) - rank(b);
+    });
+    return ordered.length ? ordered.slice(0, 3) : cols.slice(0, 1);
+  }, [cols, schema]);
+
   const loadRows = useCallback(async (p, q) => {
+    const request = ++requestId.current;
+    setLoading(true);
+    setLoadError('');
     const pg = p || page;
     const sq = q !== undefined ? q : searchQuery;
     const params = new URLSearchParams({ limit: 50 });
@@ -1031,14 +1216,14 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
     }
     try {
       const data = await api(rowsBasePath + '?' + params);
-      if (data) {
+      if (data && request === requestId.current) {
         setRows(data.rows || []);
-        setTotalPages(data.pages);
+        setTotalPages(data.pages || Math.max(1, Math.ceil((data.total || 0) / 50)));
         setTotal(data.total);
       }
     } catch (err) {
-      if (err && err.message) showToast(err.message, 'error');
-    }
+      if (request === requestId.current) setLoadError(err.message || 'Unable to load rows');
+    } finally { if (request === requestId.current) setLoading(false); }
   }, [tableName, page, searchQuery, archive, rowsBasePath]);
 
   useEffect(() => {
@@ -1190,21 +1375,23 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
           ${tableName}
           ${isMaterialized && html`<span class="materialized-badge">materialized</span>`}
           <span class="panel-meta">${total} rows</span>
-          ${tableMeta?.lastRefreshUnixMilli ? html`<span class="panel-meta">refreshed ${fmtAgo(tableMeta.lastRefreshUnixMilli)} (${fmtTime(tableMeta.lastRefreshUnixMilli)})</span>` : ""}
+          ${isMaterialized && Number(tableMeta?.lastRefreshUnixMilli) > 0 ? html`<span class="panel-meta">refreshed ${fmtAgo(tableMeta.lastRefreshUnixMilli)} (${fmtTime(tableMeta.lastRefreshUnixMilli)})</span>` : ""}
         </div>
         <div class="panel-actions">
-          <div class="search-box">
+          ${!archive && html`<div class="search-box">
             ${icons.search}
-            <input type="text" placeholder=${archive ? 'Archive search not available' : 'name="..." count>=5'} value=${search} disabled=${archive} onInput=${onSearchInput} onKeyDown=${onSearchKey} />
-            <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search all string fields">?</span>
-            <button class="btn-filter" disabled=${archive} onClick=${applyFilter}>${icons.chevRight}</button>
-          </div>
-          <button class="btn btn-primary" disabled=${isReadOnlyTable} onClick=${() => { setSelectedPk(null); setCreateErr(''); setShowCreate(true); }}>
+            <input type="text" aria-label="Search or filter rows" placeholder="Search or filter rows…" value=${search} disabled=${archive} onInput=${onSearchInput} onKeyDown=${onSearchKey} />
+            <button class="btn-filter" aria-label="Apply filter" onClick=${applyFilter}>${icons.chevRight}</button>
+          </div>`}
+          ${!archive && html`<button class="btn-icon" aria-label="Filter help" aria-expanded=${filterHelp} onClick=${() => setFilterHelp(v => !v)}>?</button>`}
+          ${!isReadOnlyTable && html`<button class="btn btn-primary" disabled=${!schema} onClick=${() => { setSelectedPk(null); setCreateErr(''); setShowCreate(true); }}>
             ${icons.plus} New Row
-          </button>
+          </button>`}
         </div>
       </div>
 
+      ${filterHelp && html`<div class="filter-guide">Search all text fields, or use a filter: <code>name="Alice"</code>, <code>count>=5</code>, <code>name~"ali"</code>. Combine with <code>&&</code> (and) or <code>||</code> (or).</div>`}
+      <div class="data-caption"><span>${archive ? 'Archived records' : isReadOnlyTable ? 'Read-only records' : 'Select a row to inspect or edit it.'}</span><span>${cols.length} fields</span></div>
       ${isMaterialized && html`<div class=${"materialized-banner" + (tableMeta?.refreshError ? ' error' : '')}>
         <div>
           <strong>Materialized table</strong>
@@ -1214,9 +1401,9 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
         <button class="btn" disabled=${refreshingMaterialized} onClick=${refreshMaterialized}>${icons.refresh} ${refreshingMaterialized ? 'Refreshing...' : 'Refresh now'}</button>
       </div>`}
 
-      <div class="table-layout">
+      <div class="table-layout" aria-busy=${loading}>
         <div class="table-container">
-          <table>
+          <table class="records-table">
             <thead>
               <tr>
                 ${cols.map(c => {
@@ -1231,14 +1418,17 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
               </tr>
             </thead>
             <tbody>
-              ${rows.length === 0 && html`
-                <tr><td colspan=${cols.length + 1} class="empty-row">No rows found</td></tr>
+              ${(loading || loadError || rows.length === 0) && html`
+                <tr><td colspan=${cols.length + 1} class="empty-row" role=${loadError ? 'alert' : 'status'}>
+                  ${loading ? 'Loading records…' : loadError || (searchQuery ? 'No records match this filter.' : 'This table has no records yet.')}
+                  ${loadError && html`<br/><button class="btn" onClick=${() => loadRows()}>Try again</button>`}
+                </td></tr>
               `}
-              ${rows.map(row => {
+              ${!loadError && rows.map(row => {
                 const pk = row[cols[0]];
                 const isSelected = selectedPk != null && String(selectedPk) === String(pk);
                 return html`
-                  <tr key=${pk} class=${isSelected ? 'selected' : ''} onClick=${() => { setShowCreate(false); setCreateErr(''); setSelectedPk(String(pk)); }}>
+                  <tr key=${pk} class=${isSelected ? 'selected' : ''} tabindex="0" aria-label=${'Inspect row ' + pk} onKeyDown=${e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setShowCreate(false); setSelectedPk(String(pk)); } }} onClick=${() => { setShowCreate(false); setCreateErr(''); setSelectedPk(String(pk)); }}>
                     ${cols.map(c => {
                       const val = row[c];
                       const ro = isReadOnly(schema, c) || isAutoField(schema, c) || val === '[REDACTED]';
@@ -1260,7 +1450,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
                       const rendered = display == null
                         ? html`<span class="null">null</span>`
                         : (typeof display === 'object' ? display : truncate(String(display)));
-                      return html`<td key=${c} class=${ro ? "td-readonly" : ""}>${rendered}</td>`;
+                      return html`<td key=${c} data-label=${c} style=${previewCols.includes(c) ? {order: previewCols.indexOf(c)} : {}} class=${(ro ? "td-readonly " : "") + (previewCols.includes(c) ? "mobile-preview " : "") + (previewCols[0] === c ? "mobile-primary" : "")}>${rendered}</td>`;
                     })}
                     <td class="td-actions">
                       ${archive
@@ -1295,20 +1485,21 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
           schema=${schema}
           cols=${cols}
           row=${selectedRow}
-          readOnly=${archive}
+          readOnly=${isReadOnlyTable}
           onClose=${() => setSelectedPk(null)}
           onSave=${saveRow}
           onReload=${loadRows}
         />`}
       </div>
 
-      ${totalPages > 1 && html`
-        <div class="pagination">
-          <button class="btn-icon" disabled=${page <= 1} onClick=${() => setPage(p => p - 1)}>${icons.chevLeft}</button>
+      <div class="pagination">
+          <span class="page-info">${total.toLocaleString()} records</span>
+          <div class="page-controls">
+          <button class="btn-icon" aria-label="Previous page" disabled=${loading || page <= 1} onClick=${() => setPage(p => p - 1)}>${icons.chevLeft}</button>
           <span class="page-info">Page ${page} of ${totalPages}</span>
-          <button class="btn-icon" disabled=${page >= totalPages} onClick=${() => setPage(p => p + 1)}>${icons.chevRight}</button>
+          <button class="btn-icon" aria-label="Next page" disabled=${loading || page >= totalPages} onClick=${() => setPage(p => p + 1)}>${icons.chevRight}</button>
+          </div>
         </div>
-      `}
     </div>
   `;
 }
@@ -1872,7 +2063,7 @@ function AnalyticsPanel({ page = 'volume' }) {
                   <div class="analytics-detail-title">${typeLabelSingle} Detail</div>
                   <div class="panel-meta">${selectedLog.routeType}/${selectedLog.routeName}</div>
                 </div>
-                <button class="btn-icon" onClick=${() => setSelectedLog(null)}>&times;</button>
+                <button class="btn-icon" aria-label="Close request details" onClick=${() => setSelectedLog(null)}>×</button>
               </div>
               <div class="analytics-detail-body">
                 <div class="detail-row"><div class="detail-key">time</div><div class="detail-val">${fmtTime(selectedLog.ts)}</div></div>
@@ -2188,9 +2379,9 @@ function MediaPanel() {
   `;
 }
 
-function Toggle({ checked, onChange, disabled = false }) {
+function Toggle({ checked, onChange, disabled = false, label }) {
   return html`
-    <button type="button" class=${"toggle" + (checked ? " on" : "")} disabled=${disabled} onClick=${() => !disabled && onChange(!checked)}>
+    <button type="button" role="switch" aria-checked=${checked} aria-label=${label} class=${"toggle" + (checked ? " on" : "")} disabled=${disabled} onClick=${() => !disabled && onChange(!checked)}>
       <span class="toggle-knob"></span>
     </button>
   `;
@@ -2424,7 +2615,7 @@ function BackupsPage() {
   return html`
     <div class="backups-page">
       <div class="backups-hero">
-        <div class="backups-title">Backup and restore your Flop data</div>
+        <div><h1 class="backups-title">Backups</h1><p class="workflow-subtitle">Protect your database and restore a previous version.</p></div>
         <div class="backups-actions">
           <button class="btn" onClick=${loadPage} disabled=${loading || creating || saving}>${icons.refresh} Refresh</button>
           <label class="btn file-upload-btn ${busy || loading || uploading ? 'disabled' : ''}">
@@ -2470,7 +2661,7 @@ function BackupsPage() {
         <div class="backups-options">
           <div class="backup-option-block">
             <div class="backup-checkbox">
-              <${Toggle} checked=${autoEnabled} onChange=${setCronEnabled} disabled=${saving || busy} />
+              <${Toggle} label="Enable auto backups" checked=${autoEnabled} onChange=${setCronEnabled} disabled=${saving || busy} />
               <span>Enable auto backups</span>
             </div>
             ${autoEnabled ? html`
@@ -2497,7 +2688,7 @@ function BackupsPage() {
                 </div>
                 <div>
                   <label class="backup-label">Max @auto backups to keep</label>
-                  <input class="backup-input" type="number" min="1" value=${settings.cronMaxKeep} onInput=${e => setSettings(prev => ({ ...prev, cronMaxKeep: Number(e.target.value || 0) }))} />
+                  <input aria-label="Max @auto backups to keep" class="backup-input" type="number" min="1" value=${settings.cronMaxKeep} onInput=${e => setSettings(prev => ({ ...prev, cronMaxKeep: Number(e.target.value || 0) }))} />
                 </div>
               </div>
             ` : null}
@@ -2505,32 +2696,32 @@ function BackupsPage() {
 
           <div class="backup-option-block">
             <div class="backup-checkbox">
-              <${Toggle} checked=${!!settings.s3.enabled} onChange=${setS3Enabled} disabled=${saving || busy} />
+              <${Toggle} label="Store backups in S3 storage" checked=${!!settings.s3.enabled} onChange=${setS3Enabled} disabled=${saving || busy} />
               <span>Store backups in S3 storage</span>
             </div>
             ${settings.s3.enabled ? html`
               <div class="backup-option-row backup-option-row-3">
                 <div>
                   <label class="backup-label">Endpoint</label>
-                  <input class="backup-input" type="text" value=${settings.s3.endpoint} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, endpoint: e.target.value } }))} />
+                  <input aria-label="Endpoint" class="backup-input" type="text" value=${settings.s3.endpoint} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, endpoint: e.target.value } }))} />
                 </div>
                 <div>
                   <label class="backup-label">Bucket</label>
-                  <input class="backup-input" type="text" value=${settings.s3.bucket} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, bucket: e.target.value } }))} />
+                  <input aria-label="Bucket" class="backup-input" type="text" value=${settings.s3.bucket} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, bucket: e.target.value } }))} />
                 </div>
                 <div>
                   <label class="backup-label">Region</label>
-                  <input class="backup-input" type="text" value=${settings.s3.region} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, region: e.target.value } }))} />
+                  <input aria-label="Region" class="backup-input" type="text" value=${settings.s3.region} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, region: e.target.value } }))} />
                 </div>
               </div>
               <div class="backup-option-row">
                 <div>
                   <label class="backup-label">Access key</label>
-                  <input class="backup-input" type="text" value=${settings.s3.accessKey} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, accessKey: e.target.value } }))} />
+                  <input aria-label="Access key" class="backup-input" type="text" value=${settings.s3.accessKey} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, accessKey: e.target.value } }))} />
                 </div>
                 <div>
                   <label class="backup-label">Secret</label>
-                  <input class="backup-input" type="password" value=${settings.s3.secret} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, secret: e.target.value } }))} />
+                  <input aria-label="Secret" class="backup-input" type="password" value=${settings.s3.secret} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, secret: e.target.value } }))} />
                 </div>
               </div>
               <label class="backup-checkbox">
@@ -2710,7 +2901,7 @@ function MailSettingsPage() {
   return html`
     <div class="mail-page">
       <div class="backups-hero">
-        <div class="backups-title">Configure common settings for sending emails.</div>
+        <div><h1 class="backups-title">Mail</h1><p class="workflow-subtitle">Manage delivery settings and email templates.</p></div>
         <div class="backups-actions">
           <button class="btn" onClick=${loadPage} disabled=${loading || saving || testing}>${icons.refresh} Refresh</button>
         </div>
@@ -2721,27 +2912,27 @@ function MailSettingsPage() {
           <div class="mail-grid">
             <div>
               <label class="backup-label">App name</label>
-              <input class="backup-input" type="text" value=${settings.appName} onInput=${e => setSettings(prev => ({ ...prev, appName: e.target.value }))} />
+              <input aria-label="App name" class="backup-input" type="text" value=${settings.appName} onInput=${e => setSettings(prev => ({ ...prev, appName: e.target.value }))} />
             </div>
             <div>
               <label class="backup-label">App URL</label>
-              <input class="backup-input" type="url" placeholder="https://example.com" value=${settings.appURL} onInput=${e => setSettings(prev => ({ ...prev, appURL: e.target.value }))} />
+              <input aria-label="App URL" class="backup-input" type="url" placeholder="https://example.com" value=${settings.appURL} onInput=${e => setSettings(prev => ({ ...prev, appURL: e.target.value }))} />
             </div>
           </div>
 
           <div class="mail-grid">
             <div>
               <label class="backup-label">Sender name</label>
-              <input class="backup-input" type="text" value=${settings.senderName} onInput=${e => setSettings(prev => ({ ...prev, senderName: e.target.value }))} />
+              <input aria-label="Sender name" class="backup-input" type="text" value=${settings.senderName} onInput=${e => setSettings(prev => ({ ...prev, senderName: e.target.value }))} />
             </div>
             <div>
               <label class="backup-label">Sender address</label>
-              <input class="backup-input" type="email" value=${settings.senderAddress} onInput=${e => setSettings(prev => ({ ...prev, senderAddress: e.target.value }))} />
+              <input aria-label="Sender address" class="backup-input" type="email" value=${settings.senderAddress} onInput=${e => setSettings(prev => ({ ...prev, senderAddress: e.target.value }))} />
             </div>
           </div>
 
           <div class="backup-checkbox">
-            <${Toggle} checked=${!!settings.useSMTP} onChange=${value => setSettings(prev => ({ ...prev, useSMTP: value }))} disabled=${loading || saving || testing} />
+            <${Toggle} label="Use SMTP mail server (recommended)" checked=${!!settings.useSMTP} onChange=${value => setSettings(prev => ({ ...prev, useSMTP: value }))} disabled=${loading || saving || testing} />
             <span>Use SMTP mail server (recommended)</span>
           </div>
 
@@ -2749,19 +2940,19 @@ function MailSettingsPage() {
             <div class="mail-grid mail-grid-4">
               <div>
                 <label class="backup-label">SMTP server host</label>
-                <input class="backup-input" type="text" value=${settings.smtp.host} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, host: e.target.value } }))} />
+                <input aria-label="SMTP server host" class="backup-input" type="text" value=${settings.smtp.host} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, host: e.target.value } }))} />
               </div>
               <div>
                 <label class="backup-label">Port</label>
-                <input class="backup-input" type="number" min="1" value=${settings.smtp.port} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, port: Number(e.target.value || 0) } }))} />
+                <input aria-label="Port" class="backup-input" type="number" min="1" value=${settings.smtp.port} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, port: Number(e.target.value || 0) } }))} />
               </div>
               <div>
                 <label class="backup-label">Username</label>
-                <input class="backup-input" type="text" value=${settings.smtp.username} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, username: e.target.value } }))} />
+                <input aria-label="Username" class="backup-input" type="text" value=${settings.smtp.username} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, username: e.target.value } }))} />
               </div>
               <div>
                 <label class="backup-label">Password</label>
-                <input class="backup-input" type="password" value=${settings.smtp.password} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, password: e.target.value } }))} />
+                <input aria-label="Password" class="backup-input" type="password" value=${settings.smtp.password} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, password: e.target.value } }))} />
               </div>
             </div>
 
@@ -2776,7 +2967,7 @@ function MailSettingsPage() {
               <div class="mail-grid">
                 <div>
                   <label class="backup-label">TLS encryption</label>
-                  <select class="backup-select" value=${settings.smtp.tls} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, tls: e.target.value } }))}>
+                  <select aria-label="TLS encryption" class="backup-select" value=${settings.smtp.tls} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, tls: e.target.value } }))}>
                     <option value="auto">Auto (StartTLS)</option>
                     <option value="starttls">StartTLS required</option>
                     <option value="ssl">SSL / TLS</option>
@@ -2785,7 +2976,7 @@ function MailSettingsPage() {
                 </div>
                 <div>
                   <label class="backup-label">AUTH method</label>
-                  <select class="backup-select" value=${settings.smtp.authMethod} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, authMethod: e.target.value } }))}>
+                  <select aria-label="AUTH method" class="backup-select" value=${settings.smtp.authMethod} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, authMethod: e.target.value } }))}>
                     <option value="plain">PLAIN (default)</option>
                     <option value="login">LOGIN</option>
                     <option value="cram-md5">CRAM-MD5</option>
@@ -2794,7 +2985,7 @@ function MailSettingsPage() {
                 </div>
                 <div>
                   <label class="backup-label">EHLO/HELO domain</label>
-                  <input class="backup-input" type="text" placeholder="Default to localhost" value=${settings.smtp.localName} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, localName: e.target.value } }))} />
+                  <input aria-label="EHLO/HELO domain" class="backup-input" type="text" placeholder="Default to localhost" value=${settings.smtp.localName} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, localName: e.target.value } }))} />
                 </div>
               </div>
             ` : null}
@@ -2834,11 +3025,11 @@ function MailSettingsPage() {
               <div class="mail-template-title">${label}</div>
               <div>
                 <label class="backup-label">Subject</label>
-                <input class="backup-input" type="text" value=${settings.templates[name].subject} onInput=${e => updateTemplate(name, 'subject', e.target.value)} />
+                <input aria-label="Subject" class="backup-input" type="text" value=${settings.templates[name].subject} onInput=${e => updateTemplate(name, 'subject', e.target.value)} />
               </div>
               <div>
                 <label class="backup-label">HTML body</label>
-                <textarea class="mail-textarea" value=${settings.templates[name].body} onInput=${e => updateTemplate(name, 'body', e.target.value)}></textarea>
+                <textarea aria-label="HTML body" class="mail-textarea" value=${settings.templates[name].body} onInput=${e => updateTemplate(name, 'body', e.target.value)}></textarea>
               </div>
             </div>
           `)}
@@ -3214,7 +3405,7 @@ function WorkflowPage({ tables }) {
           <div class="workflow-form">
             <div class="workflow-card-header">
               <div class="workflow-name">${editing.id ? 'Edit workflow' : 'New workflow'}</div>
-              <button class="btn-icon" onClick=${() => setEditing(null)}>&times;</button>
+              <button class="btn-icon" aria-label="Close workflow editor" onClick=${() => setEditing(null)}>×</button>
             </div>
             <div class="workflow-form-grid">
               <div class="row-editor-field">
@@ -3310,6 +3501,30 @@ function WorkflowPage({ tables }) {
 
 // ── Main App ──
 function App() {
+  const [navOpen, setNavOpen] = useState(false);
+  const [loadingTables, setLoadingTables] = useState(true);
+  const [tablesError, setTablesError] = useState('');
+  const navTrigger = useRef(null);
+  const closeNavigation = () => { setNavOpen(false); navTrigger.current?.focus(); };
+  useEffect(() => {
+    if (!navOpen) return;
+    const nav = document.getElementById('navigation');
+    const main = document.querySelector('main');
+    main.inert = true;
+    nav.querySelector('button').focus();
+    const onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); closeNavigation(); }
+      if (e.key !== 'Tab') return;
+      const focusable = [...nav.querySelectorAll('button,input,a,summary')].filter(el => !el.disabled && el.getClientRects().length);
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    const onResize = () => { if (window.innerWidth > 760) setNavOpen(false); };
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onResize);
+    return () => { main.inert = false; document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); };
+  }, [navOpen]);
   const [tables, setTables] = useState([]);
   const [archiveTables, setArchiveTables] = useState([]);
   const [currentTable, setCurrentTable] = useState(null);
@@ -3322,10 +3537,15 @@ function App() {
   const evtRef = useRef(null);
 
   const loadTables = useCallback(async () => {
-    const data = await api('/tables');
-    if (data) setTables(data.tables);
-    const archiveData = await api('/archive/tables').catch(() => null);
-    if (archiveData) setArchiveTables(archiveData.tables || []);
+    setLoadingTables(true);
+    setTablesError('');
+    try {
+      const data = await api('/tables');
+      if (data) setTables(data.tables || []);
+      const archiveData = await api('/archive/tables').catch(() => null);
+      if (archiveData) setArchiveTables(archiveData.tables || []);
+    } catch (err) { setTablesError(err.message || 'Unable to load tables'); }
+    finally { setLoadingTables(false); }
   }, []);
 
   // SSE change signal — bumped for the currently viewed table so DataTable can debounce-reload
@@ -3419,8 +3639,10 @@ function App() {
   useEffect(() => {
     function read() {
       const h = window.location.hash.slice(1);
-      if (!h) return;
-      const decoded = decodeURIComponent(h.split('/')[0]);
+      setNavOpen(false);
+      if (!h) { setViewMode('table'); setCurrentTable(null); setCurrentArchive(false); return; }
+      let decoded;
+      try { decoded = decodeURIComponent(h.split('/')[0]); } catch { return; }
       if (decoded === '_analytics' || decoded === '_analytics-volume') {
         setViewMode('analytics-volume');
         return;
@@ -3465,13 +3687,15 @@ function App() {
   }, []);
 
   const selectTable = useCallback((name) => {
+    setNavOpen(false);
     setViewMode('table');
     setCurrentArchive(false);
     setCurrentTable(name);
-    window.location.hash = name;
+    window.location.hash = encodeURIComponent(name);
   }, []);
 
   const selectArchive = useCallback((name) => {
+    setNavOpen(false);
     setViewMode('table');
     setCurrentArchive(true);
     setCurrentTable(name);
@@ -3479,36 +3703,43 @@ function App() {
   }, []);
 
   const selectAnalyticsVolume = useCallback(() => {
+    setNavOpen(false);
     setViewMode('analytics-volume');
     window.location.hash = '_analytics-volume';
   }, []);
 
   const selectAnalyticsPerformance = useCallback(() => {
+    setNavOpen(false);
     setViewMode('analytics-performance');
     window.location.hash = '_analytics-performance';
   }, []);
 
   const selectObserve = useCallback(() => {
+    setNavOpen(false);
     setViewMode('observe');
     window.location.hash = '_observe';
   }, []);
 
   const selectMedia = useCallback(() => {
+    setNavOpen(false);
     setViewMode('media');
     window.location.hash = '_media';
   }, []);
 
   const selectBackups = useCallback(() => {
+    setNavOpen(false);
     setViewMode('backups');
     window.location.hash = '_backups';
   }, []);
 
   const selectMail = useCallback(() => {
+    setNavOpen(false);
     setViewMode('mail');
     window.location.hash = '_mail';
   }, []);
 
   const selectWorkflow = useCallback(() => {
+    setNavOpen(false);
     setViewMode('workflow');
     window.location.hash = '_workflow';
   }, []);
@@ -3521,7 +3752,12 @@ function App() {
   }, [tables, archiveTables, currentTable, currentArchive]);
 
   return html`
+    <header class="mobile-bar"><strong>flop <span class="brand-caption">Console</span></strong><button ref=${navTrigger} class="btn" aria-expanded=${navOpen} aria-controls="navigation" onClick=${() => setNavOpen(true)}>Browse</button></header>
+    ${navOpen && html`<button class="nav-scrim" aria-label="Close navigation" tabindex="-1" onClick=${closeNavigation}></button>`}
     <${Sidebar}
+      open=${navOpen}
+      onClose=${closeNavigation}
+      onHome=${() => { setViewMode('table'); setCurrentTable(null); setCurrentArchive(false); setNavOpen(false); window.location.hash = ''; }}
       tables=${tables}
       archiveTables=${archiveTables}
       currentTable=${currentTable}
@@ -3542,7 +3778,7 @@ function App() {
       onSelectBackups=${selectBackups}
       onLogout=${logout}
     />
-    <div class="main">
+    <main class="main" id="main-content">
       ${(viewMode === 'analytics-volume' || viewMode === 'analytics-performance') && analyticsEnabled
         ? html`<${AnalyticsPanel} page=${viewMode === 'analytics-performance' ? 'performance' : 'volume'} />`
         : viewMode === 'media' && mediaEnabled
@@ -3557,9 +3793,9 @@ function App() {
         ? html`<${WorkflowPage} tables=${tables} />`
         : currentTable
         ? html`<${DataTable} key=${(currentArchive ? 'archive:' : 'table:') + currentTable} tableName=${currentTable} tableMeta=${(currentArchive ? archiveTables : tables).find(t => t.name === currentTable)} schema=${currentSchema} archive=${currentArchive} onReload=${loadTables} sseSignal=${sseSignal} />`
-        : html`<${EmptyState} />`
+        : html`<${Overview} tables=${tables} loading=${loadingTables} error=${tablesError} onRetry=${loadTables} onSelect=${selectTable} />`
       }
-    </div>
+    </main>
     <${Toasts} />
   `;
 }
