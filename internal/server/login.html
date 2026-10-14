@@ -49,15 +49,17 @@ button[type="submit"]:hover{background:#0759bc}
 button[type=submit]{min-height:46px;font-weight:600}button:disabled{opacity:.6;cursor:wait}
 :focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 @media(max-width:480px){.login-container,.setup-container{padding:28px 24px}body{padding:16px}}
+
+:root{--accent:#346c59;--accent-hover:#285644;--bg:#f3f4f2;--text-heading:#202b25}
+body{padding:0;background:var(--bg-surface)}.auth-shell{display:grid;grid-template-columns:1fr 1fr;min-height:100dvh;width:100%}.auth-intro{background:var(--bg);padding:48px 64px;display:flex;flex-direction:column;justify-content:space-between;gap:60px}.auth-brand{text-decoration:none;color:var(--text-heading);font-size:32px;letter-spacing:-1px;font-weight:700}.auth-brand span{font-size:12px;font-weight:400;letter-spacing:0;margin-left:24px;color:var(--text-muted)}.auth-kicker{font-size:10px;letter-spacing:.13em;color:var(--accent);font-weight:600}.auth-intro h2{font-size:48px;line-height:1.12;font-weight:550;letter-spacing:-2px;margin:22px 0}.auth-intro p{font-size:14px;line-height:1.7;color:var(--text-muted)}.auth-intro small{font-size:11px;color:var(--text-muted)}.auth-outline{display:grid;grid-template-columns:32px 1fr;margin-top:42px;gap:4px 12px}.auth-outline>span{grid-row:span 2;font-size:10px;color:var(--accent);padding-top:4px}.auth-outline strong{font-size:13px;font-weight:600}.auth-outline p{font-size:12px;margin-bottom:20px}.login-container{border:0;box-shadow:none;border-radius:0;width:100%;max-width:460px;padding:48px;align-self:center;justify-self:center}.auth-title{text-align:left;font-size:30px;font-weight:600;letter-spacing:-1px;line-height:1.15;margin-bottom:14px}.auth-description{text-align:left;margin-bottom:32px;font-size:13px}.field{margin-bottom:24px}.field input{background:var(--bg-surface);border-radius:7px;padding:13px}.field label{font-size:12px}.login-container button[type=submit]{background:var(--accent);border-radius:7px;min-height:48px;margin-top:8px}.login-container button[type=submit]:hover{background:var(--accent-hover)}
+@media(prefers-color-scheme:dark){:root{--accent:#9ac9b1;--accent-hover:#b5ddc7;--bg:#141b17;--bg-surface:#1c2520;--text-heading:#eef4ee}.login-container button[type=submit]{color:#14271d}}
+@media(max-width:900px){.auth-intro{padding:36px}.auth-intro h2{font-size:38px}.login-container{padding:36px}}
+@media(max-width:640px){.auth-shell{grid-template-columns:1fr;align-content:start}.auth-intro{padding:28px;gap:0}.auth-intro>div,.auth-intro>small{display:none}.auth-brand{font-size:26px}.login-container{padding:48px 28px;max-width:460px}.auth-title{font-size:28px}}
 </style>
 </head>
-<body>
+<body><div class="auth-shell"><aside class="auth-intro"><a class="auth-brand" href="/_">flop<span>Workspace</span></a><div><span class="auth-kicker">YOUR APPLICATION. IN FOCUS.</span><h2>Everything behind<br>what you build.</h2><p>Your data, activity, and operations.<br>One considered workspace.</p><div class="auth-outline"><span>01</span><strong>Data</strong><p>Explore collections and work with records.</p><span>02</span><strong>Activity</strong><p>Understand requests and performance.</p><span>03</span><strong>Operations</strong><p>Manage workflows, mail, and backups.</p></div></div><small>Flop database console</small></aside>
 <div class="login-container">
-  <div class="logo">
-    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M8 10h16v2H8zm0 5h12v2H8zm0 5h14v2H8z" fill="#fff" opacity=".9"/></svg>
-    <span class="logo-text">flop</span>
-  </div>
-  <h1 class="auth-title">Welcome back</h1><p class="auth-description">Sign in to manage your Flop database.</p>
+  <h1 class="auth-title">Welcome to your workspace</h1><p class="auth-description">Sign in to manage your Flop database.</p>
   <form id="login-form">
     <div class="field">
       <label for="email">Email</label>
@@ -70,7 +72,7 @@ button[type=submit]{min-height:46px;font-weight:600}button:disabled{opacity:.6;c
     <button type="submit">Sign In</button>
     <div id="error" role="alert" class="error hidden"></div>
   </form>
-</div>
+</div></div>
 <script>
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();

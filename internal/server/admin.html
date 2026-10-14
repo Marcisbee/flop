@@ -4,7 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin</title>
 <style>
-/* One neutral palette, with blue reserved for selection and primary actions. */
+/* Shared controls and content surfaces. Workspace composition follows below. */
 :root {
   color-scheme: light dark;
   --accent:#0969da; --accent-hover:#0759bc; --error:#bb303b;
@@ -33,27 +33,6 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;overflow:hidden}
 #app{display:flex;height:100dvh;width:100%;min-height:0}
-
-/* Sidebar */
-.sidebar{width:248px;background:var(--bg);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;user-select:none}
-.sidebar-header{padding:12px 16px;display:flex;align-items:center;border-bottom:1px solid var(--border)}
-.logo-sm{display:flex;align-items:center;gap:8px;color:var(--text);font-size:15px;font-weight:600}
-.logo-sm svg{color:var(--accent)}
-.sidebar-section-label{padding:8px 16px 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-faint)}
-.sidebar-tables{flex:1;overflow-y:auto;padding:4px 8px}
-.sidebar-item{display:flex;align-items:center;width:100%;padding:9px 12px;background:none;border:none;border-radius:8px;color:var(--text);font-size:13px;cursor:pointer;gap:6px;text-align:left}
-.sidebar-item:hover{background:var(--bg-hover)}
-.sidebar-item.active{background:var(--bg-active);color:var(--text-heading)}
-.sidebar-item-icon{color:var(--text-faint);display:flex;flex-shrink:0}
-.sidebar-item.active .sidebar-item-icon{color:var(--text)}
-.sidebar-item-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sidebar-item-count{color:var(--text-dimmed);font-size:11px;font-variant-numeric:tabular-nums}
-.sidebar-item.active .sidebar-item-count{color:var(--text-muted)}
-.sidebar-footer{border-top:1px solid var(--border);padding:8px;display:flex;flex-direction:column;gap:2px}
-.sidebar-action{display:flex;align-items:center;gap:6px;padding:9px 12px;background:none;border:none;border-radius:8px;color:var(--text-muted);font-size:12px;cursor:pointer;text-align:left}
-.sidebar-action:hover{background:var(--bg-hover);color:var(--text)}
-.sidebar-action.danger{color:var(--danger)}
-.sidebar-action.danger:hover{background:var(--danger-hover-bg);color:var(--danger-hover-text)}
 
 /* Main content */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
@@ -329,7 +308,7 @@ tbody tr.selected{background:var(--bg-active)}
 ::-webkit-scrollbar-corner{background:transparent}
 
 /* Layout scale: controls 8px, groups 12px, floating panels 16px.
-   Layers: table header 1, drawer scrim 20, navigation 21, dialogs 900, toasts 1000. */
+   Layers: table header 1, mobile workspace navigation 10, dialogs 900, toasts 1000. */
 button,input,select,textarea{font:inherit}
 button{touch-action:manipulation}
 button:disabled{opacity:.5;cursor:not-allowed}
@@ -340,18 +319,6 @@ input::placeholder,textarea::placeholder{color:var(--text-faint);opacity:1}
 .btn-primary,.btn-filter{background:#0969da;border-color:#0969da;color:#fff}
 .btn-primary:hover,.btn-filter:hover{background:#0759bc;color:#fff}
 .btn-icon{flex-shrink:0}
-.sidebar-header{min-height:80px;padding:20px;border:0;justify-content:space-between}
-.logo-sm{font-size:24px;letter-spacing:-1px;color:var(--text-heading);gap:10px}
-.logo-sm svg{width:24px;height:24px}
-.brand-caption{font-size:11px;letter-spacing:.02em;color:var(--text-muted);font-weight:500}
-.sidebar-section-label{font-size:10px;letter-spacing:.1em;padding:20px 12px 8px}
-.sidebar-tables{padding:0 12px 16px;overscroll-behavior:contain}
-.sidebar-item{gap:10px;min-height:40px;margin:2px 0;font-size:13px;border-radius:8px}
-.sidebar-item.active{font-weight:600;color:var(--accent)}
-.sidebar-item.active .sidebar-item-icon{color:var(--accent)}
-.sidebar-item-count{font-size:11px}
-.sidebar-footer{padding:12px 16px}
-.sidebar-action{min-height:40px}
 .sidebar-search{margin:0 16px 12px;padding:0 10px;min-height:38px;display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg-surface)}
 .sidebar-search input{width:100%;min-width:0;background:none;border:0;outline:none;color:var(--text);font-size:12px}
 .main{min-width:0;background:var(--bg-surface)}
@@ -406,24 +373,8 @@ td{height:49px;font-size:12px;max-width:320px}
 .mail-template-card{background:var(--bg-elevated)}
 .backups-hero,.workflow-hero{flex-wrap:wrap}
 .toast{border-radius:12px;padding:14px 18px;font-size:13px;box-shadow:var(--shadow);max-width:min(440px,calc(100vw - 32px))}
-.overview{padding:40px;overflow:auto;flex:1;background:var(--bg)}
-.overview-heading{max-width:900px;margin:0 auto 28px}
-.overview h1{font-size:32px;letter-spacing:-1px;font-weight:650;color:var(--text-heading)}
-.overview p{color:var(--text-muted);margin-top:8px}
-.overview-summary{display:flex;gap:32px;margin-top:24px;padding-top:24px;border-top:1px solid var(--border)}
-.overview-summary strong{font-size:24px;color:var(--text-heading);font-variant-numeric:tabular-nums;font-weight:600}
-.overview-summary span{display:block;font-size:12px;color:var(--text-muted)}
-.table-directory{max-width:900px;margin:auto;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface);overflow:hidden}
-.directory-heading,.directory-row{display:grid;grid-template-columns:minmax(0,1fr) 100px 100px 20px;gap:16px;align-items:center;padding:16px 20px}
-.directory-heading{background:var(--bg-elevated);color:var(--text-muted);font-size:12px}
-.directory-row{width:100%;border:0;border-top:1px solid var(--row-border);background:none;text-align:left;color:var(--text);cursor:pointer}
-.directory-row:hover{background:var(--bg-hover)}
-.directory-name{display:flex;align-items:center;gap:12px;font-weight:550;min-width:0;overflow-wrap:anywhere;color:var(--text-heading)}
-.directory-name svg{color:var(--accent);flex-shrink:0}
-.directory-number{font-variant-numeric:tabular-nums;color:var(--text-muted);font-size:13px}
 .state-message{padding:32px;text-align:center;color:var(--text-muted)}
 .state-message .btn{margin-top:12px}
-.mobile-bar,.mobile-close,.nav-scrim{display:none}
 @media (hover:hover) and (prefers-reduced-motion:no-preference){
   .btn,.btn-icon,.sidebar-item,.directory-row{transition:background-color 120ms ease-out,transform 120ms ease-out}
 }
@@ -433,19 +384,11 @@ td{height:49px;font-size:12px;max-width:320px}
 }
 @media(max-width:760px){
   #app{flex-direction:column}
-  .mobile-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:60px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--bg);flex-shrink:0}
-  .mobile-bar strong{font-size:18px;letter-spacing:-.5px}
-  .mobile-bar .btn{min-height:40px}
-  .sidebar{display:none;position:fixed;inset:0 auto 0 0;width:min(320px,88vw);z-index:21;box-shadow:var(--shadow)}
-  .sidebar.is-open{display:flex}
-  .mobile-close{display:inline-flex}
-  .nav-scrim{display:block;position:fixed;inset:0;background:#10182866;border:0;z-index:20}
   .main{min-height:0}
   .panel-toolbar,.analytics-toolbar{padding:20px 16px;gap:16px}
   .panel-title,.analytics-title{font-size:22px}
   .panel-actions{gap:8px}.search-box{min-width:0}.search-box input{font-size:16px;width:100%}
   .btn,.btn-icon{min-height:44px}.btn-icon{min-width:44px}.btn-filter{width:36px;height:36px}
-  .sidebar-item{min-height:44px}
   .table-layout{position:relative;flex-direction:column}
   .row-editor{position:absolute;inset:0;width:100%;max-width:none;max-height:none;border:0;z-index:2}
   .row-editor-field input,.row-editor-field textarea,.row-editor-field select,.backup-input,.backup-select,.mail-textarea,.analytics-select{font-size:16px}
@@ -464,18 +407,11 @@ td{height:49px;font-size:12px;max-width:320px}
   .analytics-legend{flex-wrap:wrap}.analytics-chart-wrap{padding:14px}
   .materialized-banner{margin:12px 16px;flex-wrap:wrap}
   .workflow-source-backdrop{padding:12px}.workflow-source-dialog{max-height:calc(100dvh - 24px)}
-  .overview{padding:28px 16px}.overview h1{font-size:28px}.overview-summary{gap:24px}
-  .directory-heading,.directory-row{grid-template-columns:minmax(0,1fr) 60px 16px;gap:10px;padding:14px 16px}
-  .directory-fields{display:none}
   .toast-container{bottom:max(16px,env(safe-area-inset-bottom));right:16px;left:16px}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}button:active:not(:disabled){transform:none}}
 
 
-.archive-nav{margin:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:6px 0}
-.archive-nav summary{cursor:pointer;color:var(--text-muted);font-size:12px;padding:8px 12px;min-height:36px}
-.archive-nav summary span{float:right;font-variant-numeric:tabular-nums}
-.archive-nav summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:8px}
 @media(max-width:760px){
   .panel:has(.row-editor)>.panel-toolbar,.panel:has(.row-editor)>.data-caption,.panel:has(.row-editor)>.pagination,.panel:has(.row-editor)>.filter-guide,.panel:has(.row-editor)>.materialized-banner{display:none}
   .panel-actions{display:grid;grid-template-columns:minmax(0,1fr) 44px;width:100%}
@@ -490,6 +426,48 @@ td{height:49px;font-size:12px;max-width:320px}
   .records-table td.td-actions{display:flex;order:4;justify-content:flex-end}
   .records-table td.empty-row{display:block;padding:24px 0}
 }
+/* Workspace composition: global destinations, contextual collections, focused canvas. */
+:root{--accent:#346c59;--accent-hover:#285644;--bg:#f3f4f2;--bg-surface:#fff;--bg-elevated:#f7f8f6;--bg-active:#e8f0eb;--bg-hover:#edf0ec;--text-heading:#202b25;--text:#364039;--text-muted:#657169;--border:#dfe4df;--row-border:#edf0ec}
+@media(prefers-color-scheme:dark){:root{--accent:#9ac9b1;--accent-hover:#b5ddc7;--bg:#141b17;--bg-surface:#1c2520;--bg-elevated:#222d26;--bg-active:#2c4033;--bg-hover:#28362d;--text-heading:#eef4ee;--text:#d5dfd7;--text-muted:#aab9ae;--border:#35453a;--row-border:#2e3a31}}
+#app{display:flex;flex-direction:column;padding:0;height:100dvh}
+button,a,input,select,textarea{-webkit-tap-highlight-color:transparent}
+a{color:inherit}
+.workspace-header{height:76px;flex-shrink:0;display:flex;align-items:center;gap:40px;padding:0 32px;background:var(--bg);border-bottom:1px solid var(--border)}
+.workspace-brand{display:flex;align-items:center;gap:10px;text-decoration:none;white-space:nowrap}.workspace-brand>svg{width:27px;height:27px;color:var(--accent)}.workspace-brand strong{font-size:25px;letter-spacing:-1px}.workspace-brand>span{border-left:1px solid var(--border);padding-left:16px;margin-left:10px;font-size:12px;color:var(--text-muted)}
+.workspace-nav{display:flex;align-self:stretch;align-items:center;gap:8px;margin:auto}.workspace-nav a{display:flex;align-items:center;gap:8px;padding:10px 18px;font-size:13px;font-weight:550;color:var(--text-muted);text-decoration:none;border-radius:9px}.workspace-nav a.active{background:var(--bg-surface);color:var(--text-heading);box-shadow:0 1px 4px #20302812}.workspace-nav svg{width:17px;height:17px}
+.signout{margin-left:auto}.workspace-subnav{height:48px;padding:0 32px;display:flex;gap:28px;align-items:stretch;flex-shrink:0;background:var(--bg-surface);border-bottom:1px solid var(--border)}.workspace-subnav a{display:flex;align-items:center;text-decoration:none;font-size:12px;color:var(--text-muted);border-bottom:2px solid transparent}.workspace-subnav a.active{color:var(--accent);border-color:var(--accent);font-weight:600}
+.workspace-content{display:flex;flex:1;min-height:0;min-width:0}.main{display:flex;flex-direction:column;flex:1;min-width:0;background:var(--bg-surface);overflow:hidden}
+.collection-rail{width:220px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--bg);padding:24px 12px 12px}.collection-back{display:flex;align-items:center;gap:6px;text-decoration:none;font-size:12px;font-weight:600;padding:0 8px 24px}.collection-back svg{width:14px}.collection-rail .sidebar-search{margin:0 0 16px;min-height:36px}.rail-scroll{overflow:auto;flex:1}.collection-link{display:flex;align-items:center;gap:9px;padding:11px 10px;width:100%;text-align:left;border:0;border-radius:7px;background:none;color:var(--text-muted);font:inherit;font-size:12px;cursor:pointer}.collection-link>svg{width:15px;flex-shrink:0}.collection-link>span{overflow:hidden;text-overflow:ellipsis}.collection-link small{margin-left:auto;font-variant-numeric:tabular-nums}.collection-link.active{background:var(--bg-surface);color:var(--text-heading);font-weight:600;box-shadow:0 1px 3px #2030280a}.rail-foot{font-size:11px;color:var(--text-muted);padding:18px 10px 4px}
+.collection-library{flex:1;overflow:auto;padding:52px max(32px,calc((100% - 1160px)/2));background:var(--bg)}
+.library-heading{display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:42px}.eyebrow{font-size:10px;letter-spacing:.12em;font-weight:600;color:var(--text-muted)}.library-heading h1{font-size:40px;line-height:1.2;letter-spacing:-1.5px;font-weight:600;margin:10px 0}.library-heading p{font-size:14px;color:var(--text-muted)}.library-total{display:flex;flex-direction:column;text-align:right;color:var(--text-muted);font-size:12px}.library-total strong{font-size:32px;font-weight:500;letter-spacing:-1px;color:var(--text-heading);font-variant-numeric:tabular-nums}
+.library-toolbar{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-bottom:24px}.segmented{display:flex;gap:4px;padding:4px;border-radius:9px;background:var(--border)}.segmented button{border:0;background:none;color:var(--text-muted);padding:8px 14px;border-radius:6px;font-size:12px;font-weight:550;cursor:pointer}.segmented button[aria-pressed=true]{background:var(--bg-surface);color:var(--text-heading);box-shadow:0 1px 3px #20302812}.segmented small{padding-left:10px;color:var(--text-muted)}
+.library-search{display:flex;gap:10px;align-items:center;color:var(--text-muted);border-bottom:1px solid var(--border-input);padding:8px 0;width:240px}.library-search input{background:none;border:0;color:var(--text);outline:0;width:100%;font:inherit;font-size:13px}.library-search:focus-within{border-color:var(--accent)}
+.collection-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.collection-card{padding:24px;text-align:left;border:1px solid var(--border);border-radius:14px;background:var(--bg-surface);color:var(--text);cursor:pointer;min-width:0;box-shadow:0 2px 3px #20302803}.collection-card:hover{border-color:var(--accent)}.collection-card-top{display:flex;align-items:center;gap:10px}.collection-symbol{width:38px;height:38px;border-radius:10px;background:var(--bg-active);color:var(--accent);display:grid;place-items:center}.collection-card-top>svg{margin-left:auto;width:15px;color:var(--text-muted)}.collection-kind{font-size:10px;color:var(--text-muted)}.collection-card h2{font-size:19px;font-weight:600;letter-spacing:-.4px;margin:22px 0 6px;overflow-wrap:anywhere}.collection-card p{font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:20px}.collection-card-bottom{border-top:1px solid var(--row-border);margin-top:24px;padding-top:16px;display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--text-muted)}.collection-card-bottom strong{font-size:13px;color:var(--text-heading);font-weight:600}.collection-card-bottom strong span{font-size:11px;color:var(--text-muted);font-weight:400}
+.btn{min-height:38px;border-radius:7px;font-size:12px;gap:7px;padding:9px 14px}.btn-primary{background:light-dark(#346c59,#9ac9b1);border-color:transparent;color:light-dark(#fff,#14271d)}.btn-primary:hover{background:var(--accent-hover);color:light-dark(#fff,#14271d)}.btn-icon{border-radius:7px}.btn:active,.collection-card:active{transform:scale(.985)}
+.panel-toolbar{padding:28px 32px 22px;min-height:100px;border-bottom:0;align-items:center}.panel-title{gap:12px;font-size:13px}.panel-title h1{font-size:30px;letter-spacing:-1px;font-weight:600;line-height:1.25;margin-top:5px}.collection-breadcrumb{display:inline-block;text-decoration:none;font-size:10px;letter-spacing:.04em}.panel-actions{width:auto;gap:8px}.search-box{background:var(--bg-elevated);border:1px solid var(--border);min-height:38px}.search-box input{width:180px;font-size:12px}.data-viewbar{display:flex;align-items:center;justify-content:space-between;padding:0 32px;border-bottom:1px solid var(--border);flex-shrink:0}.data-viewbar>span{font-size:11px;color:var(--text-muted)}.view-tabs{display:flex;align-items:stretch;gap:24px}.view-tabs button{padding:14px 0;border:0;border-bottom:2px solid transparent;background:none;color:var(--text-muted);font-size:12px;font-weight:550;cursor:pointer}.view-tabs button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.table-layout{min-height:0}.table-container{padding:0 16px}.records-table th{background:var(--bg-surface);height:48px}.records-table td{height:54px}.record-list,.record-list tbody{display:block;width:100%}.record-list thead{display:none}.record-list tbody tr{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr) 80px;align-items:center;gap:24px;padding:22px 16px;border-bottom:1px solid var(--row-border);cursor:pointer}.record-list td{display:none;height:auto;max-width:none;border:0;padding:0;font-family:inherit;white-space:normal;overflow-wrap:anywhere}.record-list td.mobile-preview{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;color:var(--text-muted)}.record-list td.mobile-primary{font-size:15px;font-weight:550;letter-spacing:-.2px;color:var(--text-heading)}.record-list td.mobile-preview::before{content:attr(data-label);display:block;font-size:10px;font-weight:400;color:var(--text-muted);margin-bottom:5px;letter-spacing:.02em}.record-list td.td-actions{display:flex;order:4;grid-column:4;gap:4px}.record-list td.empty-row{display:block;grid-column:1/-1;padding:30px}.record-list .td-actions .btn-icon{width:34px;height:34px}.record-list tr:hover{background:var(--bg-elevated)}
+.schema-view{overflow:auto;padding:32px;flex:1}.section-heading{margin-bottom:28px}.section-heading h2{font-size:20px;font-weight:550;margin-bottom:5px}.section-heading p{font-size:12px;color:var(--text-muted)}.schema-field{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;padding:18px 0;border-bottom:1px solid var(--border);font-size:12px;overflow-wrap:anywhere}.schema-field code{color:var(--accent)}.schema-field>span{color:var(--text-muted)}.presentation-schema{display:none}.data-workspace:has(.presentation-schema)>.pagination{display:none}
+.data-workspace.editing>.panel-toolbar,.data-workspace.editing>.data-viewbar,.data-workspace.editing>.pagination,.data-workspace.editing>.filter-guide,.data-workspace.editing>.materialized-banner,.data-workspace.editing>.schema-view{display:none}.data-workspace.editing .table-container{display:none}.data-workspace.editing .table-layout{display:flex}.row-editor{position:static;width:100%;max-width:none;border:0;box-shadow:none;background:var(--bg-surface)}.row-editor-header{padding:28px 40px;flex-direction:row-reverse;border-bottom:1px solid var(--border);justify-content:flex-end;gap:16px}.row-editor-header>.btn-icon{border:1px solid var(--border);flex-shrink:0}.row-editor-title{font-size:26px;font-weight:600;letter-spacing:-.8px}.row-editor-meta{font-size:11px}.row-editor-body{padding:32px 40px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 32px;align-content:start}.row-editor-field{margin:0;min-width:0}.row-editor-field:has(textarea),.row-editor-field:has(.file-list){grid-column:1/-1}.row-editor-field textarea{min-height:160px;line-height:1.6}.row-editor-field label{font-size:12px;font-weight:550}.row-editor-field .type-badge{float:right;color:var(--text-muted);background:none;font-size:10px;font-weight:400}.row-editor-actions{padding:16px 40px;background:var(--bg-elevated);border-top:1px solid var(--border)}
+.workflow-page,.backups-page,.mail-page{padding:36px 48px;background:var(--bg-surface)}.workflow-title,.backups-title{font-size:32px;font-weight:600;letter-spacing:-1px}.workflow-subtitle{margin-top:8px}.workflow-hero,.backups-hero{padding-bottom:10px}.workflow-card,.workflow-form,.mail-card{box-shadow:none;border-radius:12px}.workflow-tabs,.settings-tabs{border-bottom:1px solid var(--border)}.mail-card{border:0;padding:12px 0;background:none}.mail-templates .mail-delivery,.mail-delivery .mail-templates{display:none}.mail-template-card{padding:24px;border:1px solid var(--border);border-radius:12px}.mail-footer{padding-top:24px}.mail-inline-actions{flex-wrap:wrap}.backup-configuration .backups-card{display:none}.backups-card{border-radius:12px}.backup-option-block{padding:24px;background:var(--bg-elevated);border-radius:12px;border:1px solid var(--border)}.backup-init{min-height:70px;color:var(--accent)}
+.analytics-toolbar{padding:28px 40px;border:0}.analytics-title{font-size:28px;letter-spacing:-.9px}.analytics-body,.observe-body{padding:0 40px 32px;background:var(--bg-surface)}.analytics-cards{gap:0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:28px}.analytics-card{border:0;border-right:1px solid var(--border);border-radius:0;background:none;padding:24px}.analytics-card:last-child{border:0}.analytics-card-value{font-size:34px;font-weight:500}.analytics-chart-wrap{border-radius:12px;background:var(--bg-elevated)}.analytics-chart{height:250px}.analytics-chart-title{font-size:14px}.analytics-table-wrap{border-radius:10px}
+@media(max-width:1100px){.workspace-header{gap:12px;padding:0 24px}.workspace-brand>span{display:none}.collection-library{padding:36px 28px}.collection-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.panel-toolbar{align-items:flex-start;gap:20px}.panel-actions{width:100%}.collection-rail{width:190px}.record-list tbody tr{grid-template-columns:minmax(0,2fr) minmax(0,1fr) 80px;gap:16px}.record-list td.mobile-preview[style*="2"]{display:none}.record-list td.td-actions{grid-column:3}.workflow-page,.backups-page,.mail-page{padding:28px}.analytics-toolbar{padding:28px}.analytics-body,.observe-body{padding:0 28px 28px}.mail-grid.mail-grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){
+ #app{padding-bottom:calc(66px + env(safe-area-inset-bottom))}.workspace-header{height:58px;padding:0 20px;gap:12px}.workspace-brand strong{font-size:23px}.workspace-brand>span{display:inline-block;font-size:11px}.workspace-brand>svg{width:23px}.workspace-nav{position:fixed;bottom:0;left:0;right:0;height:calc(66px + env(safe-area-inset-bottom));padding:5px 10px max(5px,env(safe-area-inset-bottom));z-index:10;background:var(--bg-surface);border-top:1px solid var(--border);gap:4px;justify-content:space-around}.workspace-nav a{flex:1;justify-content:center;flex-direction:column;gap:4px;padding:7px 2px;font-size:10px;border-radius:8px}.workspace-nav a.active{background:var(--bg-active);box-shadow:none;color:var(--accent)}.workspace-nav svg{width:20px;height:20px}.workspace-subnav{height:44px;padding:0 20px;gap:26px}.workspace-subnav a{font-size:12px}.collection-rail{display:none}.collection-library{padding:28px 20px}.library-heading{margin-bottom:26px;align-items:flex-start}.library-heading h1{font-size:32px;margin:7px 0}.library-heading p{font-size:12px;max-width:220px}.library-total{display:none}.library-toolbar{flex-direction:column;align-items:stretch;gap:18px;margin-bottom:20px}.segmented{align-self:flex-start}.segmented button{min-height:36px}.library-search{width:100%;padding:10px 0}.library-search input{font-size:16px}.collection-grid{grid-template-columns:1fr;gap:12px}.collection-card{padding:20px}.collection-card h2{margin:16px 0 6px;font-size:20px}.collection-card-bottom{margin-top:18px;padding-top:14px}.collection-card-top .collection-symbol{width:32px;height:32px}.collection-kind{font-size:11px}
+ .panel-toolbar{padding:22px 20px 16px;gap:18px}.panel-title h1{font-size:28px}.panel-title{font-size:12px}.panel-actions{display:flex;flex-wrap:wrap;gap:8px}.panel-actions .search-box{flex:1;min-width:calc(100% - 56px)}.panel-actions .search-box input{font-size:16px}.panel-actions .btn-primary{margin-left:auto}.data-viewbar{padding:0 20px}.view-tabs{gap:22px}.view-tabs button{min-height:48px}.data-viewbar>span{font-size:10px}.table-container{padding:0}.record-list tbody tr{display:flex;padding:20px;gap:12px;position:relative}.record-list td.mobile-preview{display:-webkit-box;max-width:100%}.record-list td.mobile-primary{font-size:17px}.record-list td.mobile-preview[style*="2"]{display:none}.record-list td.td-actions{display:flex;align-self:flex-end}.record-list td.td-actions .btn-icon{width:40px;height:40px}.records-table:not(.record-list){display:table;width:max-content;min-width:100%}.records-table:not(.record-list) thead{display:table-header-group}.records-table:not(.record-list) tbody{display:table-row-group}.records-table:not(.record-list) tr{display:table-row;padding:0}.records-table:not(.record-list) td{display:table-cell;max-width:220px;height:54px;padding:12px;white-space:nowrap;font-size:12px}.records-table:not(.record-list) td::before{display:none}.records-table:not(.record-list) th{padding:12px}.records-table:not(.record-list) .td-actions{display:table-cell}.pagination{padding:8px 16px}.schema-view{padding:24px 20px}.schema-field{grid-template-columns:1fr 1fr;gap:8px}.schema-field>span{grid-column:1/-1;font-size:11px}
+ .row-editor{position:static;width:100%;max-height:none}.row-editor-header{padding:20px;gap:12px}.row-editor-title{font-size:23px}.row-editor-body{padding:24px 20px;grid-template-columns:1fr;gap:22px}.row-editor-field{grid-column:1/-1}.row-editor-actions{padding:14px 20px}.row-editor-field input,.row-editor-field select,.row-editor-field textarea{font-size:16px}.row-editor-actions .btn{min-height:44px}.workflow-page,.backups-page,.mail-page{padding:24px 20px;gap:20px}.workflow-title,.backups-title{font-size:28px}.workflow-subtitle{font-size:12px}.mail-grid.mail-grid-4,.mail-grid{grid-template-columns:1fr}.mail-inline-actions>*{min-width:0!important;width:100%}.mail-template-card,.backup-option-block{padding:18px}.analytics-toolbar{padding:24px 20px}.analytics-title{font-size:25px}.analytics-body,.observe-body{padding:0 20px 24px}.analytics-cards{margin-bottom:20px}.analytics-card{padding:16px 12px}.analytics-card-value{font-size:26px}.analytics-card:nth-child(2){border-right:0}.analytics-chart{height:190px}.analytics-actions{flex-wrap:wrap}.toast-container{bottom:84px}.btn-icon,.btn{min-height:40px}
+}
+@media(prefers-reduced-motion:reduce){button:active,.collection-card:active{transform:none}}
+
+
+.btn-filter{background:var(--accent);border-color:var(--accent);color:light-dark(#fff,#14271d)}.btn-filter:hover{background:var(--accent-hover);color:light-dark(#fff,#14271d)}
+.media-gallery{padding:12px 32px 32px;overflow:auto;flex:1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));align-content:start;gap:20px}.media-asset{border:1px solid var(--border);border-radius:12px;overflow:hidden;min-width:0}.media-preview{height:180px;background:var(--bg-elevated);display:grid;place-items:center;color:var(--text-muted)}.media-preview>svg{width:32px;height:32px}.media-preview img{width:100%;height:100%;object-fit:contain}.media-asset-info{padding:16px;font-size:12px}.media-asset-info strong{display:block;overflow-wrap:anywhere}.media-asset-info a{text-decoration:none}.media-asset-info p{font-size:11px;color:var(--text-muted);margin:6px 0;overflow-wrap:anywhere}.media-asset-info>div{display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);gap:8px}.media-asset-info details{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:11px}.media-asset-info summary{cursor:pointer}.media-empty{grid-column:1/-1;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:360px;gap:16px}.media-empty .collection-symbol{width:60px;height:60px;border-radius:16px}.media-empty h2{font-size:22px;letter-spacing:-.5px;font-weight:550}.media-empty p{color:var(--text-muted);font-size:13px;max-width:300px}
+.workflow-editing>.workflow-grid,.workflow-editing>.observe-table-wrap,.workflow-editing>.workflow-tabs,.workflow-editing>div[style]{display:none}.workflow-form{max-width:980px;width:100%;align-self:center;padding:32px}.workflow-form>.row-editor-field{margin:24px 0}.workflow-form-grid{gap:24px}.workflow-form-grid .row-editor-field{grid-column:auto}.workflow-checks{margin:24px 0}
+@media(max-width:1100px){.media-gallery{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px){.media-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px 20px 24px}.media-preview{height:130px}.media-asset-info{padding:12px}.media-asset-info>div{flex-direction:column}.workflow-form{padding:20px}.workflow-form-grid .row-editor-field{grid-column:1/-1}}
+@media(max-width:360px){.media-gallery{grid-template-columns:1fr}}
+
+.analytics-section-overview .analytics-logs{display:none}.analytics-section-events .analytics-cards,.analytics-section-events .analytics-chart-wrap{display:none}.analytics-panel>.data-viewbar{margin-bottom:24px}.analytics-section-events .analytics-logs>.panel-toolbar{padding:16px 0 24px}.analytics-section-events .analytics-logs{border:0}.analytics-section-events .analytics-detail{position:sticky;top:0}.analytics-section-overview .analytics-cards{border-top:0}.analytics-card{min-width:0}
+.row-editor-field label.btn-primary{color:light-dark(#fff,#14271d)}
 </style>
 </head>
 <body>
@@ -700,145 +678,45 @@ function Toasts() {
 
 // ── Components ──
 
-function Sidebar({ open, onClose, onHome, tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, workflowEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectWorkflow, onSelectMail, onSelectBackups, onLogout }) {
-  const [tableSearch, setTableSearch] = useState('');
-  
-  const filteredTables = useMemo(() => {
-    const q = tableSearch.trim().toLowerCase();
-    if (!q) return tables;
-    return tables.filter(t => t.name.toLowerCase().includes(q));
-  }, [tables, tableSearch]);
-
-  return html`
-    <nav id="navigation" aria-label="Main navigation" class=${"sidebar" + (open ? " is-open" : "")}>
-      <div class="sidebar-header">
-        <div class="logo-sm">${icons.db}<span>flop</span><span class="brand-caption">Console</span></div>
-        <button class="btn-icon mobile-close" aria-label="Close navigation" onClick=${onClose}>×</button>
-      </div>
-      <div class="sidebar-search">
-        ${icons.search}
-        <input type="search" aria-label="Filter tables" placeholder="Find a table…" value=${tableSearch} onInput=${e => setTableSearch(e.target.value)} />
-      </div>
-      <div class="sidebar-tables">
-        <button class=${"sidebar-item" + (!currentTable && viewMode === "table" ? " active" : "")} onClick=${onHome}>${icons.db}<span class="sidebar-item-label">Overview</span></button>
-      <div class="sidebar-section-label">TABLES ${tableSearch && html`<span style="color:var(--text-dimmed);font-weight:400">(${filteredTables.length}/${tables.length})</span>`}</div>
-
-        ${filteredTables.map(t => html`
-          <button
-            key=${t.name}
-            class=${"sidebar-item" + (viewMode === 'table' && !currentArchive && t.name === currentTable ? " active" : "")}
-            onClick=${() => onSelect(t.name)}
-          >
-            <span class="sidebar-item-icon">${icons.table}</span>
-            <span class="sidebar-item-label">${t.name}</span>
-            ${t.materialized && html`<span class="materialized-badge">mat</span>`}
-            <span class="sidebar-item-count">${t.rowCount}</span>
-          </button>
-        `)}
-        ${filteredTables.length === 0 && html`<div style="padding:8px 16px;color:var(--text-dimmed);font-size:12px;">No tables match "${tableSearch}"</div>`}
-        ${archiveTables && archiveTables.length > 0 && html`
-          <details class="archive-nav" open=${currentArchive}><summary>Archive <span>${archiveTables.reduce((n,t) => n + (Number(t.rowCount) || 0), 0)}</span></summary>
-          ${archiveTables.map(t => html`
-            <button
-              key=${"archive-" + t.name}
-              class=${"sidebar-item" + (viewMode === 'table' && currentArchive && t.name === currentTable ? " active" : "")}
-              onClick=${() => onSelectArchive(t.name)}
-            >
-              <span class="sidebar-item-icon">${icons.table}</span>
-              <span class="sidebar-item-label">${t.name}</span>
-              <span class="sidebar-item-count">${t.rowCount}</span>
-            </button>
-          `)}
-          </details>
-        `}
-        ${mediaEnabled && html`
-          <div class="sidebar-section-label" style="padding:10px 8px 4px">ASSETS</div>
-          <button
-            class=${"sidebar-item" + (viewMode === 'media' ? " active" : "")}
-            onClick=${onSelectMedia}
-          >
-            <span class="sidebar-item-icon">${icons.image}</span>
-            <span class="sidebar-item-label">Media</span>
-          </button>
-        `}
-        <div class="sidebar-section-label" style="padding:10px 8px 4px">SYSTEM</div>
-        ${workflowEnabled && html`
-          <button
-            class=${"sidebar-item" + (viewMode === 'workflow' ? " active" : "")}
-            onClick=${onSelectWorkflow}
-          >
-            <span class="sidebar-item-icon">${icons.pulse}</span>
-            <span class="sidebar-item-label">AI Workflows</span>
-          </button>
-        `}
-        <button
-          class=${"sidebar-item" + (viewMode === 'mail' ? " active" : "")}
-          onClick=${onSelectMail}
-        >
-          <span class="sidebar-item-icon">${icons.mail}</span>
-          <span class="sidebar-item-label">Mail</span>
-        </button>
-        <button
-          class=${"sidebar-item" + (viewMode === 'backups' ? " active" : "")}
-          onClick=${onSelectBackups}
-        >
-          <span class="sidebar-item-icon">${icons.clock}</span>
-          <span class="sidebar-item-label">Backups</span>
-        </button>
-        ${analyticsEnabled && html`
-          <div class="sidebar-section-label" style="padding:10px 8px 4px">OBSERVE</div>
-          <button
-            class=${"sidebar-item" + (viewMode === 'analytics-volume' ? " active" : "")}
-            onClick=${onSelectAnalyticsVolume}
-          >
-            <span class="sidebar-item-icon">${icons.chart}</span>
-            <span class="sidebar-item-label">Request Volume</span>
-          </button>
-          <button
-            class=${"sidebar-item" + (viewMode === 'analytics-performance' ? " active" : "")}
-            onClick=${onSelectAnalyticsPerformance}
-          >
-            <span class="sidebar-item-icon">${icons.chart}</span>
-            <span class="sidebar-item-label">Request Performance</span>
-          </button>
-        `}
-        ${observeEnabled && html`
-          <button
-            class=${"sidebar-item" + (viewMode === 'observe' ? " active" : "")}
-            onClick=${onSelectObserve}
-          >
-            <span class="sidebar-item-icon">${icons.pulse}</span>
-            <span class="sidebar-item-label">Observe</span>
-          </button>
-        `}
-      </div>
-      <div class="sidebar-footer">
-        <button class="sidebar-action danger" onClick=${onLogout}>${icons.signout} Sign Out</button>
-      </div>
-    </nav>
-  `;
+function WorkspaceNavigation({ viewMode, analyticsEnabled, observeEnabled, workflowEnabled, mediaEnabled }) {
+  const group = ['mail','backups'].includes(viewMode) ? 'settings' : viewMode.startsWith('analytics') || viewMode === 'observe' ? 'activity' : viewMode === 'workflow' ? 'automation' : 'data';
+  const entries = [
+    ['data', 'Data', '', icons.db],
+    ...(analyticsEnabled || observeEnabled ? [['activity', 'Activity', analyticsEnabled ? '_analytics-volume' : '_observe', icons.chart]] : []),
+    ...(workflowEnabled ? [['automation', 'Automation', '_workflow', icons.pulse]] : []),
+    ['settings', 'Settings', '_backups', icons.settings || icons.clock]
+  ];
+  const secondary = group === 'data' ? [['Collections',''], ...(mediaEnabled ? [['Media','_media']] : [])]
+    : group === 'activity' ? [...(analyticsEnabled ? [['Requests','_analytics-volume'],['Performance','_analytics-performance']] : []), ...(observeEnabled ? [['Indexes','_observe']] : [])]
+    : group === 'settings' ? [['Backups','_backups'],['Mail','_mail']] : [];
+  return html`<header class="workspace-header">
+    <a class="workspace-brand" href="#" aria-label="Flop collections">${icons.db}<strong>flop</strong><span>Workspace</span></a>
+    <nav class="workspace-nav" aria-label="Workspaces">${entries.map(([id,label,route,icon]) => html`<a href=${'#'+route} aria-current=${group === id ? 'page' : undefined} class=${group === id ? 'active' : ''}>${icon}<span>${label}</span></a>`)}</nav>
+    <button class="btn-icon signout" aria-label="Sign out" title="Sign out" onClick=${logout}>${icons.signout}</button>
+  </header>
+  ${secondary.length > 0 && html`<nav class="workspace-subnav" aria-label="Workspace pages">${secondary.map(([label,route]) => html`<a href=${'#'+route} class=${(route === '' ? viewMode === 'table' : route === '_'+viewMode) ? 'active' : ''}>${label}</a>`)}</nav>`}`;
 }
 
-function Overview({ tables, loading, error, onRetry, onSelect }) {
-  return html`<section class="overview" aria-label="Database overview">
-    <div class="overview-heading">
-      <h1>Your database, at a glance.</h1>
-      <p>Browse your tables, inspect records, and manage your database.</p>
-      <div class="overview-summary">
-        <div><strong>${loading ? '…' : tables.length}</strong><span>Tables</span></div>
-        <div><strong>${loading ? '…' : tables.reduce((sum, t) => sum + (Number(t.rowCount) || 0), 0).toLocaleString()}</strong><span>Total rows</span></div>
-      </div>
-    </div>
-    <div class="table-directory">
-      <div class="directory-heading"><span>Table</span><span>Rows</span><span class="directory-fields">Fields</span><span></span></div>
-      ${loading ? html`<div class="state-message" role="status">Loading your tables…</div>`
-        : error ? html`<div class="state-message" role="alert">${error}<br/><button class="btn" onClick=${onRetry}>Try again</button></div>`
-        : tables.length === 0 ? html`<div class="state-message">No tables yet. Define a table in your application to see it here.</div>`
-        : tables.map(t => html`<button class="directory-row" onClick=${() => onSelect(t.name)}>
-          <span class="directory-name">${icons.table}${t.name}</span><span class="directory-number">${Number(t.rowCount || 0).toLocaleString()}</span>
-          <span class="directory-number directory-fields">${Object.keys(t.schema || {}).length}</span>${icons.chevRight}
-        </button>`)}
-    </div>
+function CollectionRail({ tables, archiveTables, currentTable, archive, onSelect, onSelectArchive }) {
+  const [query,setQuery] = useState('');
+  const source = archive ? archiveTables : tables;
+  return html`<aside class="collection-rail" aria-label="Collections">
+    <a class="collection-back" href="#">${icons.chevLeft} All collections</a>
+    <div class="sidebar-search">${icons.search}<input aria-label="Find collection" placeholder="Find collection…" value=${query} onInput=${e => setQuery(e.target.value)} /></div>
+    <div class="rail-scroll">${source.filter(t => t.name.toLowerCase().includes(query.toLowerCase())).map(t => html`<button class=${'collection-link '+(t.name === currentTable ? 'active' : '')} onClick=${() => (archive ? onSelectArchive : onSelect)(t.name)}>${icons.table}<span>${t.name}</span><small>${fmtCount(t.rowCount)}</small></button>`)}</div>
+    <div class="rail-foot">${archive ? 'Archive' : 'Database'} · ${source.length} collections</div>
+  </aside>`;
+}
+
+function Overview({ tables, archiveTables, loading, error, onRetry, onSelect, onSelectArchive }) {
+  const [query,setQuery] = useState('');
+  const [archive,setArchive] = useState(false);
+  const source = archive ? archiveTables : tables;
+  const filtered = source.filter(t => t.name.toLowerCase().includes(query.toLowerCase())).sort((a,b) => Number(a.name.startsWith('_')) - Number(b.name.startsWith('_')) || a.name.localeCompare(b.name));
+  return html`<section class="collection-library" aria-label="Database overview">
+    <div class="library-heading"><div><span class="eyebrow">YOUR DATA</span><h1>Collections</h1><p>A place for everything your application knows.</p></div><div class="library-total"><strong>${fmtCount(tables.reduce((n,t) => n + Number(t.rowCount || 0),0))}</strong><span>records across ${tables.length} collections</span></div></div>
+    <div class="library-toolbar"><div class="segmented" aria-label="Collection source"><button aria-pressed=${!archive} onClick=${() => setArchive(false)}>Active <small>${tables.length}</small></button><button aria-pressed=${archive} onClick=${() => setArchive(true)}>Archived <small>${archiveTables.length}</small></button></div><div class="library-search">${icons.search}<input type="search" aria-label="Search collections" placeholder="Search collections" value=${query} onInput=${e => setQuery(e.target.value)} /></div></div>
+    ${loading ? html`<div class="state-message" role="status">Loading collections…</div>` : error ? html`<div class="state-message" role="alert">${error}<br/><button class="btn" onClick=${onRetry}>Try again</button></div>` : html`<div class="collection-grid">${filtered.map(t => html`<button class="collection-card" onClick=${() => (archive ? onSelectArchive : onSelect)(t.name)}><div class="collection-card-top"><span class="collection-symbol">${icons.table}</span><span class="collection-kind">${archive ? 'Archived' : t.materialized ? 'Materialized' : t.readOnly ? 'Read only' : t.name.startsWith('_') ? 'System collection' : 'Collection'}</span>${icons.chevRight}</div><h2>${t.name}</h2><p>${Object.keys(t.schema || {}).slice(0,4).join(' · ') || 'No fields defined'}</p><div class="collection-card-bottom"><strong>${fmtCount(t.rowCount)} <span>records</span></strong><span>${Object.keys(t.schema || {}).length} fields</span></div></button>`)}</div>${!filtered.length && html`<div class="state-message">${query ? 'No collections match your search.' : archive ? 'No archived collections.' : 'No collections yet. Define a table in your application to get started.'}</div>`}`}
   </section>`;
 }
 
@@ -1041,10 +919,10 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
     <aside class="row-editor" ref=${editorRef} aria-label=${isCreate ? "Create record" : "Record details"}>
       <div class="row-editor-header">
         <div>
-          <div class="row-editor-title">${isCreate ? 'New Row' : readOnly ? 'View Row' : 'Edit Row'}</div>
-          <div class="row-editor-meta">${isCreate ? ('table: ' + tableName) : (pkField + ': ' + String(pk))}</div>
+          <div class="row-editor-title">${isCreate ? 'New record' : readOnly ? 'Record details' : 'Edit record'}</div>
+          <div class="row-editor-meta">${tableName} / ${isCreate ? 'Create' : String(pk)}</div>
         </div>
-        <button class="btn-icon" aria-label="Close record" onClick=${onClose}>×</button>
+        <button class="btn-icon" aria-label="Close record" onClick=${onClose}>${icons.chevLeft}</button>
       </div>
       <div class="row-editor-body">
         ${cols.map(col => {
@@ -1164,7 +1042,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
       <div class="row-editor-actions">
         ${isCreate && createError && html`<span class="create-error" style="margin-right:auto">${createError}</span>`}
         <button class="btn" onClick=${onClose}>Close</button>
-        ${!readOnly && html`<button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${isCreate ? (saving ? 'Creating...' : 'Create Row') : (saving ? 'Saving...' : 'Save Changes')}</button>`}
+        ${!readOnly && html`<button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${isCreate ? (saving ? 'Creating...' : 'Create record') : (saving ? 'Saving...' : 'Save changes')}</button>`}
       </div>
     </aside>
   `;
@@ -1184,6 +1062,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [filterHelp, setFilterHelp] = useState(false);
+  const [presentation, setPresentation] = useState('records');
   const requestId = useRef(0);
 
   const isMaterialized = !!tableMeta?.materialized;
@@ -1369,11 +1248,11 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
   }, [rows, cols, selectedPk]);
 
   return html`
-    <div class="panel">
+    <div class=${"panel data-workspace " + (showCreate || selectedRow ? "editing" : "")} >
       <div class="panel-toolbar">
         <div class="panel-title">
           <span class="panel-title-icon">${icons.table}</span>
-          ${tableName}
+          <div><a class="eyebrow collection-breadcrumb" href="#">Collections /</a><h1>${tableName}</h1></div>
           ${isMaterialized && html`<span class="materialized-badge">materialized</span>`}
           <span class="panel-meta">${total} rows</span>
           ${isMaterialized && Number(tableMeta?.lastRefreshUnixMilli) > 0 ? html`<span class="panel-meta">refreshed ${fmtAgo(tableMeta.lastRefreshUnixMilli)} (${fmtTime(tableMeta.lastRefreshUnixMilli)})</span>` : ""}
@@ -1386,13 +1265,14 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
           </div>`}
           ${!archive && html`<button class="btn-icon" aria-label="Filter help" aria-expanded=${filterHelp} onClick=${() => setFilterHelp(v => !v)}>?</button>`}
           ${!isReadOnlyTable && html`<button class="btn btn-primary" disabled=${!schema} onClick=${() => { setSelectedPk(null); setCreateErr(''); setShowCreate(true); }}>
-            ${icons.plus} New Row
+            ${icons.plus} New record
           </button>`}
         </div>
       </div>
 
       ${filterHelp && html`<div class="filter-guide">Search all text fields, or use a filter: <code>name="Alice"</code>, <code>count>=5</code>, <code>name~"ali"</code>. Combine with <code>&&</code> (and) or <code>||</code> (or).</div>`}
-      <div class="data-caption"><span>${archive ? 'Archived records' : isReadOnlyTable ? 'Read-only records' : 'Select a row to inspect or edit it.'}</span><span>${cols.length} fields</span></div>
+      <div class="data-viewbar"><div class="view-tabs" aria-label="Collection view">${[['records','Records'],['table','Table'],['schema','Structure']].map(([id,label]) => html`<button aria-pressed=${presentation === id} onClick=${() => setPresentation(id)}>${label}</button>`)}</div><span>${archive ? 'Archived · ' : isReadOnlyTable ? 'Read only · ' : ''}${cols.length} fields</span></div>
+      ${presentation === 'schema' && html`<div class="schema-view"><div class="section-heading"><h2>Collection structure</h2><p>Fields and relationships defined by your application.</p></div>${cols.map(c => html`<div class="schema-field"><strong>${c}</strong><code>${schema?.[c]?.type || 'unknown'}</code><span>${schema?.[c]?.refTable ? '→ '+schema[c].refTable : isAutoField(schema,c) ? 'Generated automatically' : isReadOnly(schema,c) ? 'Read only' : 'Editable'}</span></div>`)}</div>`}
       ${isMaterialized && html`<div class=${"materialized-banner" + (tableMeta?.refreshError ? ' error' : '')}>
         <div>
           <strong>Materialized table</strong>
@@ -1402,9 +1282,9 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
         <button class="btn" disabled=${refreshingMaterialized} onClick=${refreshMaterialized}>${icons.refresh} ${refreshingMaterialized ? 'Refreshing...' : 'Refresh now'}</button>
       </div>`}
 
-      <div class="table-layout" aria-busy=${loading}>
+      <div class=${"table-layout presentation-"+presentation} aria-busy=${loading}>
         <div class="table-container">
-          <table class="records-table">
+          <table class=${"records-table " + (presentation === "records" ? "record-list" : "")}>
             <thead>
               <tr>
                 ${cols.map(c => {
@@ -1780,6 +1660,7 @@ function buildTraceTimeline(events) {
 }
 
 function AnalyticsPanel({ page = 'volume' }) {
+  const [section,setSection] = useState('overview');
   const isPerformance = page === 'performance';
   const [supported, setSupported] = useState(true);
   const [loaded, setLoaded] = useState(false);
@@ -1927,11 +1808,11 @@ function AnalyticsPanel({ page = 'volume' }) {
   const typeLabelSingle = routeTypeLabel(selectedType, false);
 
   return html`
-    <div class="analytics-panel">
+    <div class=${"analytics-panel analytics-section-"+section}>
       <div class="analytics-toolbar">
         <div class="analytics-title">${icons.chart} ${typeLabelPlural} ${isPerformance ? 'Performance' : 'Volume'}</div>
         <div class="analytics-actions">
-          <select class="analytics-select" value=${windowSize} onChange=${e => { setWindowSize(e.target.value); setLogPage(1); }}>
+          <select aria-label="Time window" class="analytics-select" value=${windowSize} onChange=${e => { setWindowSize(e.target.value); setLogPage(1); }}>
             <option value="1h">Last 1 hour</option>
             <option value="6h">Last 6 hours</option>
             <option value="24h">Last 24 hours</option>
@@ -1940,6 +1821,7 @@ function AnalyticsPanel({ page = 'volume' }) {
         </div>
       </div>
 
+      <div class="data-viewbar"><div class="view-tabs" aria-label="Activity view"><button aria-pressed=${section === 'overview'} onClick=${() => { setSection('overview'); setSelectedLog(null); }}>Overview</button><button aria-pressed=${section === 'events'} onClick=${() => setSection('events')}>Event explorer</button></div><span>${fmtCount(logTotal)} ${logTotal === 1 ? "event" : "events"}</span></div>
       <div class="analytics-body">
         ${routeTypes.length > 1 && html`
           <div class="analytics-route-list">
@@ -2009,9 +1891,9 @@ function AnalyticsPanel({ page = 'volume' }) {
                   `}
                   <div class="search-box">
                     ${icons.search}
-                    <input type="text" placeholder='routeName~"get_" durationMs>=20' value=${logSearch} onInput=${e => setLogSearch(e.target.value)} onKeyDown=${onLogSearchKey} />
+                    <input type="text" aria-label="Filter events" placeholder='routeName~"get_" durationMs>=20' value=${logSearch} onInput=${e => setLogSearch(e.target.value)} onKeyDown=${onLogSearchKey} />
                     <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search in route/error/details">?</span>
-                    <button class="btn-filter" onClick=${applyLogFilter}>${icons.chevRight}</button>
+                    <button class="btn-filter" aria-label="Apply event filter" onClick=${applyLogFilter}>${icons.chevRight}</button>
                   </div>
                 </div>
               </div>
@@ -2031,7 +1913,7 @@ function AnalyticsPanel({ page = 'volume' }) {
                   <tbody>
                     ${logs.length === 0 && html`<tr><td colspan="6" class="empty-row">No logs found</td></tr>`}
                     ${logs.map(row => html`
-                      <tr key=${row.id} class="log-row" onClick=${() => setSelectedLog(row)}>
+                      <tr key=${row.id} class="log-row" tabindex="0" aria-label=${"Inspect request " + row.routeName} onKeyDown=${e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedLog(row); } }} onClick=${() => setSelectedLog(row)}>
                         <td>${fmtTime(row.ts)}</td>
                         <td>${row.routeType}/${row.routeName}</td>
                         <td>${row.status}</td>
@@ -2309,18 +2191,18 @@ function MediaPanel() {
   }, [applySearch]);
 
   return html`
-    <div class="panel">
+    <div class="panel media-workspace">
       <div class="panel-toolbar">
         <div class="panel-title">
           <span class="panel-title-icon">${icons.image}</span>
-          <span>Media</span>
+          <div><span class="eyebrow">ASSET LIBRARY</span><h1>Media</h1></div>
           <span class="panel-meta">${fmtCount(total)} files</span>
         </div>
         <div class="panel-actions">
           <div class="search-box">
             ${icons.search}
-            <input type="text" placeholder="Search path, name, table, row..." value=${search} onInput=${e => setSearch(e.target.value)} onKeyDown=${onSearchKey} />
-            <button class="btn-filter" onClick=${applySearch}>${icons.chevRight}</button>
+            <input type="text" aria-label="Search media" placeholder="Search files…" value=${search} onInput=${e => setSearch(e.target.value)} onKeyDown=${onSearchKey} />
+            <button class="btn-filter" aria-label="Search media files" onClick=${applySearch}>${icons.chevRight}</button>
           </div>
           <label class="btn" style="gap:6px">
             <input type="checkbox" checked=${orphansOnly} onChange=${e => { setPage(1); setOrphansOnly(e.target.checked); }} />
@@ -2329,47 +2211,11 @@ function MediaPanel() {
           <button class="btn" onClick=${() => loadRows()} disabled=${loading}>${icons.refresh} Refresh</button>
         </div>
       </div>
-      <div class="table-layout">
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>File</th>
-                <th>Location</th>
-                <th>Type</th>
-                <th>Disk</th>
-                <th>Thumbs</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows.length === 0 ? html`
-                <tr><td colspan="5" class="empty-row">${loading ? 'Loading media…' : 'No media files found'}</td></tr>
-              ` : rows.map((row, idx) => {
-                const key = row.path || String(idx);
-                const fileName = row.name || fileDisplayName(row) || row.path || 'file';
-                const location = row.tableName ? `${row.tableName}/${row.rowId || '-'}/${row.fieldName || '-'}` : '-';
-                return html`
-                  <tr key=${key}>
-                    <td>
-                      <span class="file-display">
-                        ${isImageFile(row) && row.url ? html`<img class="file-thumb" src=${row.url} alt=${fileName} />` : ''}
-                        ${row.url ? html`<a class="file-link" href=${row.url} target="_blank">${fileName}</a>` : fileName}
-                        ${row.orphaned ? html`<span class="slow-badge">orphan</span>` : ''}
-                      </span>
-                    </td>
-                    <td title=${row.path || ''}>
-                      <div>${location}</div>
-                      <div class="th-type">${row.path || ''}</div>
-                    </td>
-                    <td>${row.mime || '-'}</td>
-                    <td>${fmtBytes(row.diskSize || row.refSize || 0)}</td>
-                    <td>${fmtCount(row.thumbCount || 0)}${row.thumbBytes ? html`<span class="th-type"> · ${fmtBytes(row.thumbBytes)}</span>` : ''}</td>
-                  </tr>
-                `;
-              })}
-            </tbody>
-          </table>
-        </div>
+      <div class="media-gallery">
+        ${rows.length === 0 ? html`<div class="media-empty"><span class="collection-symbol">${icons.image}</span><h2>${loading ? 'Loading media…' : 'Your media lives here'}</h2><p>${search || orphansOnly ? 'No files match these filters.' : 'Files attached to your records will appear in this library.'}</p></div>` : rows.map((row,idx) => html`<article class="media-asset" key=${row.path || idx}>
+          <div class="media-preview">${isImageFile(row) && row.url ? html`<img src=${row.url} alt=${row.name || fileDisplayName(row)} loading="lazy" />` : icons.image}</div>
+          <div class="media-asset-info"><strong>${row.url ? html`<a href=${row.url} target="_blank" rel="noopener">${row.name || fileDisplayName(row) || 'File'}</a>` : row.name || row.path}</strong><p>${row.tableName ? row.tableName+' / '+(row.fieldName || '') : 'Unlinked file'}</p><div><span>${fmtBytes(row.diskSize || row.refSize || 0)}</span><span>${row.orphaned ? 'Orphaned' : row.mime || 'File'}</span></div><details><summary>File details</summary><p>${row.path}</p><p>Record: ${row.rowId || 'None'}</p><p>${fmtCount(row.thumbCount || 0)} thumbnails · ${fmtBytes(row.thumbBytes || 0)}</p></details></div>
+        </article>`)}
       </div>
       <div class="pagination">
         <button class="btn" disabled=${page <= 1} onClick=${() => setPage(p => Math.max(1, p - 1))}>${icons.chevLeft} Prev</button>
@@ -2397,7 +2243,7 @@ function BackupsPage() {
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState('');
   const [testOk, setTestOk] = useState(false);
-  const [showOptions, setShowOptions] = useState(true);
+  const [showOptions, setShowOptions] = useState(false);
   const [settings, setSettings] = useState({ cron: '', cronMaxKeep: 3, s3: { enabled: false, endpoint: '', bucket: '', region: '', accessKey: '', secret: '', forcePathStyle: false } });
   const [originalSettings, setOriginalSettings] = useState({ cron: '', cronMaxKeep: 3, s3: { enabled: false, endpoint: '', bucket: '', region: '', accessKey: '', secret: '', forcePathStyle: false } });
   const [downloadBusy, setDownloadBusy] = useState({});
@@ -2614,7 +2460,7 @@ function BackupsPage() {
     : 'custom';
 
   return html`
-    <div class="backups-page">
+    <div class=${"backups-page " + (showOptions ? "backup-configuration" : "backup-history")}>
       <div class="backups-hero">
         <div><h1 class="backups-title">Backups</h1><p class="workflow-subtitle">Protect your database and restore a previous version.</p></div>
         <div class="backups-actions">
@@ -2626,6 +2472,7 @@ function BackupsPage() {
         </div>
       </div>
 
+      <div class="view-tabs settings-tabs" aria-label="Backup sections"><button aria-pressed=${!showOptions} onClick=${() => setShowOptions(false)}>Backup history</button><button aria-pressed=${showOptions} onClick=${() => setShowOptions(true)}>Schedule & storage</button></div>
       <div class="backups-card">
         <div class="backups-list">
           ${loading ? html`<div class="backup-empty">Loading backups…</div>` : items.length === 0 ? html`<div class="backup-empty">No backups yet.</div>` : items.map(item => html`
@@ -2646,16 +2493,9 @@ function BackupsPage() {
             </div>
           `)}
           <button class="backup-init" disabled=${busy || creating || loading} onClick=${createBackup}>
-            ${busy || creating ? html`<span class="null">${creating ? 'Creating backup…' : 'Backup/restore in progress…'}</span>` : html`<span>${icons.upload}</span><span>Initialize new backup</span>`}
+            ${busy || creating ? html`<span class="null">${creating ? 'Creating backup…' : 'Backup/restore in progress…'}</span>` : html`<span>${icons.upload}</span><span>Create backup</span>`}
           </button>
         </div>
-      </div>
-
-      <div>
-        <button class="btn backup-settings-toggle" onClick=${() => setShowOptions(v => !v)}>
-          <span>Backups options</span>
-          <span>${showOptions ? icons.chevUp : icons.chevDown}</span>
-        </button>
       </div>
 
       ${showOptions ? html`
@@ -2748,6 +2588,7 @@ function BackupsPage() {
 }
 
 function MailSettingsPage() {
+  const [section,setSection] = useState('delivery');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -2900,7 +2741,7 @@ function MailSettingsPage() {
   }, []);
 
   return html`
-    <div class="mail-page">
+    <div class=${"mail-page mail-"+section}>
       <div class="backups-hero">
         <div><h1 class="backups-title">Mail</h1><p class="workflow-subtitle">Manage delivery settings and email templates.</p></div>
         <div class="backups-actions">
@@ -2908,7 +2749,8 @@ function MailSettingsPage() {
         </div>
       </div>
 
-      <div class="mail-card">
+      <div class="view-tabs settings-tabs" aria-label="Mail sections"><button aria-pressed=${section === 'delivery'} onClick=${() => setSection('delivery')}>Delivery</button><button aria-pressed=${section === 'templates'} onClick=${() => setSection('templates')}>Email templates</button></div>
+      <div class="mail-card mail-delivery">
         <div class="mail-section">
           <div class="mail-grid">
             <div>
@@ -3012,7 +2854,7 @@ function MailSettingsPage() {
         </div>
       </div>
 
-      <div class="mail-card">
+      <div class="mail-card mail-templates">
         <div class="mail-section">
           <div class="backups-title" style="font-size:20px">Email templates</div>
           <div class="backup-help">Available template variables: {{.Email}}, {{.Token}}, {{.URL}}, {{.AppName}}, {{.AppURL}}</div>
@@ -3276,11 +3118,11 @@ function WorkflowPage({ tables }) {
   }, [loadRuns]);
 
   return html`
-    <div class="workflow-page">
+    <div class=${"workflow-page " + (editing ? "workflow-editing" : "")}>
       <div class="workflow-hero">
         <div>
-          <div class="workflow-title">AI Workflows</div>
-          <div class="workflow-subtitle">Connect events, conditions, indexed lookups, structured AI decisions, approvals, and database actions.</div>
+          <div class="workflow-title">Automation</div>
+          <div class="workflow-subtitle">Review runs, approve actions, and build your workflows.</div>
         </div>
         <button class="btn" onClick=${loadAll} disabled=${loading}>${icons.refresh} Refresh</button>
       </div>
@@ -3310,7 +3152,7 @@ function WorkflowPage({ tables }) {
           `)}
         </div>
       ` : tab === 'workflows' ? html`
-        <div style="display:flex;justify-content:flex-end">
+        <div style=${{display: editing ? "none" : "flex", justifyContent: "flex-end"}}>
           <button class="btn btn-primary" onClick=${() => editWorkflow(emptyWorkflow)}>${icons.plus} New workflow</button>
         </div>
         <div class="workflow-grid">
@@ -3335,7 +3177,7 @@ function WorkflowPage({ tables }) {
           `)}
         </div>
       ` : html`
-        <div style="display:flex;justify-content:flex-end;gap:8px">
+        <div style=${{display: editing ? "none" : "flex", justifyContent: "flex-end", gap: "8px"}}>
           <select class="analytics-select" value=${status} onChange=${e => setStatus(e.target.value)}>
             <option value="">All statuses</option>
             ${['pending','running','awaiting_approval','error','completed','cancelled'].map(v => html`<option key=${v} value=${v}>${v.replace('_', ' ')}</option>`)}
@@ -3502,30 +3344,8 @@ function WorkflowPage({ tables }) {
 
 // ── Main App ──
 function App() {
-  const [navOpen, setNavOpen] = useState(false);
   const [loadingTables, setLoadingTables] = useState(true);
   const [tablesError, setTablesError] = useState('');
-  const navTrigger = useRef(null);
-  const closeNavigation = () => { setNavOpen(false); navTrigger.current?.focus(); };
-  useEffect(() => {
-    if (!navOpen) return;
-    const nav = document.getElementById('navigation');
-    const main = document.querySelector('main');
-    main.inert = true;
-    nav.querySelector('button').focus();
-    const onKey = e => {
-      if (e.key === 'Escape') { e.preventDefault(); closeNavigation(); }
-      if (e.key !== 'Tab') return;
-      const focusable = [...nav.querySelectorAll('button,input,a,summary')].filter(el => !el.disabled && el.getClientRects().length);
-      const first = focusable[0], last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    };
-    const onResize = () => { if (window.innerWidth > 760) setNavOpen(false); };
-    document.addEventListener('keydown', onKey);
-    window.addEventListener('resize', onResize);
-    return () => { main.inert = false; document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); };
-  }, [navOpen]);
   const [tables, setTables] = useState([]);
   const [archiveTables, setArchiveTables] = useState([]);
   const [currentTable, setCurrentTable] = useState(null);
@@ -3640,7 +3460,6 @@ function App() {
   useEffect(() => {
     function read() {
       const h = window.location.hash.slice(1);
-      setNavOpen(false);
       if (!h) { setViewMode('table'); setCurrentTable(null); setCurrentArchive(false); return; }
       let decoded;
       try { decoded = decodeURIComponent(h.split('/')[0]); } catch { return; }
@@ -3688,7 +3507,6 @@ function App() {
   }, []);
 
   const selectTable = useCallback((name) => {
-    setNavOpen(false);
     setViewMode('table');
     setCurrentArchive(false);
     setCurrentTable(name);
@@ -3696,7 +3514,6 @@ function App() {
   }, []);
 
   const selectArchive = useCallback((name) => {
-    setNavOpen(false);
     setViewMode('table');
     setCurrentArchive(true);
     setCurrentTable(name);
@@ -3704,43 +3521,36 @@ function App() {
   }, []);
 
   const selectAnalyticsVolume = useCallback(() => {
-    setNavOpen(false);
     setViewMode('analytics-volume');
     window.location.hash = '_analytics-volume';
   }, []);
 
   const selectAnalyticsPerformance = useCallback(() => {
-    setNavOpen(false);
     setViewMode('analytics-performance');
     window.location.hash = '_analytics-performance';
   }, []);
 
   const selectObserve = useCallback(() => {
-    setNavOpen(false);
     setViewMode('observe');
     window.location.hash = '_observe';
   }, []);
 
   const selectMedia = useCallback(() => {
-    setNavOpen(false);
     setViewMode('media');
     window.location.hash = '_media';
   }, []);
 
   const selectBackups = useCallback(() => {
-    setNavOpen(false);
     setViewMode('backups');
     window.location.hash = '_backups';
   }, []);
 
   const selectMail = useCallback(() => {
-    setNavOpen(false);
     setViewMode('mail');
     window.location.hash = '_mail';
   }, []);
 
   const selectWorkflow = useCallback(() => {
-    setNavOpen(false);
     setViewMode('workflow');
     window.location.hash = '_workflow';
   }, []);
@@ -3753,33 +3563,10 @@ function App() {
   }, [tables, archiveTables, currentTable, currentArchive]);
 
   return html`
-    <header class="mobile-bar"><strong>flop <span class="brand-caption">Console</span></strong><button ref=${navTrigger} class="btn" aria-expanded=${navOpen} aria-controls="navigation" onClick=${() => setNavOpen(true)}>Browse</button></header>
-    ${navOpen && html`<button class="nav-scrim" aria-label="Close navigation" tabindex="-1" onClick=${closeNavigation}></button>`}
-    <${Sidebar}
-      open=${navOpen}
-      onClose=${closeNavigation}
-      onHome=${() => { setViewMode('table'); setCurrentTable(null); setCurrentArchive(false); setNavOpen(false); window.location.hash = ''; }}
-      tables=${tables}
-      archiveTables=${archiveTables}
-      currentTable=${currentTable}
-      currentArchive=${currentArchive}
-      viewMode=${viewMode}
-      analyticsEnabled=${analyticsEnabled}
-      mediaEnabled=${mediaEnabled}
-      observeEnabled=${observeEnabled}
-      workflowEnabled=${workflowEnabled}
-      onSelect=${selectTable}
-      onSelectArchive=${selectArchive}
-      onSelectMedia=${selectMedia}
-      onSelectAnalyticsVolume=${selectAnalyticsVolume}
-      onSelectAnalyticsPerformance=${selectAnalyticsPerformance}
-      onSelectObserve=${selectObserve}
-      onSelectWorkflow=${selectWorkflow}
-      onSelectMail=${selectMail}
-      onSelectBackups=${selectBackups}
-      onLogout=${logout}
-    />
-    <main class="main" id="main-content">
+    <${WorkspaceNavigation} viewMode=${viewMode} analyticsEnabled=${analyticsEnabled} observeEnabled=${observeEnabled} workflowEnabled=${workflowEnabled} mediaEnabled=${mediaEnabled} />
+    <div class="workspace-content">
+      ${viewMode === 'table' && currentTable && html`<${CollectionRail} tables=${tables} archiveTables=${archiveTables} currentTable=${currentTable} archive=${currentArchive} onSelect=${selectTable} onSelectArchive=${selectArchive} />`}
+      <main class="main" id="main-content">
       ${(viewMode === 'analytics-volume' || viewMode === 'analytics-performance') && analyticsEnabled
         ? html`<${AnalyticsPanel} page=${viewMode === 'analytics-performance' ? 'performance' : 'volume'} />`
         : viewMode === 'media' && mediaEnabled
@@ -3794,9 +3581,9 @@ function App() {
         ? html`<${WorkflowPage} tables=${tables} />`
         : currentTable
         ? html`<${DataTable} key=${(currentArchive ? 'archive:' : 'table:') + currentTable} tableName=${currentTable} tableMeta=${(currentArchive ? archiveTables : tables).find(t => t.name === currentTable)} schema=${currentSchema} archive=${currentArchive} onReload=${loadTables} sseSignal=${sseSignal} />`
-        : html`<${Overview} tables=${tables} loading=${loadingTables} error=${tablesError} onRetry=${loadTables} onSelect=${selectTable} />`
+        : html`<${Overview} tables=${tables} archiveTables=${archiveTables} onSelectArchive=${selectArchive} loading=${loadingTables} error=${tablesError} onRetry=${loadTables} onSelect=${selectTable} />`
       }
-    </main>
+    </main></div>
     <${Toasts} />
   `;
 }
