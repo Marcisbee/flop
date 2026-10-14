@@ -978,52 +978,16 @@ input,select,textarea {font-size:16px !important; line-height:24px;}
  .record-list tbody tr {padding:16px;}
  .analytics-card {padding:16px;}
 }
-
-/* Compact mobile data: a short command bar and readable, actionable record rows. */
-.row-actions-toggle {display:none;}
-.row-action-buttons {display:flex; align-items:center; gap:0;}
+/* Mobile data uses page scrolling so controls do not trap records in a short pane. */
 @media(max-width:760px) {
- #app {padding-bottom:calc(60px + env(safe-area-inset-bottom));}
- .workspace-header {height:56px; min-height:56px; padding:6px 16px;}
- .workspace-brand small {display:none;}
- .workspace-brand>span {line-height:20px;}
- .workspace-nav {height:calc(60px + env(safe-area-inset-bottom)); padding-top:3px; padding-bottom:max(3px,env(safe-area-inset-bottom));}
- .workspace-nav a {height:54px; gap:2px; padding:3px 2px;}
- .workspace-subnav {height:44px; padding:4px 16px;}
- .data-workspace>.panel-toolbar {display:grid; grid-template-columns:minmax(0,1fr) auto; padding:10px 16px 8px; gap:8px;}
- .data-workspace .collection-breadcrumb {display:none;}
- .data-workspace .panel-title h1 {font-size:22px; line-height:28px;}
- .data-workspace .collection-title-line {gap:8px;}
- .data-workspace .panel-title {grid-column:1/-1;}
- .data-workspace .panel-actions {display:flex; flex-wrap:nowrap; grid-column:1/-1; width:100%; gap:4px;}
- .data-workspace .panel-actions .search-box {flex:1; min-width:0; width:auto;}
- .data-workspace .panel-actions .search-box input {width:100%; min-width:0;}
- .data-workspace .panel-actions .btn-primary {flex:0 0 44px; width:44px; padding:0; min-width:44px;}
- .new-record-label {position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap;}
- .data-workspace>.data-viewbar {padding:0 16px 8px;}
- .data-workspace .view-tabs {gap:4px;}
- .data-workspace .view-tabs button {padding:8px 14px;}
- .record-list tbody tr[tabindex] {display:grid; grid-template-columns:minmax(0,1fr) 44px; grid-template-rows:auto auto; align-content:center; align-items:center; min-height:76px; padding:10px 12px 10px 16px; gap:2px 8px; position:relative;}
- .record-list td.mobile-preview {grid-column:1; grid-row:2; display:block; min-width:0; max-width:100%; padding:0; font-size:14px; line-height:20px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
- .record-list td.mobile-primary {grid-row:1; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; font-size:15px; line-height:21px; white-space:normal; font-weight:600;}
- .record-list td.mobile-preview::before {display:none;}
- .record-list td.mobile-preview[style*="2"] {display:none;}
- .record-list td.td-actions {grid-column:2; grid-row:1/3; align-self:center; display:flex; position:static; padding:0; margin:0; width:44px; height:44px; background:none; box-shadow:none;}
- .record-list .row-actions-toggle {display:inline-flex; width:44px; height:44px;}
- .record-list .row-action-buttons {display:none;}
- .record-list tr.actions-open {padding-bottom:58px;}
- .record-list tr.actions-open .row-action-buttons {display:flex; position:absolute; bottom:6px; right:12px; height:44px; gap:8px;}
- .record-list tr.actions-open .row-action-buttons .btn-icon {width:auto; padding:0 12px; gap:6px; border:1px solid var(--border-input); background:var(--bg-elevated);}
- .record-list tr.actions-open .row-action-buttons .btn-icon::after {content:attr(title); font-size:14px; line-height:20px;}
- .record-list tr.actions-open .row-actions-toggle svg {transform:rotate(180deg);}
- .data-workspace>.pagination {padding:0 12px; min-height:44px;}
- .row-editor-header {padding-top:12px; padding-bottom:12px;}
- .row-editor-body {padding-top:16px; padding-bottom:16px; gap:14px;}
- .row-editor-field label:not(.btn) {margin-bottom:6px;}
- .collection-library {padding-top:16px;}
- .library-heading {margin-bottom:16px;}
- .library-toolbar {gap:8px; margin-bottom:16px;}
- .collection-card {padding-top:10px; padding-bottom:10px;}
+ #app:has(.data-workspace:not(.editing)) {display:block; overflow-y:auto; height:100dvh; overscroll-behavior-y:contain;}
+ #app:has(.data-workspace:not(.editing)) .workspace-header {height:72px;}
+ #app:has(.data-workspace:not(.editing)) .workspace-content {display:block; overflow:visible; min-height:calc(100dvh - 200px);}
+ #app:has(.data-workspace:not(.editing)) .main {display:block; overflow:visible;}
+ .data-workspace:not(.editing) {display:block; overflow:visible;}
+ .data-workspace:not(.editing) .table-layout {display:block; overflow:visible;}
+ .data-workspace:not(.editing) .table-container {overflow-x:auto; overscroll-behavior:auto;}
+ .data-workspace:not(.editing) .pagination {position:static;}
 }
 </style>
 </head>
@@ -1650,7 +1614,6 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [filterHelp, setFilterHelp] = useState(false);
-  const [actionPk, setActionPk] = useState(null);
   const [presentation, setPresentation] = useState(() => window.matchMedia('(max-width:760px)').matches ? 'records' : 'table');
   const requestId = useRef(0);
 
@@ -1661,7 +1624,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
   const cols = useMemo(() => schema ? Object.keys(schema) : (rows.length > 0 ? Object.keys(rows[0]) : []), [schema, rows]);
 
   const previewCols = useMemo(() => {
-    const preferred = ['title', 'name', 'email', 'excerpt', 'description', 'status', 'body', 'slug'];
+    const preferred = ['title', 'name', 'email', 'slug', 'body', 'description', 'status'];
     const available = cols.filter(c => c !== cols[0] && !['bcrypt', 'ref', 'refMulti', 'fileSingle', 'fileMulti'].includes(schema?.[c]?.type));
     const ordered = [...available].sort((a,b) => {
       const rank = c => preferred.includes(c.toLowerCase()) ? preferred.indexOf(c.toLowerCase()) : preferred.length;
@@ -1855,7 +1818,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
           </div>`}
           ${!archive && html`<button class="btn-icon" aria-label="Filter help" aria-expanded=${filterHelp} onClick=${() => setFilterHelp(v => !v)}>${icons.help}</button>`}
           ${!isReadOnlyTable && html`<button class="btn btn-primary" disabled=${!schema} onClick=${() => { setSelectedPk(null); setCreateErr(''); setShowCreate(true); }}>
-            ${icons.plus} <span class="new-record-label">New record</span>
+            ${icons.plus} New record
           </button>`}
         </div>
       </div>
@@ -1899,7 +1862,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
                 const pk = row[cols[0]];
                 const isSelected = selectedPk != null && String(selectedPk) === String(pk);
                 return html`
-                  <tr key=${pk} class=${(isSelected ? 'selected ' : '') + (actionPk === String(pk) ? 'actions-open' : '')} tabindex="0" aria-label=${'Inspect row ' + pk} onKeyDown=${e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setShowCreate(false); setSelectedPk(String(pk)); } }} onClick=${() => { setShowCreate(false); setCreateErr(''); setSelectedPk(String(pk)); }}>
+                  <tr key=${pk} class=${isSelected ? 'selected' : ''} tabindex="0" aria-label=${'Inspect row ' + pk} onKeyDown=${e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setShowCreate(false); setSelectedPk(String(pk)); } }} onClick=${() => { setShowCreate(false); setCreateErr(''); setSelectedPk(String(pk)); }}>
                     ${displayCols.map(c => {
                       const val = row[c];
                       const ro = isReadOnly(schema, c) || isAutoField(schema, c) || val === '[REDACTED]';
@@ -1924,8 +1887,6 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
                       return html`<td key=${c} data-label=${c} style=${previewCols.includes(c) ? {order: previewCols.indexOf(c)} : {}} class=${(ro ? "td-readonly " : "") + (previewCols.includes(c) ? "mobile-preview " : "") + (previewCols[0] === c ? "mobile-primary" : "")}>${rendered}</td>`;
                     })}
                     <td class="td-actions">
-                      <button class="btn-icon row-actions-toggle" aria-label="Row actions" aria-expanded=${actionPk === String(pk)} onKeyDown=${e => { if (e.key === 'Escape') { e.stopPropagation(); setActionPk(null); } }} onClick=${e => { e.stopPropagation(); setActionPk(actionPk === String(pk) ? null : String(pk)); }}>${icons.chevDown}</button>
-                      <div class="row-action-buttons">
                       ${archive
                         ? html`
                             <button class="btn-icon" onClick=${(e) => { e.stopPropagation(); restoreRow(pk); }} title="Restore">${icons.restore}</button>
@@ -1936,7 +1897,6 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
                             <button class="btn-icon danger" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); deleteRow(pk); }} title="Delete">${icons.trash}</button>
                           `
                       }
-                      </div>
                     </td>
                   </tr>
                 `;
