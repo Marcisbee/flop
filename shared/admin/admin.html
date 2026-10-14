@@ -601,6 +601,193 @@ button,input,select,textarea {font-family: inherit;}
   .analytics-card-value {font-size: 25px;}
 }
 .toast{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-surface);color:var(--text);box-shadow:var(--shadow)}.toast-success>.icon-tabler{color:light-dark(#187652,#81d9ad)}.toast-error>.icon-tabler{color:var(--danger)}
+/* Compact console density, shared across data and operational workspaces. */
+:root {
+  --accent:#27272a; --accent-hover:#3f3f46;
+  --bg:#f5f5f6; --bg-surface:#fff; --bg-elevated:#fafafa;
+  --bg-hover:#f1f1f3; --bg-active:#ebebee;
+  --border:#e4e4e7; --border-input:#d4d4d8; --row-border:#ededf0;
+  --text-heading:#202023; --text:#35353b; --text-muted:#71717a;
+  --text-faint:#71717a; --text-dimmed:#71717a; --text-ghost:#71717a;
+}
+@media(prefers-color-scheme:dark) {
+  :root {
+    --accent:#e4e4e7; --accent-hover:#fff;
+    --bg:#18181b; --bg-surface:#1f1f23; --bg-elevated:#242428;
+    --bg-hover:#2c2c32; --bg-active:#34343b;
+    --border:#36363d; --border-input:#4b4b55; --row-border:#303037;
+    --text-heading:#f4f4f5; --text:#dedee3; --text-muted:#aaaab4;
+    --text-faint:#aaaab4; --text-dimmed:#aaaab4; --text-ghost:#aaaab4;
+  }
+}
+#app {background:var(--bg);}
+.workspace-header {height:52px; padding:0 20px; gap:32px; border-bottom:0; background:var(--bg);}
+.workspace-brand strong {font-size:21px; letter-spacing:-.8px;}
+.workspace-brand>span {font-size:12px; margin-left:4px; padding-left:14px;}
+.workspace-nav {gap:4px;}
+.workspace-nav a {padding:7px 12px; gap:7px;}
+.workspace-nav a.active {background:var(--bg-active);}
+.workspace-nav svg {width:17px; height:17px;}
+.workspace-subnav {height:36px; padding:0 20px; gap:22px; background:var(--bg); border-bottom:0;}
+.workspace-subnav a {font-size:12px; padding:0 2px;}
+.workspace-content {margin:0 8px 8px; border:1px solid var(--border); border-radius:8px; overflow:hidden;}
+.collection-rail {width:196px; padding:16px 8px 8px; background:var(--bg-elevated);}
+.collection-back {padding:0 8px 16px; font-size:12px;}
+.collection-link {min-height:32px; padding:7px 9px; font-size:12px; gap:8px;}
+.collection-link>svg {width:16px; height:16px;}
+.collection-link.active {color:var(--text-heading); background:var(--bg-active);}
+.collection-rail .sidebar-search {min-height:30px; margin-bottom:10px;}
+.rail-foot {padding:12px 8px 4px;}
+.collection-library {padding:24px;}
+.library-heading {margin-bottom:20px;}
+.library-heading h1 {font-size:22px; letter-spacing:-.45px; margin-bottom:4px;}
+.library-heading p {font-size:12px;}
+.library-total {font-size:11px;}
+.library-total strong {font-size:20px; letter-spacing:-.3px;}
+.library-toolbar {margin-bottom:12px; gap:12px;}
+.segmented {padding:2px; border-radius:6px;}
+.segmented button {padding:5px 10px; font-size:12px;}
+.library-search {padding:6px 10px; width:240px; min-height:32px;}
+.library-search input {font-size:12px;}
+.collection-directory-head {padding:9px 14px; font-size:11px;}
+.collection-card {padding:10px 14px; min-height:54px;}
+.collection-identity {gap:10px;}
+.collection-identity>.icon-tabler {width:18px; height:18px;}
+.collection-card h2 {font-size:13px; margin-bottom:2px;}
+.collection-card p {font-size:11px;}
+.collection-records,.collection-fields,.collection-kind {font-size:12px;}
+.btn {min-height:32px; padding:6px 10px; font-size:12px; gap:6px;}
+.btn-icon {width:30px; height:30px; min-width:30px; min-height:30px;}
+.btn .icon-tabler,.btn-icon .icon-tabler {width:16px; height:16px;}
+.btn-primary {background:var(--accent); color:light-dark(#fff,#202023);}
+.btn-primary:hover {background:var(--accent-hover); color:light-dark(#fff,#202023);}
+.row-editor-field label.btn-primary {color:light-dark(#fff,#202023);}
+.panel-toolbar {min-height:68px; padding:14px 20px; gap:12px;}
+.panel-title {gap:10px;}
+.panel-title h1 {font-size:20px; letter-spacing:-.35px; margin-top:3px;}
+.panel-meta {font-size:11px;}
+.search-box {min-height:32px; padding:0 5px 0 9px; gap:6px;}
+.search-box input {padding:5px 0; font-size:12px;}
+.btn-filter {width:24px; height:24px;}
+.data-viewbar {padding:0 20px;}
+.view-tabs {gap:18px;}
+.view-tabs button {padding:9px 0; font-size:12px;}
+.data-viewbar>span {font-size:11px;}
+.table-container {padding:0;}
+.records-table th {height:40px; padding:7px 12px; background:var(--bg-elevated); border-right:1px solid var(--border); font-size:12px;}
+.records-table td {height:36px; padding:6px 12px; border-right:1px solid var(--row-border); font-size:12px; max-width:260px;}
+.records-table td:last-child,.records-table th:last-child {border-right:0;}
+.records-table .th-type {font-size:10px; margin-top:0;}
+.records-table .td-readonly {font-family:inherit;}
+.records-table .td-actions {padding:2px 8px;}
+.records-table .td-actions .btn-icon {width:28px; height:28px;}
+.record-list tbody tr {padding:10px 16px; gap:16px;}
+.record-list td {padding:0; height:auto; border-right:0;}
+.record-list td.mobile-primary {font-size:13px;}
+.record-list td.mobile-preview::before {margin-bottom:3px; font-size:10px;}
+.record-list td.td-actions {padding:0;}
+.pagination {padding:5px 16px; min-height:40px;}
+.page-controls {gap:6px;}
+.page-info {font-size:11px;}
+.row-editor-header {padding:16px 24px; gap:12px;}
+.row-editor-title {font-size:20px; letter-spacing:-.3px;}
+.row-editor-body {padding:20px 24px; gap:16px 24px;}
+.row-editor-field label {margin-bottom:5px;}
+.row-editor-field input,.row-editor-field select,.row-editor-field textarea {font-size:13px; min-height:34px; padding:7px 10px;}
+.row-editor-field textarea {min-height:112px;}
+.row-editor-readonly {padding:7px 10px;}
+.row-editor-actions {padding:10px 24px;}
+.schema-view {padding:20px;}
+.section-heading {margin-bottom:16px;}
+.section-heading h2 {font-size:17px;}
+.schema-field {padding:11px 0; gap:16px;}
+.workflow-page,.backups-page,.mail-page {padding:24px; gap:16px;}
+.workflow-title,.backups-title,.analytics-title {font-size:22px; letter-spacing:-.4px;}
+.workflow-subtitle {font-size:12px; margin-top:4px;}
+.workflow-hero,.backups-hero {padding-bottom:0;}
+.workflow-card,.workflow-form,.mail-template-card {padding:18px;}
+.workflow-form-grid {gap:16px;}
+.workflow-form>.row-editor-field,.workflow-checks {margin:16px 0;}
+.workflow-tab {min-height:36px; padding:8px 12px; font-size:12px;}
+.backup-option-block {padding:18px;}
+.backup-input,.backup-select {min-height:34px; padding:7px 10px; font-size:13px;}
+.mail-grid {gap:14px;}
+.mail-card {padding:4px 0;}
+.mail-section {gap:16px;}
+.mail-footer {padding-top:16px;}
+.backup-row {padding:12px 16px;}
+.backup-init {min-height:46px;}
+.analytics-toolbar {padding:20px 24px; min-height:64px; gap:12px;}
+.analytics-body,.observe-body {padding:0 24px 24px; gap:16px;}
+.analytics-panel>.data-viewbar {margin-bottom:16px;}
+.analytics-select {min-height:32px; font-size:12px; padding:5px 9px;}
+.analytics-cards {margin-bottom:16px;}
+.analytics-card {padding:14px 16px;}
+.analytics-card-value {font-size:24px; letter-spacing:-.4px;}
+.analytics-card-label {font-size:11px;}
+.analytics-chart-wrap {padding:16px;}
+.analytics-chart {height:190px;}
+.analytics-section-events .analytics-logs>.panel-toolbar {padding:8px 0 16px;}
+.media-gallery {padding:0 20px 20px; gap:14px;}
+.media-preview {height:144px;}
+.media-asset-info {padding:12px;}
+.media-empty {min-height:280px;}
+.media-empty h2 {font-size:20px;}
+.toast {padding:10px 14px; font-size:12px;}
+@media(max-width:1100px) and (min-width:761px) {
+  .panel-actions {width:auto;}
+  .panel-toolbar {flex-wrap:wrap;}
+  .search-box input {width:160px;}
+}
+@media(max-width:760px) {
+  .workspace-header {height:50px; padding:0 16px;}
+  .workspace-subnav {height:36px; padding:0 16px;}
+  .workspace-content {margin:0; border-left:0; border-right:0; border-bottom:0; border-radius:0;}
+  .workspace-nav {background:var(--bg-surface);}
+  .workspace-nav a {padding:6px 2px; min-height:44px;}
+  .workspace-nav a.active {color:var(--text-heading); background:var(--bg-hover);}
+  .workspace-nav svg {width:20px; height:20px;}
+  .collection-library {padding:20px 16px;}
+  .library-heading {margin-bottom:18px;}
+  .library-heading h1 {font-size:22px;}
+  .library-toolbar {gap:12px; margin-bottom:12px;}
+  .library-search {width:100%; min-height:42px;}
+  .library-search input {font-size:16px;}
+  .segmented button {min-height:38px; padding:6px 12px;}
+  .collection-card {padding:12px; gap:5px 10px;}
+  .collection-card h2 {font-size:14px;}
+  .collection-card p {font-size:11px;}
+  .collection-records {padding-left:28px; font-size:11px;}
+  .panel-toolbar {padding:14px 16px; gap:12px;}
+  .panel-title h1 {font-size:22px;}
+  .panel-actions {gap:6px;}
+  .btn,.btn-icon {min-height:44px;}
+  .btn-icon {min-width:44px;}
+  .search-box {min-height:44px;}
+  .search-box input {font-size:16px;}
+  .btn-filter {width:36px; height:36px;}
+  .data-viewbar {padding:0 16px;}
+  .view-tabs button {min-height:44px; padding:10px 0;}
+  .record-list tbody tr {padding:12px 16px; gap:8px;}
+  .record-list td.mobile-primary {font-size:15px;}
+  .record-list td.td-actions .btn-icon {width:44px; height:44px;}
+  .records-table:not(.record-list) td {height:44px; padding:6px 10px;}
+  .pagination {padding:4px 12px;}
+  .row-editor-header {padding:14px 16px;}
+  .row-editor-title {font-size:21px;}
+  .row-editor-body {padding:18px 16px; gap:16px;}
+  .row-editor-field input,.row-editor-field select,.row-editor-field textarea,.backup-input,.backup-select {font-size:16px; min-height:44px;}
+  .row-editor-actions {padding:10px 16px;}
+  .workflow-page,.backups-page,.mail-page {padding:20px 16px; gap:16px;}
+  .workflow-title,.backups-title,.analytics-title {font-size:22px;}
+  .analytics-toolbar {padding:18px 16px;}
+  .analytics-body,.observe-body {padding:0 16px 20px;}
+  .analytics-card {padding:12px;}
+  .analytics-card-value {font-size:23px;}
+  .analytics-select {min-height:44px; font-size:16px;}
+  .media-gallery {padding:0 16px 20px;}
+}
+.records-table:not(.record-list) td{font-family:inherit}.records-table:not(.record-list) .th-actions,.records-table:not(.record-list) .td-actions{position:sticky;right:0;z-index:1;background:var(--bg-surface);box-shadow:-1px 0 var(--border)}.records-table:not(.record-list) .th-actions{z-index:2;background:var(--bg-elevated)}.records-table:not(.record-list) tr.selected .td-actions{background:var(--bg-active)}
 </style>
 </head>
 <body>
@@ -1225,7 +1412,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [filterHelp, setFilterHelp] = useState(false);
-  const [presentation, setPresentation] = useState('records');
+  const [presentation, setPresentation] = useState(() => window.matchMedia('(max-width:760px)').matches ? 'records' : 'table');
   const requestId = useRef(0);
 
   const isMaterialized = !!tableMeta?.materialized;
@@ -1243,6 +1430,8 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
     });
     return ordered.length ? ordered.slice(0, 3) : cols.slice(0, 1);
   }, [cols, schema]);
+
+  const displayCols = useMemo(() => [...previewCols, ...cols.filter(c => !previewCols.includes(c))], [cols, previewCols]);
 
   const loadRows = useCallback(async (p, q) => {
     const request = ++requestId.current;
@@ -1450,7 +1639,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
           <table class=${"records-table " + (presentation === "records" ? "record-list" : "")}>
             <thead>
               <tr>
-                ${cols.map(c => {
+                ${displayCols.map(c => {
                   const f = schema ? schema[c] : null;
                   const typeStr = f ? f.type + (f.refTable ? ' -> ' + f.refTable : '') + (f.cached ? ' (cached)' : '') : '';
                   return html`<th key=${c}>
@@ -1473,7 +1662,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
                 const isSelected = selectedPk != null && String(selectedPk) === String(pk);
                 return html`
                   <tr key=${pk} class=${isSelected ? 'selected' : ''} tabindex="0" aria-label=${'Inspect row ' + pk} onKeyDown=${e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setShowCreate(false); setSelectedPk(String(pk)); } }} onClick=${() => { setShowCreate(false); setCreateErr(''); setSelectedPk(String(pk)); }}>
-                    ${cols.map(c => {
+                    ${displayCols.map(c => {
                       const val = row[c];
                       const ro = isReadOnly(schema, c) || isAutoField(schema, c) || val === '[REDACTED]';
                       const f = schema ? schema[c] : null;

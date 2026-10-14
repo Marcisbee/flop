@@ -78,6 +78,26 @@ body{padding:0;background:var(--bg-surface)}.auth-shell{display:grid;grid-templa
 }
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}.auth-intro{background:var(--bg)}.auth-intro h2{font-size:40px;font-weight:550;letter-spacing:-1.5px}.auth-title{font-size:28px;letter-spacing:-.6px}.auth-brand{font-weight:650}.auth-outline>span{color:var(--text-muted)}.auth-kicker{color:var(--text-muted);letter-spacing:.08em}.login-container button[type=submit]{background:var(--accent);color:light-dark(#fff,#152344);border-radius:6px}.field input{border-radius:6px}.auth-description{font-size:14px}
 .auth-shell{display:flex;flex-direction:column;min-height:100dvh}.auth-intro{background:var(--bg-surface);padding:20px 32px;border-bottom:1px solid var(--border);gap:0}.auth-brand{font-size:24px}.login-container{margin:auto;padding:56px 32px;max-width:420px}.auth-title{font-size:26px}.auth-brand span{font-size:13px}@media(max-width:640px){.auth-intro{padding:18px 24px}.login-container{padding:40px 24px;margin:32px auto}.auth-title{font-size:25px}}
+/* Compact console density, shared across data and operational workspaces. */
+:root {
+  --accent:#27272a; --accent-hover:#3f3f46;
+  --bg:#f5f5f6; --bg-surface:#fff; --bg-elevated:#fafafa;
+  --bg-hover:#f1f1f3; --bg-active:#ebebee;
+  --border:#e4e4e7; --border-input:#d4d4d8; --row-border:#ededf0;
+  --text-heading:#202023; --text:#35353b; --text-muted:#71717a;
+  --text-faint:#71717a; --text-dimmed:#71717a; --text-ghost:#71717a;
+}
+@media(prefers-color-scheme:dark) {
+  :root {
+    --accent:#e4e4e7; --accent-hover:#fff;
+    --bg:#18181b; --bg-surface:#1f1f23; --bg-elevated:#242428;
+    --bg-hover:#2c2c32; --bg-active:#34343b;
+    --border:#36363d; --border-input:#4b4b55; --row-border:#303037;
+    --text-heading:#f4f4f5; --text:#dedee3; --text-muted:#aaaab4;
+    --text-faint:#aaaab4; --text-dimmed:#aaaab4; --text-ghost:#aaaab4;
+  }
+}
+.auth-intro{padding:16px 24px;background:var(--bg)}.login-container{padding:40px 28px;max-width:400px}.auth-title{font-size:23px}.field{margin-bottom:18px}.field input{padding:10px}.login-container button[type=submit]{background:var(--accent);color:light-dark(#fff,#202023);min-height:42px}.login-container button[type=submit]:hover{background:var(--accent-hover)}
 </style>
 </head>
 <body><div class="auth-shell"><header class="auth-intro"><a class="auth-brand" href="/_">flop<span>Console</span></a></header>
