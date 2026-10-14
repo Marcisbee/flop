@@ -989,6 +989,33 @@ input,select,textarea {font-size:16px !important; line-height:24px;}
  .data-workspace:not(.editing) .table-container {overflow-x:auto; overscroll-behavior:auto;}
  .data-workspace:not(.editing) .pagination {position:static;}
 }
+/* Tighten spacing without removing fields or changing record actions. */
+.panel-toolbar,.analytics-toolbar {padding-top:16px; padding-bottom:16px;}
+.data-viewbar {padding-bottom:12px;}
+.record-list tbody tr {padding-top:12px; padding-bottom:12px;}
+.collection-library {padding-top:20px;}
+.library-heading {margin-bottom:20px;}
+.library-toolbar {margin-bottom:16px;}
+.collection-card {padding-top:10px; padding-bottom:10px; min-height:56px;}
+@media(max-width:760px) {
+ #app:has(.data-workspace:not(.editing)) .workspace-header,.workspace-header {height:60px; min-height:60px; padding-top:4px; padding-bottom:4px;}
+ .workspace-subnav {height:44px; padding-top:4px; padding-bottom:4px;}
+ .panel-toolbar,.analytics-toolbar {padding-top:12px; padding-bottom:10px; gap:8px;}
+ .data-viewbar {padding-bottom:8px;}
+ .record-list tbody tr[tabindex] {display:grid; grid-template-columns:minmax(0,1fr) 88px; grid-template-rows:22px 44px; align-items:center; padding:10px 16px 6px; gap:2px 8px;}
+ .record-list td.mobile-primary {grid-column:1/-1; grid-row:1;}
+ .record-list td.mobile-preview:not(.mobile-primary) {grid-column:1; grid-row:2;}
+ .record-list td.mobile-preview {display:block; line-height:22px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+ .record-list td.mobile-preview::before {display:inline-block; width:56px; margin:0 8px 0 0; vertical-align:baseline; font-size:14px; line-height:22px; letter-spacing:0;}
+ .record-list td.mobile-preview[style*="2"] {display:none;}
+ .record-list td.td-actions {grid-column:2; grid-row:2; align-self:center; margin:0; height:44px; min-height:44px; gap:0;}
+ .record-list td.td-actions .btn-icon {width:44px; height:44px;}
+ .library-heading {margin-bottom:16px;}
+ .library-toolbar {gap:10px; margin-bottom:12px;}
+ .collection-library {padding-top:16px;}
+ .row-editor-header {padding-top:12px; padding-bottom:12px;}
+ .row-editor-body {gap:14px; padding-top:16px; padding-bottom:16px;}
+}
 </style>
 </head>
 <body>
