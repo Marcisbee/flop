@@ -2,8 +2,8 @@ package server
 
 import _ "embed"
 
-// Admin UI HTML pages shared between TS and Go implementations.
-// Source of truth: shared/admin/*.html (copied here by go generate)
+// Admin UI HTML built from shared/admin/src with npm run build.
+// Generated shared/admin/*.html is copied here by go generate.
 
 //go:embed login.html
 var AdminLoginHTML string
