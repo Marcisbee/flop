@@ -426,24 +426,32 @@ func (as *AuthService) Register(email, password, name string, extraFields map[st
 
 // Login authenticates a user.
 func (as *AuthService) Login(email, password string) (token, refreshToken string, auth *schema.AuthContext, err error) {
-	as.mu.Lock()
-	defer as.mu.Unlock()
 	user := as.findByEmail(email)
 	if user == nil {
 		return "", "", nil, fmt.Errorf("invalid credentials")
 	}
-
-	if !VerifyPassword(password, toString(user["password"])) {
+	oldHash := toString(user["password"])
+	if !VerifyPassword(password, oldHash) {
 		return "", "", nil, fmt.Errorf("invalid credentials")
 	}
-
-	if passwordNeedsUpgrade(toString(user["password"])) {
-		hash, err := HashPassword(password)
+	upgradedHash := ""
+	if passwordNeedsUpgrade(oldHash) {
+		upgradedHash, err = HashPassword(password)
 		if err != nil {
 			return "", "", nil, err
 		}
-		oldHash := toString(user["password"])
-		user, err = as.authTable.UpdateIf(as.getPK(user), map[string]interface{}{"password": hash}, func(current map[string]interface{}) bool { return toString(current["password"]) == oldHash })
+	}
+	// Expensive password verification must not serialize unrelated logins.
+	// After acquiring the credential-change lock, re-read to ensure a reset
+	// that completed during verification cannot be bypassed with the old hash.
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	user, err = as.authTable.Get(as.getPK(user))
+	if err != nil || user == nil || toString(user["password"]) != oldHash || toString(user["email"]) != email {
+		return "", "", nil, fmt.Errorf("invalid credentials")
+	}
+	if upgradedHash != "" {
+		user, err = as.authTable.UpdateIf(as.getPK(user), map[string]interface{}{"password": upgradedHash}, func(current map[string]interface{}) bool { return toString(current["password"]) == oldHash })
 		if err != nil {
 			return "", "", nil, err
 		}

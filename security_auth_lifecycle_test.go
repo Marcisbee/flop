@@ -183,6 +183,11 @@ func TestProviderFlowCannotMoveBetweenBrowsers(t *testing.T) {
 	if len(cookies) == 0 {
 		t.Fatal("start did not bind browser")
 	}
+	cookie := cookies[0]
+	if cookie.Name != "__Host-flop-provider" || !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/" || cookie.Domain != "" || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge <= 0 {
+		t.Fatalf("unsafe browser-binding cookie: %#v", cookie)
+	}
+
 	callback := httptest.NewRequest("GET", callbackURL, nil)
 	for _, c := range cookies {
 		callback.AddCookie(c)
