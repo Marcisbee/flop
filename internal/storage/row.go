@@ -62,13 +62,25 @@ func appendField(buf []byte, value interface{}, kind schema.FieldKind) []byte {
 		buf = append(buf, jsonBytes...)
 
 	case schema.KindRoles, schema.KindRefMulti, schema.KindSet:
-		arr := toStringSlice(value)
 		buf = append(buf, byte(tag))
-		buf = appendUint16(buf, uint16(len(arr)))
-		for _, item := range arr {
-			encoded := []byte(item)
-			buf = appendUint16(buf, uint16(len(encoded)))
-			buf = append(buf, encoded...)
+		// Encode directly from the caller's representation without building a
+		// temporary string slice for interface-valued arrays.
+		switch arr := value.(type) {
+		case []string:
+			buf = appendUint16(buf, uint16(len(arr)))
+			for _, item := range arr {
+				buf = appendUint16(buf, uint16(len(item)))
+				buf = append(buf, item...)
+			}
+		case []interface{}:
+			buf = appendUint16(buf, uint16(len(arr)))
+			for _, item := range arr {
+				s := toString(item)
+				buf = appendUint16(buf, uint16(len(s)))
+				buf = append(buf, s...)
+			}
+		default:
+			buf = appendUint16(buf, 0)
 		}
 
 	case schema.KindVector:
@@ -180,7 +192,7 @@ func DeserializeRow(buf []byte, offset int, cs *schema.CompiledSchema) (row map[
 			}
 			count := binary.LittleEndian.Uint16(buf[offset : offset+2])
 			offset += 2
-			arr := make([]string, 0, count)
+			arr := make([]interface{}, 0, count)
 			for j := 0; j < int(count); j++ {
 				if offset+2 > len(buf) {
 					return nil, 0, 0, ErrShortBuffer
@@ -193,12 +205,7 @@ func DeserializeRow(buf []byte, offset int, cs *schema.CompiledSchema) (row map[
 				arr = append(arr, string(buf[offset:offset+int(length)]))
 				offset += int(length)
 			}
-			// Convert to []interface{} for JSON compat
-			iArr := make([]interface{}, len(arr))
-			for k, v := range arr {
-				iArr[k] = v
-			}
-			row[field.Name] = iArr
+			row[field.Name] = arr
 
 		case schema.TagVector:
 			if offset+2 > len(buf) {
@@ -315,7 +322,7 @@ func DeserializeRawFields(buf []byte, offset int) (values []interface{}, schemaV
 			}
 			count := binary.LittleEndian.Uint16(buf[offset : offset+2])
 			offset += 2
-			arr := make([]string, 0, count)
+			arr := make([]interface{}, 0, count)
 			for j := 0; j < int(count); j++ {
 				if offset+2 > len(buf) {
 					return nil, 0, 0, ErrShortBuffer
@@ -328,11 +335,7 @@ func DeserializeRawFields(buf []byte, offset int) (values []interface{}, schemaV
 				arr = append(arr, string(buf[offset:offset+int(length)]))
 				offset += int(length)
 			}
-			iArr := make([]interface{}, len(arr))
-			for k, v := range arr {
-				iArr[k] = v
-			}
-			values = append(values, iArr)
+			values = append(values, arr)
 
 		case schema.TagVector:
 			if offset+2 > len(buf) {
@@ -450,21 +453,6 @@ func toBool(v interface{}) bool {
 		return val != "" && val != "false"
 	default:
 		return false
-	}
-}
-
-func toStringSlice(v interface{}) []string {
-	switch val := v.(type) {
-	case []string:
-		return val
-	case []interface{}:
-		result := make([]string, len(val))
-		for i, item := range val {
-			result[i] = toString(item)
-		}
-		return result
-	default:
-		return nil
 	}
 }
 

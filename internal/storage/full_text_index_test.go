@@ -506,3 +506,51 @@ func TestFullTextIndexFileRejectsCorruption(t *testing.T) {
 		t.Fatal("expected corrupted full-text index to be rejected")
 	}
 }
+
+// Overlapping postings must be deduplicated, and filtering a union must not
+// change later searches, including after replacement and deletion.
+func TestPrefixSearchCandidateOwnership(t *testing.T) {
+	for _, words := range []int{1, 2, 9} {
+		t.Run(fmt.Sprint(words), func(t *testing.T) {
+			idx := NewFullTextIndex()
+			wantAll := make(map[string]bool)
+			wantFiltered := make(map[string]bool)
+			for i := 0; i < 36; i++ {
+				pk := fmt.Sprint(i)
+				text := fmt.Sprintf("term%d term%d", i%words, (i+1)%words)
+				if i%2 == 0 {
+					text += fmt.Sprintf(" group%d", i%12)
+					wantFiltered[pk] = true
+				}
+				idx.Index(pk, text)
+				wantAll[pk] = true
+			}
+			check := func(query string, want map[string]bool) {
+				t.Helper()
+				got := idx.Search(query, 100)
+				seen := make(map[string]bool)
+				for _, pk := range got {
+					if !want[pk] || seen[pk] {
+						t.Fatalf("%q: unexpected or duplicate %q", query, pk)
+					}
+					seen[pk] = true
+				}
+				if len(seen) != len(want) {
+					t.Fatalf("%q: got %d results, want %d", query, len(seen), len(want))
+				}
+			}
+			for round := 0; round < 2; round++ {
+				check("term group", wantFiltered)
+				check("term", wantAll)
+			}
+			idx.Delete("0")
+			idx.Index("2", "unrelated")
+			delete(wantAll, "0")
+			delete(wantAll, "2")
+			delete(wantFiltered, "0")
+			delete(wantFiltered, "2")
+			check("term group", wantFiltered)
+			check("term", wantAll)
+		})
+	}
+}
