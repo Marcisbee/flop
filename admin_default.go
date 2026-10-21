@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
 	"io"
@@ -287,11 +288,11 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				Email    string `json:"email"`
 				Password string `json:"password"`
 			}
-			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-				adminJSONError(w, "invalid json", http.StatusBadRequest)
+			if err := decodeAdminJSONBody(r, &body); err != nil {
+				writeAdminJSONBodyError(w, err)
 				return
 			}
-			if adminLoginLimit != nil && !adminLoginLimit.Allow(server.ClientIP(r)+"|"+strings.ToLower(strings.TrimSpace(body.Email))) {
+			if adminLoginLimit != nil && !adminLoginLimit.Allow(server.ClientIP(r)+"|login") {
 				w.Header().Set("Retry-After", "60")
 				adminJSONError(w, "too many attempts, try again later", http.StatusTooManyRequests)
 				return
@@ -317,8 +318,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			var body struct {
 				RefreshToken string `json:"refreshToken"`
 			}
-			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-				adminJSONError(w, "invalid json", http.StatusBadRequest)
+			if err := decodeAdminJSONBody(r, &body); err != nil {
+				writeAdminJSONBodyError(w, err)
 				return
 			}
 			token, nextRefreshToken, err := authProvider.AdminRefresh(body.RefreshToken)
@@ -393,8 +394,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				return
 			}
 			var body map[string]any
-			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-				adminJSONError(w, "invalid json", http.StatusBadRequest)
+			if err := decodeAdminJSONBody(r, &body); err != nil {
+				writeAdminJSONBodyError(w, err)
 				return
 			}
 			bodyToken, _ := body["token"].(string)
@@ -505,8 +506,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				return
 			case path == "/_/api/workflows" && r.Method == http.MethodPost:
 				var workflow Workflow
-				if err := jsonx.NewDecoder(r.Body).Decode(&workflow); err != nil {
-					adminJSONError(w, "invalid json", http.StatusBadRequest)
+				if err := decodeAdminJSONBody(r, &workflow); err != nil {
+					writeAdminJSONBodyError(w, err)
 					return
 				}
 				workflow.ID = ""
@@ -523,8 +524,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				var body struct {
 					Input map[string]any `json:"input"`
 				}
-				if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-					adminJSONError(w, "invalid json", http.StatusBadRequest)
+				if err := decodeAdminJSONBody(r, &body); err != nil {
+					writeAdminJSONBodyError(w, err)
 					return
 				}
 				run, err := workflowProvider.AdminRunWorkflow(id, body.Input)
@@ -545,8 +546,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				switch r.Method {
 				case http.MethodPut:
 					var workflow Workflow
-					if err := jsonx.NewDecoder(r.Body).Decode(&workflow); err != nil {
-						adminJSONError(w, "invalid json", http.StatusBadRequest)
+					if err := decodeAdminJSONBody(r, &workflow); err != nil {
+						writeAdminJSONBodyError(w, err)
 						return
 					}
 					workflow.ID = id
@@ -590,8 +591,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				var body struct {
 					Action string `json:"action"`
 				}
-				if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-					adminJSONError(w, "invalid json", http.StatusBadRequest)
+				if err := decodeAdminJSONBody(r, &body); err != nil {
+					writeAdminJSONBodyError(w, err)
 					return
 				}
 				run, err := workflowProvider.AdminResolveWorkflowRun(id, strings.TrimSpace(body.Action))
@@ -848,8 +849,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				var body struct {
 					Settings BackupSettings `json:"settings"`
 				}
-				if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-					adminJSONError(w, "invalid json", http.StatusBadRequest)
+				if err := decodeAdminJSONBody(r, &body); err != nil {
+					writeAdminJSONBodyError(w, err)
 					return
 				}
 				settings, err := backupProvider.AdminUpdateBackupSettings(body.Settings)
@@ -892,8 +893,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				var body struct {
 					Settings EmailSettings `json:"settings"`
 				}
-				if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-					adminJSONError(w, "invalid json", http.StatusBadRequest)
+				if err := decodeAdminJSONBody(r, &body); err != nil {
+					writeAdminJSONBodyError(w, err)
 					return
 				}
 				settings, err := backupProvider.AdminUpdateEmailSettings(body.Settings)
@@ -930,8 +931,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				Email    string        `json:"email"`
 				Template string        `json:"template"`
 			}
-			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-				adminJSONError(w, "invalid json", http.StatusBadRequest)
+			if err := decodeAdminJSONBody(r, &body); err != nil {
+				writeAdminJSONBodyError(w, err)
 				return
 			}
 			var err error
@@ -964,8 +965,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 			var body struct {
 				S3 BackupS3Config `json:"s3"`
 			}
-			if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
-				adminJSONError(w, "invalid json", http.StatusBadRequest)
+			if err := decodeAdminJSONBody(r, &body); err != nil {
+				writeAdminJSONBodyError(w, err)
 				return
 			}
 			if err := backupProvider.AdminTestBackupS3(body.S3); err != nil {
@@ -1133,8 +1134,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 				switch r.Method {
 				case http.MethodPut:
 					var fields map[string]any
-					if err := jsonx.NewDecoder(r.Body).Decode(&fields); err != nil {
-						adminJSONError(w, "invalid json", http.StatusBadRequest)
+					if err := decodeAdminJSONBody(r, &fields); err != nil {
+						writeAdminJSONBodyError(w, err)
 						return
 					}
 					if err := writeProvider.AdminUpdateRow(tableName, pk, fields); err != nil {
@@ -1183,8 +1184,8 @@ func defaultAdminHandler(provider AdminProvider, cfg *AdminConfig) http.Handler 
 					return
 				}
 				var data map[string]any
-				if err := jsonx.NewDecoder(r.Body).Decode(&data); err != nil {
-					adminJSONError(w, "invalid json", http.StatusBadRequest)
+				if err := decodeAdminJSONBody(r, &data); err != nil {
+					writeAdminJSONBodyError(w, err)
 					return
 				}
 				row, err := writeProvider.AdminCreateRow(tableName, data)
@@ -1534,3 +1535,23 @@ func VerifyPurposeJWT(token, secret string) *PurposePayload {
 
 // SMTPConfig holds SMTP server settings for sending emails.
 type SMTPConfig = server.SMTPConfig
+
+func decodeAdminJSONBody(r *http.Request, out any) error {
+	limit := int64(defaultMaxRequestBodyBytes)
+	if r.URL.Path == "/_/api/login" || r.URL.Path == "/_/api/refresh" || strings.HasPrefix(r.URL.Path, "/_/api/setup") {
+		limit = authRequestBodyLimit
+	}
+	data, err := readAllAndClose(r, limit)
+	if err != nil {
+		return err
+	}
+	return jsonx.Unmarshal(data, out)
+}
+
+func writeAdminJSONBodyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errRequestBodyTooLarge) {
+		adminJSONError(w, "request body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	adminJSONError(w, "invalid json", http.StatusBadRequest)
+}

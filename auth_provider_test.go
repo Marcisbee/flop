@@ -146,6 +146,7 @@ func fakeProviderConfig(adapter AuthProviderAdapter, provider, issuer string) Au
 func providerRequest(t *testing.T, handler http.Handler, method, path, body, bearer string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.AddCookie(&http.Cookie{Name: "__Host-flop-provider", Value: strings.Repeat("b", 43)})
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -740,6 +741,7 @@ func TestBlockedProviderExchangeDoesNotBlockUnrelatedStart(t *testing.T) {
 	go func() {
 		path := "/api/auth/provider/callback?provider=blocked&state=" + url.QueryEscape(state) + "&code=wait"
 		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: "__Host-flop-provider", Value: strings.Repeat("b", 43)})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		callbackDone <- rec

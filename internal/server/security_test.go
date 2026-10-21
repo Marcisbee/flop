@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -123,5 +124,20 @@ func TestClientIP(t *testing.T) {
 	r.RemoteAddr = "203.0.113.9"
 	if got := ClientIP(r); got != "203.0.113.9" {
 		t.Fatalf("ClientIP without port = %q", got)
+	}
+}
+
+func TestRateLimiterBoundsLiveKeys(t *testing.T) {
+	limiter := NewRateLimiter(1, time.Minute)
+	for i := 0; i < 10000; i++ {
+		if !limiter.Allow(fmt.Sprint(i)) {
+			t.Fatalf("unexpected rejection at %d", i)
+		}
+	}
+	if limiter.Allow("overflow") {
+		t.Fatal("unbounded live key admitted")
+	}
+	if limiter.Allow("0") {
+		t.Fatal("capacity handling reset existing budget")
 	}
 }

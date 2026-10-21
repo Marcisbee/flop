@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
@@ -11,6 +12,7 @@ import (
 
 // SuperadminService manages built-in admin accounts stored in the _superadmin table.
 type SuperadminService struct {
+	mu              sync.Mutex
 	table           *engine.TableInstance
 	sessionTable    *engine.TableInstance
 	secret          string
@@ -41,6 +43,18 @@ func (s *SuperadminService) Login(email, password string) (token, refreshToken s
 	if err := validatePrincipalRow(user, principalTypeSuperadmin); err != nil {
 		return "", "", nil, err
 	}
+	if passwordNeedsUpgrade(toString(user["password"])) {
+		hash, err := HashPassword(password)
+		if err != nil {
+			return "", "", nil, err
+		}
+		oldHash := toString(user["password"])
+		user, err = s.table.UpdateIf(s.getPK(user), map[string]interface{}{"password": hash}, func(current map[string]interface{}) bool { return toString(current["password"]) == oldHash })
+		if err != nil {
+			return "", "", nil, err
+		}
+	}
+
 	pk := s.getPK(user)
 	name := toString(user["name"])
 	sessionID, err := s.createSession(pk, "login")
@@ -60,8 +74,10 @@ func (s *SuperadminService) Login(email, password string) (token, refreshToken s
 }
 
 func (s *SuperadminService) Refresh(refreshToken string) (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	payload := VerifyJWT(refreshToken, s.secret)
-	if payload == nil {
+	if payload == nil || !tokenHasUse(payload, "refresh") {
 		return "", "", fmt.Errorf("invalid refresh token")
 	}
 	if payload.InstanceID != s.instanceID || payload.PrincipalType != principalTypeSuperadmin || payload.SessionID == "" {
@@ -153,7 +169,7 @@ func (s *SuperadminService) getPK(row map[string]interface{}) string {
 
 func (s *SuperadminService) ValidateAccessToken(token string) (*schema.AuthContext, error) {
 	payload := VerifyJWT(token, s.secret)
-	if payload == nil {
+	if payload == nil || !tokenHasUse(payload, "access") {
 		return nil, fmt.Errorf("invalid or expired token")
 	}
 	if payload.InstanceID != s.instanceID || payload.PrincipalType != principalTypeSuperadmin || payload.SessionID == "" {
@@ -184,6 +200,7 @@ func (s *SuperadminService) ValidateAccessToken(token string) (*schema.AuthConte
 func (s *SuperadminService) issueToken(id, email, name, sessionID string) string {
 	now := time.Now().Unix()
 	return CreateJWT(&JWTPayload{
+		TokenUse:      "access",
 		Sub:           id,
 		Email:         email,
 		Name:          name,
@@ -199,6 +216,7 @@ func (s *SuperadminService) issueToken(id, email, name, sessionID string) string
 func (s *SuperadminService) issueRefreshToken(id, sessionID string) string {
 	now := time.Now().Unix()
 	return CreateJWT(&JWTPayload{
+		TokenUse:      "refresh",
 		Sub:           id,
 		PrincipalType: principalTypeSuperadmin,
 		SessionID:     sessionID,

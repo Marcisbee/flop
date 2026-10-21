@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -478,13 +479,32 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 		tables = filtered
 	}
 	accessor := h.db.trackedAccessor(nil, auth)
-	rowFilterTables := make(map[string]bool, len(tables))
+	seenTables := make(map[string]bool, len(tables))
+	validTables := make([]string, 0, len(tables))
 	for _, tableName := range tables {
+		if _, seen := seenTables[tableName]; seen {
+			continue
+		}
 		ti := accessor.Table(tableName)
 		if ti == nil {
 			continue
 		}
-		rowFilterTables[tableName] = ti.requiresRowReadFiltering()
+		validTables = append(validTables, tableName)
+		seenTables[tableName] = true
+	}
+	tables = validTables
+	// Credentials and roles may change while a stream is open. Revalidate before
+	// each delivery, and close on invalidation so the client must reconnect.
+	refreshAuth := func() bool {
+		if auth == nil {
+			return true
+		}
+		current := h.authFromRequest(r)
+		if current == nil {
+			return false
+		}
+		accessor.auth = current
+		return true
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -512,71 +532,22 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 		Op    string `json:"op"`
 		RowID string `json:"rowId"`
 	}
-	visibleRows := make(map[string]map[string]struct{})
-	isReadable := func(event engine.ChangeEvent) bool {
+	// Authorize both sides of an update so clients can remove a row that
+	// became private, including rows loaded before subscribing. Never emit a
+	// touch for a row the subscriber could not read. This also avoids retaining
+	// an ever-growing set of row IDs for each long-lived connection.
+	shouldEmit := func(event engine.ChangeEvent) bool {
 		ti := accessor.Table(event.Table)
 		if ti == nil {
 			return false
 		}
-		if !rowFilterTables[event.Table] {
+		if !ti.requiresRowReadFiltering() {
 			return true
 		}
-		return ti.allowRead(event.Data)
-	}
-	wasVisible := func(event engine.ChangeEvent) bool {
-		rows := visibleRows[event.Table]
-		if rows == nil {
-			return false
+		if event.Data != nil && ti.allowRead(event.Data) {
+			return true
 		}
-		_, ok := rows[event.RowID]
-		return ok
-	}
-	markVisible := func(event engine.ChangeEvent) {
-		rows := visibleRows[event.Table]
-		if rows == nil {
-			rows = make(map[string]struct{})
-			visibleRows[event.Table] = rows
-		}
-		rows[event.RowID] = struct{}{}
-	}
-	markHidden := func(event engine.ChangeEvent) {
-		rows := visibleRows[event.Table]
-		if rows == nil {
-			return
-		}
-		delete(rows, event.RowID)
-	}
-	shouldEmit := func(event engine.ChangeEvent) (bool, bool) {
-		if !rowFilterTables[event.Table] {
-			return true, false
-		}
-		readable := isReadable(event)
-		visibleBefore := wasVisible(event)
-		switch event.Op {
-		case "insert":
-			if readable {
-				markVisible(event)
-				return true, false
-			}
-			return false, false
-		case "delete":
-			if readable || visibleBefore {
-				markHidden(event)
-				return true, false
-			}
-			return false, false
-		default: // update and unknown future ops
-			if readable {
-				markVisible(event)
-				return true, false
-			}
-			if visibleBefore {
-				markHidden(event)
-				return true, false
-			}
-			// Row may have been visible in initial snapshot; emit table touch without row details.
-			return true, true
-		}
+		return event.Op == "update" && event.PreviousData != nil && ti.allowRead(event.PreviousData)
 	}
 
 	for {
@@ -584,13 +555,11 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-done:
 			return
 		case event := <-changeCh:
-			emit, scrub := shouldEmit(event)
-			if !emit {
-				continue
+			if !refreshAuth() {
+				return
 			}
-			if scrub {
-				event.Op = "touch"
-				event.RowID = ""
+			if !shouldEmit(event) {
+				continue
 			}
 			payload, _ := json.Marshal(changePayload{
 				Table: event.Table,
@@ -600,6 +569,9 @@ func (h *APIHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "event: change\ndata: %s\n\n", payload)
 			flusher.Flush()
 		case <-heartbeat.C:
+			if !refreshAuth() {
+				return
+			}
 			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}
@@ -769,11 +741,22 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		if !h.allowAuthAttempt(w, r, "provider-start") {
 			return
 		}
-		result, err := h.db.providerAuth.startForApp(r.Context(), in.AppID, in.Provider, in.Intent, in.ReturnTo, in.Scopes, in.GrantID, h.authFromRequest(r))
+		binding := providerBrowserBinding(r)
+		if binding == "" {
+			var err error
+			binding, err = h.db.providerAuth.randomToken(32)
+			if err != nil {
+				jsonError(w, "could not start provider authentication", 500)
+				return
+			}
+		}
+		result, err := h.db.providerAuth.startForApp(r.Context(), in.AppID, in.Provider, in.Intent, in.ReturnTo, in.Scopes, in.GrantID, h.authFromRequest(r), binding)
 		if err != nil {
 			providerJSONError(w, err)
 			return
 		}
+		http.SetCookie(w, &http.Cookie{Name: providerBrowserCookieName(r), Value: binding, Path: "/", HttpOnly: true, Secure: providerBrowserCookieName(r) == "__Host-flop-provider", SameSite: http.SameSiteLaxMode, MaxAge: 1800})
+		w.Header().Set("Cache-Control", "no-store")
 		jsonResponse(w, http.StatusOK, map[string]any{"authorizationUrl": result.AuthorizationURL})
 	case "/api/auth/provider/callback":
 		if r.Method != http.MethodGet {
@@ -781,7 +764,7 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		query := r.URL.Query()
-		result, err := h.db.providerAuth.callback(r.Context(), query.Get("provider"), query.Get("state"), query.Get("code"), query.Get("error"), query)
+		result, err := h.db.providerAuth.callback(r.Context(), query.Get("provider"), query.Get("state"), query.Get("code"), query.Get("error"), query, providerBrowserBinding(r))
 		if err != nil {
 			providerJSONError(w, err)
 			return
@@ -825,7 +808,7 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		if !h.allowAuthAttempt(w, r, "provider-complete") {
 			return
 		}
-		result, err := h.db.providerAuth.complete(completionCode, in.Confirm, h.authFromRequest(r))
+		result, err := h.db.providerAuth.complete(completionCode, in.Confirm, h.authFromRequest(r), providerBrowserBinding(r))
 		if err != nil {
 			providerJSONError(w, err)
 			return
@@ -2061,4 +2044,26 @@ func parseCSVQuery(raw string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+func providerBrowserCookieName(r *http.Request) string {
+	host := r.URL.Hostname()
+	if host == "" {
+		host = r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	}
+	if isLoopbackHost(host) {
+		return "flop-provider-local"
+	}
+	return "__Host-flop-provider"
+}
+
+func providerBrowserBinding(r *http.Request) string {
+	c, err := r.Cookie(providerBrowserCookieName(r))
+	if err != nil || len(c.Value) != 43 {
+		return ""
+	}
+	return c.Value
 }

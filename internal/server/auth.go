@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ type JWTPayload struct {
 	PrincipalType string   `json:"principalType,omitempty"`
 	SessionID     string   `json:"sessionId,omitempty"`
 	InstanceID    string   `json:"instanceId,omitempty"`
+	TokenUse      string   `json:"tokenUse,omitempty"`
 	// Purpose is set only on purpose tokens (verification, email change,
 	// password reset). Such tokens must never authenticate API requests:
 	// they carry no session, are not revoked with sessions, and outlive
@@ -111,7 +113,7 @@ func VerifyJWT(token, secret string) *JWTPayload {
 
 	// Check expiration
 	now := time.Now().Unix()
-	if payload.Exp > 0 && payload.Exp < now {
+	if payload.Exp > 0 && payload.Exp <= now {
 		return nil
 	}
 
@@ -179,22 +181,47 @@ func RegisterPasswordVerifier(v PasswordVerifier) {
 	passwordVerifiersMu.Unlock()
 }
 
-// pbkdf2Verifier handles $pbkdf2$salt$hash format.
+const passwordIterations = 600000
+
+// Both the original fixed-cost hashes and versioned work factors are readable.
 type pbkdf2Verifier struct{}
 
 func (v *pbkdf2Verifier) Prefix() string { return "$pbkdf2$" }
-func (v *pbkdf2Verifier) Verify(password, hash string) bool {
+func parsePasswordHash(hash string) (salt, digest []byte, iterations int, ok bool) {
 	parts := strings.Split(hash, "$")
-	if len(parts) != 4 || parts[1] != "pbkdf2" {
+	if (len(parts) != 4 && len(parts) != 5) || parts[1] != "pbkdf2" {
+		return
+	}
+	iterations = 10000
+	if len(parts) == 5 {
+		var err error
+		iterations, err = strconv.Atoi(parts[2])
+		if err != nil || iterations < 10000 || iterations > 2000000 {
+			return nil, nil, 0, false
+		}
+	}
+	salt, err := hex.DecodeString(parts[len(parts)-2])
+	if err != nil || len(salt) == 0 || len(salt) > 64 {
+		return nil, nil, 0, false
+	}
+	digest, err = hex.DecodeString(parts[len(parts)-1])
+	if err != nil || len(digest) != 32 {
+		return nil, nil, 0, false
+	}
+	return salt, digest, iterations, true
+}
+func (v *pbkdf2Verifier) Verify(password, hash string) bool {
+	salt, digest, iterations, ok := parsePasswordHash(hash)
+	if !ok {
 		return false
 	}
-	salt, err := hex.DecodeString(parts[2])
-	if err != nil {
-		return false
-	}
-	derived := pbkdf2.Key([]byte(password), salt, 10000, 32, sha256.New)
-	hashHex := hex.EncodeToString(derived)
-	return hmac.Equal([]byte(hashHex), []byte(parts[3]))
+	derived := pbkdf2.Key([]byte(password), salt, iterations, 32, sha256.New)
+	return hmac.Equal(derived, digest)
+}
+
+func passwordNeedsUpgrade(hash string) bool {
+	_, _, iterations, ok := parsePasswordHash(hash)
+	return ok && iterations < passwordIterations
 }
 
 // bcryptVerifier handles $2a$, $2b$, $2y$ bcrypt formats.
@@ -212,10 +239,10 @@ func HashPassword(password string) (string, error) {
 		return "", err
 	}
 
-	derived := pbkdf2.Key([]byte(password), salt, 10000, 32, sha256.New)
+	derived := pbkdf2.Key([]byte(password), salt, passwordIterations, 32, sha256.New)
 	saltHex := hex.EncodeToString(salt)
 	hashHex := hex.EncodeToString(derived)
-	return fmt.Sprintf("$pbkdf2$%s$%s", saltHex, hashHex), nil
+	return fmt.Sprintf("$pbkdf2$%d$%s$%s", passwordIterations, saltHex, hashHex), nil
 }
 
 // VerifyPassword checks a password against a hash using registered verifiers.
@@ -237,6 +264,8 @@ func VerifyPassword(password, hash string) bool {
 
 // PurposePayload is used for single-use verification tokens.
 type PurposePayload struct {
+	State    string `json:"state,omitempty"`
+	Nonce    string `json:"nonce,omitempty"`
 	Sub      string `json:"sub"`
 	Email    string `json:"email,omitempty"`
 	NewEmail string `json:"newEmail,omitempty"`
@@ -284,7 +313,7 @@ func VerifyPurposeJWT(token, secret string) *PurposePayload {
 	}
 
 	now := time.Now().Unix()
-	if payload.Exp > 0 && payload.Exp < now {
+	if payload.Exp > 0 && payload.Exp <= now {
 		return nil
 	}
 
@@ -295,6 +324,8 @@ func VerifyPurposeJWT(token, secret string) *PurposePayload {
 
 // AuthService handles user registration, login, and token management.
 type AuthService struct {
+	mu                    sync.Mutex
+	purposeTable          *engine.TableInstance
 	authTable             *engine.TableInstance
 	sessionTable          *engine.TableInstance
 	secret                string
@@ -305,9 +336,10 @@ type AuthService struct {
 }
 
 // NewAuthService creates a new AuthService.
-func NewAuthService(authTable, sessionTable *engine.TableInstance, secret, instanceID string) *AuthService {
+func NewAuthService(authTable, sessionTable, purposeTable *engine.TableInstance, secret, instanceID string) *AuthService {
 	return &AuthService{
 		authTable:       authTable,
+		purposeTable:    purposeTable,
 		sessionTable:    sessionTable,
 		secret:          secret,
 		instanceID:      instanceID,
@@ -398,9 +430,31 @@ func (as *AuthService) Login(email, password string) (token, refreshToken string
 	if user == nil {
 		return "", "", nil, fmt.Errorf("invalid credentials")
 	}
-
-	if !VerifyPassword(password, toString(user["password"])) {
+	oldHash := toString(user["password"])
+	if !VerifyPassword(password, oldHash) {
 		return "", "", nil, fmt.Errorf("invalid credentials")
+	}
+	upgradedHash := ""
+	if passwordNeedsUpgrade(oldHash) {
+		upgradedHash, err = HashPassword(password)
+		if err != nil {
+			return "", "", nil, err
+		}
+	}
+	// Expensive password verification must not serialize unrelated logins.
+	// After acquiring the credential-change lock, re-read to ensure a reset
+	// that completed during verification cannot be bypassed with the old hash.
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	user, err = as.authTable.Get(as.getPK(user))
+	if err != nil || user == nil || toString(user["password"]) != oldHash || toString(user["email"]) != email {
+		return "", "", nil, fmt.Errorf("invalid credentials")
+	}
+	if upgradedHash != "" {
+		user, err = as.authTable.UpdateIf(as.getPK(user), map[string]interface{}{"password": upgradedHash}, func(current map[string]interface{}) bool { return toString(current["password"]) == oldHash })
+		if err != nil {
+			return "", "", nil, err
+		}
 	}
 
 	user, err = as.normalizeVerifiedUser(user)
@@ -433,7 +487,7 @@ func (as *AuthService) Login(email, password string) (token, refreshToken string
 // Refresh issues a new access token from a refresh token.
 func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 	payload := VerifyJWT(refreshToken, as.secret)
-	if payload == nil {
+	if payload == nil || !tokenHasUse(payload, "refresh") {
 		return "", "", fmt.Errorf("invalid refresh token")
 	}
 	if payload.InstanceID != as.instanceID || payload.PrincipalType != principalTypeUser || payload.SessionID == "" {
@@ -453,6 +507,13 @@ func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 			return "", "", err
 		}
 	}
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	session, err = as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
+	if err != nil {
+		return "", "", err
+	}
+
 	user, err := as.authTable.Get(payload.Sub)
 	if err != nil || user == nil {
 		_ = as.revokeSession(payload.SessionID, "principal_missing")
@@ -477,7 +538,7 @@ func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 
 func (as *AuthService) ValidateAccessToken(token string) (*schema.AuthContext, error) {
 	payload := VerifyJWT(token, as.secret)
-	if payload == nil {
+	if payload == nil || !tokenHasUse(payload, "access") {
 		return nil, fmt.Errorf("invalid or expired token")
 	}
 	if payload.InstanceID != as.instanceID || payload.PrincipalType != principalTypeUser || payload.SessionID == "" {
@@ -581,6 +642,8 @@ func (as *AuthService) AuthSchemaFields() []schema.CompiledField {
 // ChangePassword verifies the old password and sets a new one.
 // The new password is always hashed with PBKDF2, migrating any legacy hash format.
 func (as *AuthService) ChangePassword(userID, oldPassword, newPassword string) error {
+	as.mu.Lock()
+	defer as.mu.Unlock()
 	user, err := as.authTable.Get(userID)
 	if err != nil || user == nil {
 		return fmt.Errorf("user not found")
@@ -593,7 +656,10 @@ func (as *AuthService) ChangePassword(userID, oldPassword, newPassword string) e
 		return err
 	}
 	_, err = as.authTable.Update(userID, map[string]interface{}{"password": hashed}, nil)
-	return err
+	if err != nil {
+		return err
+	}
+	return as.revokeSessionsForPrincipal(userID, "password_change")
 }
 
 // RequestEmailChange generates a token to confirm an email change.
@@ -610,7 +676,13 @@ func (as *AuthService) RequestEmailChange(userID, newEmail, password string) (st
 	if existing != nil {
 		return "", fmt.Errorf("email already in use")
 	}
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
 	token := CreatePurposeJWT(&PurposePayload{
+		State:    as.purposeState(user),
+		Nonce:    base64urlEncode(nonce),
 		Sub:      userID,
 		Email:    toString(user["email"]),
 		NewEmail: newEmail,
@@ -624,17 +696,20 @@ func (as *AuthService) RequestEmailChange(userID, newEmail, password string) (st
 // ConfirmEmailChange verifies the token and updates the user's email.
 // Returns a new authenticated session with the updated email.
 func (as *AuthService) ConfirmEmailChange(token string) (string, string, *schema.AuthContext, error) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
 	payload := VerifyPurposeJWT(token, as.secret)
 	if payload == nil || payload.Purpose != "email-change" {
 		return "", "", nil, fmt.Errorf("invalid or expired token")
+	}
+	if err := as.consumePurposeToken(token, payload); err != nil {
+		return "", "", nil, err
 	}
 	existing := as.findByEmail(payload.NewEmail)
 	if existing != nil {
 		return "", "", nil, fmt.Errorf("email already in use")
 	}
-	_, err := as.authTable.Update(payload.Sub, map[string]interface{}{
-		"email": payload.NewEmail,
-	}, nil)
+	_, err := as.updatePurposeUser(payload, map[string]interface{}{"email": payload.NewEmail})
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -651,7 +726,13 @@ func (as *AuthService) RequestVerification(userID string) (string, error) {
 	if err != nil || user == nil {
 		return "", fmt.Errorf("user not found")
 	}
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
 	token := CreatePurposeJWT(&PurposePayload{
+		State:   as.purposeState(user),
+		Nonce:   base64urlEncode(nonce),
 		Sub:     userID,
 		Email:   toString(user["email"]),
 		Purpose: "verification",
@@ -664,9 +745,14 @@ func (as *AuthService) RequestVerification(userID string) (string, error) {
 // ConfirmVerification verifies the token, promotes the user if needed,
 // and returns a fresh authenticated session.
 func (as *AuthService) ConfirmVerification(token string) (string, string, *schema.AuthContext, error) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
 	payload := VerifyPurposeJWT(token, as.secret)
 	if payload == nil || payload.Purpose != "verification" {
 		return "", "", nil, fmt.Errorf("invalid or expired token")
+	}
+	if err := as.consumePurposeToken(token, payload); err != nil {
+		return "", "", nil, err
 	}
 	user, err := as.authTable.Get(payload.Sub)
 	if err != nil || user == nil {
@@ -690,7 +776,7 @@ func (as *AuthService) ConfirmVerification(token string) (string, string, *schem
 		updates["roles"] = iRoles
 	}
 
-	if _, err := as.authTable.Update(payload.Sub, updates, nil); err != nil {
+	if _, err := as.updatePurposeUser(payload, updates); err != nil {
 		return "", "", nil, err
 	}
 
@@ -709,7 +795,13 @@ func (as *AuthService) RequestPasswordReset(email string) (string, error) {
 		return "", nil
 	}
 	pk := as.getPK(user)
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
 	token := CreatePurposeJWT(&PurposePayload{
+		State:   as.purposeState(user),
+		Nonce:   base64urlEncode(nonce),
 		Sub:     pk,
 		Email:   email,
 		Purpose: "password-reset",
@@ -723,37 +815,41 @@ func (as *AuthService) RequestPasswordReset(email string) (string, error) {
 // All existing sessions for the user are revoked so that a session captured
 // before the reset cannot be used afterwards.
 func (as *AuthService) ConfirmPasswordReset(token, newPassword string) error {
+	as.mu.Lock()
+	defer as.mu.Unlock()
 	payload := VerifyPurposeJWT(token, as.secret)
 	if payload == nil || payload.Purpose != "password-reset" {
 		return fmt.Errorf("invalid or expired token")
+	}
+	if err := as.consumePurposeToken(token, payload); err != nil {
+		return err
 	}
 	hashed, err := HashPassword(newPassword)
 	if err != nil {
 		return err
 	}
-	_, err = as.authTable.Update(payload.Sub, map[string]interface{}{
-		"password": hashed,
-	}, nil)
+	_, err = as.updatePurposeUser(payload, map[string]interface{}{"password": hashed})
 	if err != nil {
 		return err
 	}
-	as.revokeSessionsForPrincipal(payload.Sub, "password_reset")
-	return nil
+	return as.revokeSessionsForPrincipal(payload.Sub, "password_reset")
 }
 
 // revokeSessionsForPrincipal revokes every active session belonging to a
-// user principal, e.g. after a password reset. Failures are swallowed: the
-// sessions still expire on their own and validation re-checks the user row.
-func (as *AuthService) revokeSessionsForPrincipal(principalID, reason string) {
+// user principal, e.g. after a password reset. Storage failures are reported.
+func (as *AuthService) revokeSessionsForPrincipal(principalID, reason string) error {
 	if as.sessionTable == nil || principalID == "" {
-		return
+		return nil
 	}
 	now := time.Now().Unix()
 	const chunkSize = 512
 	for offset := 0; ; offset += chunkSize {
 		rows, err := as.sessionTable.Scan(chunkSize, offset)
-		if err != nil || len(rows) == 0 {
-			return
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
 		}
 		for _, row := range rows {
 			if toString(row["principal_type"]) != principalTypeUser || toString(row["principal_id"]) != principalID {
@@ -762,13 +858,16 @@ func (as *AuthService) revokeSessionsForPrincipal(principalID, reason string) {
 			if int64(authNumber(row["revoked_at"])) > 0 {
 				continue
 			}
-			_, _ = as.sessionTable.Update(toString(row["id"]), map[string]interface{}{
+			_, err = as.sessionTable.Update(toString(row["id"]), map[string]interface{}{
 				"revoked_at": now,
 				"reason":     reason,
 			}, nil)
+			if err != nil {
+				return err
+			}
 		}
 		if len(rows) < chunkSize {
-			return
+			return nil
 		}
 	}
 }
@@ -850,6 +949,7 @@ func (as *AuthService) getPK(row map[string]interface{}) string {
 func (as *AuthService) issueAccessToken(id, email, name string, roles []string, sessionID string) string {
 	now := time.Now().Unix()
 	return CreateJWT(&JWTPayload{
+		TokenUse:      "access",
 		Sub:           id,
 		Email:         email,
 		Name:          name,
@@ -865,6 +965,7 @@ func (as *AuthService) issueAccessToken(id, email, name string, roles []string, 
 func (as *AuthService) issueRefreshToken(id, sessionID string) string {
 	now := time.Now().Unix()
 	return CreateJWT(&JWTPayload{
+		TokenUse:      "refresh",
 		Sub:           id,
 		Email:         "",
 		Name:          "",
@@ -951,13 +1052,7 @@ func (as *AuthService) HasUsablePassword(principalID string) bool {
 		}
 		switch verifier.(type) {
 		case *pbkdf2Verifier:
-			parts := strings.Split(hash, "$")
-			if len(parts) != 4 || parts[1] != "pbkdf2" {
-				continue
-			}
-			salt, saltErr := hex.DecodeString(parts[2])
-			digest, digestErr := hex.DecodeString(parts[3])
-			if saltErr == nil && digestErr == nil && len(salt) >= 16 && len(digest) == 32 {
+			if _, _, _, ok := parsePasswordHash(hash); ok {
 				return true
 			}
 		case *bcryptVerifier:
@@ -1220,4 +1315,55 @@ func toStringSlice(v interface{}) []string {
 	default:
 		return nil
 	}
+}
+
+// Legacy structured tokens already distinguish access tokens (email claims)
+// from refresh tokens (no profile claims). Retain valid sessions on upgrade.
+func tokenHasUse(p *JWTPayload, use string) bool {
+	if p.Purpose != "" {
+		return false
+	}
+	if p.TokenUse != "" {
+		return p.TokenUse == use
+	}
+	if use == "access" {
+		return p.Email != ""
+	}
+	return p.Email == "" && p.Name == "" && len(p.Roles) == 0
+}
+
+func (as *AuthService) purposeState(user map[string]interface{}) string {
+	data, _ := jsonx.Marshal([]interface{}{as.getPK(user), user["email"], user["password"], user["verified"]})
+	return hmacSign("purpose-state:"+string(data), as.secret)
+}
+
+// The unique token digest is persisted before changing credentials or issuing a
+// session. An interrupted confirmation fails closed; the user can request a new
+// link. State binding invalidates outstanding links after account changes.
+func (as *AuthService) consumePurposeToken(token string, payload *PurposePayload) error {
+	user, err := as.authTable.Get(payload.Sub)
+	if err != nil || user == nil || payload.State == "" || payload.Nonce == "" || payload.Exp <= time.Now().Unix() {
+		return fmt.Errorf("invalid or expired token")
+	}
+	if !hmac.Equal([]byte(payload.State), []byte(as.purposeState(user))) {
+		return fmt.Errorf("invalid or expired token")
+	}
+	if err := validatePrincipalRow(user, principalTypeUser); err != nil {
+		return err
+	}
+	if as.purposeTable == nil {
+		return fmt.Errorf("purpose tokens unavailable")
+	}
+	digest := sha256.Sum256([]byte(token))
+	_, err = as.purposeTable.Insert(map[string]interface{}{"id": hex.EncodeToString(digest[:]), "expires_at": payload.Exp}, nil)
+	if err != nil {
+		return fmt.Errorf("invalid or consumed token")
+	}
+	return nil
+}
+
+func (as *AuthService) updatePurposeUser(payload *PurposePayload, updates map[string]interface{}) (map[string]interface{}, error) {
+	return as.authTable.UpdateIf(payload.Sub, updates, func(current map[string]interface{}) bool {
+		return hmac.Equal([]byte(payload.State), []byte(as.purposeState(current))) && validatePrincipalRow(current, principalTypeUser) == nil
+	})
 }
