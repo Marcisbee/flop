@@ -46,6 +46,7 @@ func TestAPISSERespectsRowReadAccess(t *testing.T) {
 	// Seed before subscription.
 	_, _ = raw.Insert(map[string]any{"id": "p1", "ownerId": "u1", "title": "own"})
 	_, _ = raw.Insert(map[string]any{"id": "p2", "ownerId": "u2", "title": "foreign"})
+	_, _ = raw.Insert(map[string]any{"id": "p5", "ownerId": "u1", "title": "initially visible"})
 
 	token := internalserver.CreateJWT(&internalserver.JWTPayload{
 		Sub:   "u1",
@@ -75,9 +76,13 @@ func TestAPISSERespectsRowReadAccess(t *testing.T) {
 	if _, err := raw.Update("p1", map[string]any{"title": "own-updated"}); err != nil {
 		t.Fatalf("update p1: %v", err)
 	}
-	// Unreadable update -> should emit scrubbed touch only (no row id).
+	// A never-readable update must not disclose even table activity.
 	if _, err := raw.Update("p2", map[string]any{"title": "foreign-updated"}); err != nil {
 		t.Fatalf("update p2: %v", err)
+	}
+	// A row loaded before subscribing becomes unreadable: invalidate it.
+	if _, err := raw.Update("p5", map[string]any{"ownerId": "u2"}); err != nil {
+		t.Fatal(err)
 	}
 	// Unreadable insert -> should not emit.
 	if _, err := raw.Insert(map[string]any{"id": "p3", "ownerId": "u2", "title": "foreign-insert"}); err != nil {
@@ -112,11 +117,8 @@ func TestAPISSERespectsRowReadAccess(t *testing.T) {
 		t.Fatalf("event[0] rowId: got %v, want p1", got)
 	}
 
-	if got := events[1]["op"]; got != "touch" {
-		t.Fatalf("event[1] op: got %v, want touch", got)
-	}
-	if got := events[1]["rowId"]; got != "" {
-		t.Fatalf("event[1] rowId: got %v, want empty", got)
+	if events[1]["op"] != "update" || events[1]["rowId"] != "p5" {
+		t.Fatalf("missing visibility loss notification: %#v", events[1])
 	}
 
 	if got := events[2]["op"]; got != "insert" {

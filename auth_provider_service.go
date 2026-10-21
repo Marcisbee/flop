@@ -371,10 +371,10 @@ func isLoopbackHost(host string) bool {
 }
 
 func (s *providerAuthService) start(ctx context.Context, provider, intent, returnTo string, auth *AuthContext) (*providerStartResult, error) {
-	return s.startForApp(ctx, "", provider, intent, returnTo, nil, "", auth)
+	return s.startForApp(ctx, "", provider, intent, returnTo, nil, "", auth, "")
 }
 
-func (s *providerAuthService) startForApp(ctx context.Context, appID, provider, intent, returnTo string, requestedScopes []string, incrementalGrantID string, auth *AuthContext) (*providerStartResult, error) {
+func (s *providerAuthService) startForApp(ctx context.Context, appID, provider, intent, returnTo string, requestedScopes []string, incrementalGrantID string, auth *AuthContext, browserBinding string) (*providerStartResult, error) {
 	if appID == "" && len(s.apps) == 1 {
 		for key := range s.apps {
 			appID = key
@@ -470,6 +470,7 @@ func (s *providerAuthService) startForApp(ctx context.Context, appID, provider, 
 	}
 	row := map[string]any{
 		"state_hash":           stateHash,
+		"browser_binding":      hashProviderToken(browserBinding),
 		"completion_hash":      "pending:" + stateHash,
 		"provider":             provider,
 		"app_id":               appID,
@@ -538,7 +539,7 @@ func (s *providerAuthService) startForApp(ctx context.Context, appID, provider, 
 	return &providerStartResult{AuthorizationURL: authorizationURL}, nil
 }
 
-func (s *providerAuthService) callback(ctx context.Context, provider, state, code, providerFailure string, params url.Values) (*providerCallbackResult, error) {
+func (s *providerAuthService) callback(ctx context.Context, provider, state, code, providerFailure string, params url.Values, browserBinding string) (*providerCallbackResult, error) {
 	if state == "" {
 		return nil, providerError("invalid_callback", "invalid provider callback", 400)
 	}
@@ -549,6 +550,11 @@ func (s *providerAuthService) callback(ctx context.Context, provider, state, cod
 		s.mu.Unlock()
 		return nil, providerError("provider_flow_gone", "provider flow is invalid or expired", 410)
 	}
+	if browserBinding == "" || toString(flow["browser_binding"]) != hashProviderToken(browserBinding) {
+		s.mu.Unlock()
+		return nil, providerError("provider_browser_mismatch", "provider flow belongs to another browser; start again", 403)
+	}
+
 	now := s.now().Unix()
 	if toString(flow["phase"]) != providerFlowPhaseStarted || providerUnix(flow["callback_consumed_at"]) > 0 {
 		s.mu.Unlock()
@@ -709,7 +715,7 @@ func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowI
 	return &providerCallbackResult{CompletionCode: completionCode, Status: status, ReturnTo: toString(flow["return_to"])}, nil
 }
 
-func (s *providerAuthService) complete(code string, confirm bool, auth *AuthContext) (*providerCompleteResult, error) {
+func (s *providerAuthService) complete(code string, confirm bool, auth *AuthContext, browserBinding string) (*providerCompleteResult, error) {
 	if code == "" {
 		return nil, providerError("completion_code_required", "completion code required", 400)
 	}
@@ -720,6 +726,10 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 	if !ok {
 		return nil, providerError("completion_gone", "completion code is invalid or expired", 410)
 	}
+	if browserBinding == "" || toString(flow["browser_binding"]) != hashProviderToken(browserBinding) {
+		return nil, providerError("provider_browser_mismatch", "provider flow belongs to another browser; start again", 403)
+	}
+
 	now := s.now().Unix()
 	if toString(flow["phase"]) != providerFlowPhaseResultReady {
 		return nil, providerError("completion_consumed", "completion code already consumed", 410)

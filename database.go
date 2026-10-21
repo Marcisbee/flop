@@ -86,6 +86,8 @@ type AnalyticsEvent struct {
 }
 
 const systemSuperadminTableName = "_superadmin"
+const systemAuthPurposeTableName = "_auth_used_tokens"
+
 const systemAuthSessionTableName = "_auth_sessions"
 const systemAuthIdentityTableName = "_auth_identities"
 const systemAuthProviderFlowTableName = "_auth_provider_flows"
@@ -261,7 +263,7 @@ func (a *App) Open() (*Database, error) {
 	d.jwtSecret = secret
 	sessionTable := db.GetTable(systemAuthSessionTableName)
 	if authTable := db.GetAuthTable(); authTable != nil {
-		d.authService = server.NewAuthService(authTable, sessionTable, secret, d.authInstanceID)
+		d.authService = server.NewAuthService(authTable, sessionTable, db.GetTable(systemAuthPurposeTableName), secret, d.authInstanceID)
 		d.providerAuth = newProviderAuthService(d, a.config.AuthProviders, a.config.AuthProviderApps, a.config.ProviderSecretKeys, a.config.ActiveProviderSecretKey, secret)
 		if d.providerAuth.initErr != nil {
 			_ = db.Close()
@@ -402,7 +404,7 @@ func (d *Database) SetJWTSecret(secret string) {
 	authService := d.authService
 	providerAuth := d.providerAuth
 	if d.authService != nil {
-		authService = server.NewAuthService(d.db.GetAuthTable(), d.db.GetTable(systemAuthSessionTableName), secret, d.authInstanceID)
+		authService = server.NewAuthService(d.db.GetAuthTable(), d.db.GetTable(systemAuthSessionTableName), d.db.GetTable(systemAuthPurposeTableName), secret, d.authInstanceID)
 		if providerAuth != nil {
 			authService.SetProviderSessionLocker(providerAuth.mu)
 			providerAuth.rekeyFlowCipher(secret)
@@ -659,6 +661,7 @@ func (d *Database) runAuthSessionCleanupLoop(stop <-chan struct{}) {
 	}
 	d.cleanupExpiredAuthSessions(time.Now())
 	d.cleanupExpiredProviderFlows(time.Now())
+	d.cleanupExpiredPurposeTokens(time.Now())
 	ticker := time.NewTicker(d.authSessionCleanup)
 	defer ticker.Stop()
 	for {
@@ -666,6 +669,7 @@ func (d *Database) runAuthSessionCleanupLoop(stop <-chan struct{}) {
 		case <-ticker.C:
 			d.cleanupExpiredAuthSessions(time.Now())
 			d.cleanupExpiredProviderFlows(time.Now())
+			d.cleanupExpiredPurposeTokens(time.Now())
 		case <-stop:
 			return
 		}
@@ -866,7 +870,7 @@ func serveMediaFile(w http.ResponseWriter, r *http.Request, filePath string) {
 }
 
 func servePolicyMediaFile(w http.ResponseWriter, r *http.Request, filePath string) {
-	serveMediaFileWithCache(w, r, filePath, "private, max-age=31536000, immutable")
+	serveMediaFileWithCache(w, r, filePath, "private, no-store")
 }
 
 func serveMediaFileWithCache(w http.ResponseWriter, r *http.Request, filePath, cacheControl string) {
@@ -1345,6 +1349,12 @@ func removedMediaRefsForUpdate(def *schema.TableDef, oldRow, newRow, updates map
 		}
 		for _, ref := range oldRefs {
 			path := strings.TrimSpace(ref.Path)
+			parts := strings.Split(path, "/")
+			// A row may reference shared media, but it may only delete files stored
+			// for its own table, primary key, and field.
+			if len(parts) != 5 || parts[0] != "_files" || parts[1] != def.Name || parts[2] != toString(oldRow[def.CompiledSchema.Fields[0].Name]) || parts[3] != field.Name || !storage.IsSafePathSegment(parts[4]) {
+				continue
+			}
 			if path == "" || newPaths[path] {
 				continue
 			}
@@ -2382,7 +2392,7 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 	if _, exists := a.tables[systemAuthProviderFlowTableName]; exists {
 		panic("flop: table name reserved for system use: " + systemAuthProviderFlowTableName)
 	}
-	for _, name := range []string{systemAuthProviderAppTableName, systemAuthProviderRegistrationTableName, systemAuthProviderGrantTableName, systemAuthProviderRevocationTableName} {
+	for _, name := range []string{systemAuthPurposeTableName, systemAuthProviderAppTableName, systemAuthProviderRegistrationTableName, systemAuthProviderGrantTableName, systemAuthProviderRevocationTableName} {
 		if _, exists := a.tables[name]; exists {
 			panic("flop: table name reserved for system use: " + name)
 		}
@@ -2500,6 +2510,10 @@ func (a *App) buildTableDefs() map[string]*schema.TableDef {
 
 	defs[systemSuperadminTableName] = systemSuperadminTableDef()
 	defs[systemAuthSessionTableName] = systemAuthSessionTableDef()
+	defs[systemAuthPurposeTableName] = &schema.TableDef{Name: systemAuthPurposeTableName, CompiledSchema: schema.NewCompiledSchema([]schema.CompiledField{
+		{Name: "id", Kind: schema.KindString, Required: true, Unique: true},
+		{Name: "expires_at", Kind: schema.KindTimestamp, Required: true},
+	})}
 	defs[systemAuthIdentityTableName] = systemAuthIdentityTableDef()
 	defs[systemAuthProviderFlowTableName] = systemAuthProviderFlowTableDef()
 	defs[systemAuthProviderAppTableName] = systemAuthProviderAppTableDef()
@@ -2626,6 +2640,7 @@ func systemAuthProviderFlowTableDef() *schema.TableDef {
 	fields := []schema.CompiledField{
 		{Name: "id", Kind: schema.KindString, Required: true, Unique: true, AutoGenPattern: "[a-z0-9]{24}", AutoIDStrategy: "random"},
 		{Name: "state_hash", Kind: schema.KindString, Required: true},
+		{Name: "browser_binding", Kind: schema.KindString, Required: false},
 		{Name: "provider", Kind: schema.KindString, Required: true},
 		{Name: "app_id", Kind: schema.KindString, Required: false},
 		{Name: "registration_id", Kind: schema.KindString, Required: false},
@@ -4137,10 +4152,16 @@ func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {
 		case <-done:
 			return
 		case event := <-changeCh:
+			if !isAuthorizedRequest(r, p) {
+				return
+			}
 			data, _ := jsonx.Marshal(scrubAdminChangeEvent(p.DB, event))
 			fmt.Fprintf(w, "event: change\ndata: %s\n\n", data)
 			flusher.Flush()
 		case <-heartbeat.C:
+			if !isAuthorizedRequest(r, p) {
+				return
+			}
 			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}
@@ -4246,5 +4267,24 @@ func toStringSlice(v any) []string {
 		return result
 	default:
 		return nil
+	}
+}
+
+func (d *Database) cleanupExpiredPurposeTokens(now time.Time) {
+	table := d.Table(systemAuthPurposeTableName)
+	if table == nil {
+		return
+	}
+	// Scan backwards so deletes cannot cause unvisited rows to shift past us.
+	for offset := ((table.Count() - 1) / 512) * 512; offset >= 0; offset -= 512 {
+		rows, err := table.Scan(512, offset)
+		if err != nil {
+			return
+		}
+		for _, row := range rows {
+			if providerUnix(row["expires_at"]) <= now.Unix() {
+				_, _ = table.Delete(toString(row["id"]))
+			}
+		}
 	}
 }

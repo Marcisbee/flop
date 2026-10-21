@@ -7,10 +7,12 @@ import (
 
 // ChangeEvent represents a table mutation event.
 type ChangeEvent struct {
-	Table string                 `json:"table"`
-	Op    string                 `json:"op"` // "insert", "update", "delete"
-	RowID string                 `json:"rowId"`
-	Data  map[string]interface{} `json:"data,omitempty"`
+	// PreviousData is used for authorization of visibility transitions, never serialized.
+	PreviousData map[string]interface{} `json:"-"`
+	Table        string                 `json:"table"`
+	Op           string                 `json:"op"` // "insert", "update", "delete"
+	RowID        string                 `json:"rowId"`
+	Data         map[string]interface{} `json:"data,omitempty"`
 }
 
 // ChangeListener is a callback for table change events.
@@ -66,6 +68,9 @@ func (ps *PubSub) Subscribe(tables []string, callback ChangeListener) func() {
 		defer ps.mu.Unlock()
 		for _, table := range tables {
 			delete(ps.listeners[table], cb)
+			if len(ps.listeners[table]) == 0 {
+				delete(ps.listeners, table)
+			}
 		}
 	}
 }

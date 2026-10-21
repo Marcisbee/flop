@@ -2056,16 +2056,23 @@ func (ti *TableInstance) getRawUnlocked(key string) (schema.RowPointer, []byte, 
 // Update modifies an existing row. If txBuf is non-nil, WAL records are buffered
 // into it for batch commit later (transaction mode). Otherwise commits immediately.
 func (ti *TableInstance) Update(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry) (map[string]interface{}, error) {
-	return ti.update(key, updates, txBuf, false)
+	return ti.update(key, updates, txBuf, false, nil)
+}
+
+// UpdateIf checks condition under the row lock, including after relocation
+// fallback. The condition must not mutate the row or call back into the table.
+// It is used for credential upgrades that must not overwrite a concurrent reset.
+func (ti *TableInstance) UpdateIf(key string, updates map[string]interface{}, condition func(map[string]interface{}) bool) (map[string]interface{}, error) {
+	return ti.update(key, updates, nil, false, condition)
 }
 
 // UpdateSilent modifies an existing row without publishing a PubSub event.
 // Used by the cached field system to avoid cascading recomputation.
 func (ti *TableInstance) UpdateSilent(key string, updates map[string]interface{}) (map[string]interface{}, error) {
-	return ti.update(key, updates, nil, true)
+	return ti.update(key, updates, nil, true, nil)
 }
 
-func (ti *TableInstance) update(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry, silent bool) (map[string]interface{}, error) {
+func (ti *TableInstance) update(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry, silent bool, condition func(map[string]interface{}) bool) (map[string]interface{}, error) {
 	// Fast path: allow concurrent in-place updates on different rows/pages.
 	// Complex updates that require row relocation fall back to the locked path.
 	ti.mu.RLock()
@@ -2087,6 +2094,10 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	}
 	if existing == nil {
 		return nil, nil
+	}
+
+	if condition != nil && !condition(existing) {
+		return nil, fmt.Errorf("row changed")
 	}
 
 	pointer, _ := ti.primaryIndex.Get(key)
@@ -2161,7 +2172,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		rowLock.Unlock()
 		ti.mu.RUnlock()
 		locked = false
-		return ti.updateSlowLocked(key, updates, txBuf, silent)
+		return ti.updateSlowLocked(key, updates, txBuf, silent, condition)
 	}
 	ti.addPendingKey(key)
 	pendingAdded = true
@@ -2173,7 +2184,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		rowLock.Unlock()
 		ti.mu.RUnlock()
 		locked = false
-		return ti.updateSlowLocked(key, updates, txBuf, silent)
+		return ti.updateSlowLocked(key, updates, txBuf, silent, condition)
 	}
 	page.SetPageLSN(recordLSN)
 	ti.tableFile.MarkPageDirty(pointer.PageNumber)
@@ -2215,7 +2226,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	ti.mu.RUnlock()
 	locked = false
 	if !silent {
-		ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow})
+		ti.pubsub.Publish(ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow, PreviousData: existing})
 	}
 
 	return newRow, nil
@@ -2223,7 +2234,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 
 // updateSlowLocked performs the original update flow under the table write lock.
 // Used as a fallback when an in-place concurrent update cannot be applied.
-func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry, silent bool) (map[string]interface{}, error) {
+func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interface{}, txBuf map[string]*walBufEntry, silent bool, condition func(map[string]interface{}) bool) (map[string]interface{}, error) {
 	ti.mu.Lock()
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
@@ -2244,6 +2255,10 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	}
 	if existing == nil {
 		return nil, nil
+	}
+
+	if condition != nil && !condition(existing) {
+		return nil, fmt.Errorf("row changed")
 	}
 
 	pointer, _ := ti.primaryIndex.Get(key)
@@ -2372,7 +2387,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		failpoint.Hit("update_slow_after_commit")
 	}
 
-	change = &ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow}
+	change = &ChangeEvent{Table: ti.Name, Op: "update", RowID: key, Data: newRow, PreviousData: existing}
 	return newRow, nil
 }
 
@@ -2824,7 +2839,7 @@ func (ti *TableInstance) Archive(key string, opts ArchiveOptions, txBuf map[stri
 		pendingAdded = false
 	}
 
-	change = &ChangeEvent{Table: ti.Name, Op: "delete", RowID: key, Data: nil}
+	change = &ChangeEvent{Table: ti.Name, Op: "delete", RowID: key, Data: existing}
 	return archived, nil
 }
 
