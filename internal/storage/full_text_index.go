@@ -389,28 +389,24 @@ func (f *FullTextIndex) prefixWordCount(prefix string) int {
 // prefixDocIDs returns the sorted union of all doc IDs for dictionary words
 // matching the prefix.
 func (f *FullTextIndex) prefixDocIDs(prefix string) []uint32 {
-	start := sort.SearchStrings(f.sortedTokens, prefix)
-	var merged []uint32
-	for i := start; i < len(f.sortedTokens); i++ {
-		if !strings.HasPrefix(f.sortedTokens[i], prefix) {
-			break
-		}
-		if list := f.postings[f.tokenIDByText[f.sortedTokens[i]]]; len(list) > 0 {
-			merged = unionSorted(merged, list)
-		}
-	}
-	return merged
+	return f.termInfoDocIDs(f.prefixTermInfos(prefix))
 }
 
-// termInfoDocIDs returns the sorted union of doc IDs for the given term infos.
+// termInfoDocIDs returns an owned, sorted union. Balanced merging avoids
+// repeatedly copying the growing union once per matching dictionary term.
+// Leaves must be copied: multi-token searches filter candidates in place.
 func (f *FullTextIndex) termInfoDocIDs(infos []prefixTermInfo) []uint32 {
-	var merged []uint32
-	for _, ti := range infos {
-		if list := f.postings[ti.id]; len(list) > 0 {
-			merged = unionSorted(merged, list)
-		}
+	switch len(infos) {
+	case 0:
+		return nil
+	case 1:
+		return append([]uint32(nil), f.postings[infos[0].id]...)
+	case 2:
+		return unionSorted(f.postings[infos[0].id], f.postings[infos[1].id])
+	default:
+		mid := len(infos) / 2
+		return unionSorted(f.termInfoDocIDs(infos[:mid]), f.termInfoDocIDs(infos[mid:]))
 	}
-	return merged
 }
 
 // prefixTermIDSet returns the set of term IDs for all dictionary words
@@ -539,7 +535,7 @@ func unionSorted(a, b []uint32) []uint32 {
 		return append([]uint32(nil), b...)
 	}
 	if len(b) == 0 {
-		return a
+		return append([]uint32(nil), a...)
 	}
 	out := make([]uint32, 0, len(a)+len(b))
 	i, j := 0, 0
