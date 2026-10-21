@@ -4,58 +4,30 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin - Login</title>
 <style>
+/* Shared visual language: quiet surfaces, clear contrast, blue for actions. */
 :root {
-  --accent: #0078d4;
-  --accent-hover: #006cbd;
-  --error: #f48771;
-
-  /* Dark theme (default) */
-  --bg: #1e1e1e;
-  --bg-surface: #252526;
-  --bg-hover: #2a2d2e;
-  --bg-active: #37373d;
-  --bg-input: #3c3c3c;
-  --border: #3c3c3c;
-  --border-input: #4a4a4a;
-  --text: #cccccc;
-  --text-heading: #ffffff;
-  --text-muted: #999999;
-  --text-faint: #888888;
-  --text-dimmed: #666666;
-  --text-ghost: #555555;
-  --row-border: #2a2a2a;
-  --danger: #cc6666;
-  --danger-hover-bg: #2d1f1f;
-  --danger-hover-text: #f48771;
-  --scrollbar-thumb: #424242;
-  --scrollbar-thumb-hover: #4a4a4a;
+  color-scheme: light dark;
+  --accent:#0866e6; --accent-hover:#0054c4; --error:#b42332;
+  --bg:#f5f6f8; --bg-surface:#fff; --bg-hover:#eef1f6; --bg-active:#e7efff;
+  --bg-input:#fff; --bg-elevated:#fff; --panel-2:#f5f6f8;
+  --border:#e3e6ec; --border-input:#cdd3dd; --row-border:#edf0f4;
+  --text:#303a49; --text-heading:#182230; --text-muted:#596579;
+  --text-faint:#627085; --text-dimmed:#627085; --text-ghost:#707b8b;
+  --danger:#b42332; --danger-hover-bg:#fff0f1; --danger-hover-text:#a01828;
+  --scrollbar-thumb:#c7ced8; --scrollbar-thumb-hover:#a7b1c0;
+  --shadow:0 12px 40px #17243b12; --ease-out:cubic-bezier(.23,1,.32,1);
 }
-
-@media (prefers-color-scheme: light) {
+@media (prefers-color-scheme: dark) {
   :root {
-    --accent: #0078d4;
-    --accent-hover: #106ebe;
-    --error: #d32f2f;
-
-    --bg: #f3f3f3;
-    --bg-surface: #ffffff;
-    --bg-hover: #e8e8e8;
-    --bg-active: #d6ebff;
-    --bg-input: #ffffff;
-    --border: #e0e0e0;
-    --border-input: #cecece;
-    --text: #333333;
-    --text-heading: #1e1e1e;
-    --text-muted: #666666;
-    --text-faint: #888888;
-    --text-dimmed: #999999;
-    --text-ghost: #aaaaaa;
-    --row-border: #f0f0f0;
-    --danger: #d32f2f;
-    --danger-hover-bg: #fdecea;
-    --danger-hover-text: #c62828;
-    --scrollbar-thumb: #c1c1c1;
-    --scrollbar-thumb-hover: #a8a8a8;
+    --accent:#6aa9ff; --accent-hover:#8cbdff; --error:#ff9caa;
+    --bg:#11151b; --bg-surface:#1a2029; --bg-hover:#252e3a; --bg-active:#243b5e;
+    --bg-input:#151b23; --bg-elevated:#202834; --panel-2:#151b23;
+    --border:#303a48; --border-input:#465266; --row-border:#29323e;
+    --text:#d5dce7; --text-heading:#f2f5fa; --text-muted:#acb8ca;
+    --text-faint:#a0aec1; --text-dimmed:#a0aec1; --text-ghost:#94a3b8;
+    --danger:#ff9caa; --danger-hover-bg:#39252e; --danger-hover-text:#ffb5bf;
+    --scrollbar-thumb:#465266; --scrollbar-thumb-hover:#62718a;
+    --shadow:0 12px 40px #0004;
   }
 }
 
@@ -73,6 +45,21 @@ button[type="submit"]{width:100%;padding:10px;background:var(--accent);border:no
 button[type="submit"]:hover{background:var(--accent-hover)}
 .error{color:var(--error);font-size:13px;margin-top:12px;text-align:center}
 .hidden{display:none}
+
+body{padding:24px;min-height:100dvh;line-height:1.5;-webkit-font-smoothing:antialiased}
+.login-container{max-width:420px;padding:40px;background:var(--bg-surface);border:1px solid var(--border);border-radius:20px;box-shadow:var(--shadow)}
+.logo{justify-content:flex-start;margin-bottom:32px}.logo-text{font-size:28px;letter-spacing:-1px}
+h1{font-size:24px;color:var(--text-heading);letter-spacing:-.6px;line-height:1.2;margin-bottom:8px}
+.subtitle{text-align:left;font-size:14px;line-height:1.6;margin-bottom:28px;color:var(--text-muted)}
+.field{margin-bottom:20px}.field label{font-size:13px;text-transform:none;letter-spacing:0;font-weight:550;color:var(--text)}
+.field input,.field select{padding:12px!important;border-radius:9px!important;font-size:16px!important;min-height:48px}
+.field input:focus,.field select:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+button[type=submit]{min-height:48px;padding:12px;border-radius:9px;background:#0866e6;font-weight:600;touch-action:manipulation}
+button[type=submit]:hover{background:#0054c4}button:active{transform:scale(.98)}button:disabled{opacity:.6;cursor:wait}
+:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.error{text-align:left;padding:12px;background:var(--danger-hover-bg);border-radius:8px;overflow-wrap:anywhere}
+@media(max-width:480px){body{padding:20px}.login-container{padding:28px 24px}}
+@media(prefers-reduced-motion:reduce){button:active{transform:none}}
 </style>
 </head>
 <body>
@@ -81,17 +68,19 @@ button[type="submit"]:hover{background:var(--accent-hover)}
     <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M8 10h16v2H8zm0 5h12v2H8zm0 5h14v2H8z" fill="#fff" opacity=".9"/></svg>
     <span class="logo-text">flop</span>
   </div>
+  <h1>Welcome back.</h1>
+  <p class="subtitle">Sign in to your Flop admin console.</p>
   <form id="login-form">
     <div class="field">
       <label for="email">Email</label>
-      <input type="email" id="email" required autofocus>
+      <input type="email" id="email" autocomplete="username" required autofocus>
     </div>
     <div class="field">
       <label for="password">Password</label>
-      <input type="password" id="password" required>
+      <input type="password" id="password" autocomplete="current-password" required>
     </div>
     <button type="submit">Sign In</button>
-    <div id="error" class="error hidden"></div>
+    <div id="error" role="alert" class="error hidden"></div>
   </form>
 </div>
 <script>
@@ -101,6 +90,10 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   const password = document.getElementById('password').value;
   const errEl = document.getElementById('error');
   errEl.classList.add('hidden');
+  const submit = e.currentTarget.querySelector('button[type=submit]');
+  const label = submit.textContent;
+  submit.disabled = true;
+  submit.textContent = 'Please wait…';
   try {
     const res = await fetch('/_/api/login', {
       method: 'POST',
@@ -115,7 +108,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   } catch(err) {
     errEl.textContent = err.message;
     errEl.classList.remove('hidden');
-  }
+  } finally { submit.disabled = false; submit.textContent = label; }
 });
 </script>
 </body></html>
