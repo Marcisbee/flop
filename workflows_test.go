@@ -320,14 +320,20 @@ func moderationActions() []WorkflowAction {
 }
 
 func TestWorkflowRowTriggerHoldsUntilApprovedAndStopsAfterThreshold(t *testing.T) {
-	router := httptest.NewServer(workflowResponse(`{"action":"approve","reasoning":"ordinary discussion"}`))
+	gate, release := context.WithCancel(context.Background())
+	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-gate.Done()
+		workflowResponse(`{"action":"approve","reasoning":"ordinary discussion"}`).ServeHTTP(w, r)
+	}))
 	defer router.Close()
+	defer release()
 	app, users, posts, _ := workflowTestApp(t, router.URL)
 	db, err := app.Open()
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer func() { _ = db.Close() }()
+	defer release()
 
 	if _, err := users.Insert(db, map[string]any{"id": "u1", "blocked": false}); err != nil {
 		t.Fatalf("insert user: %v", err)
@@ -353,6 +359,13 @@ func TestWorkflowRowTriggerHoldsUntilApprovedAndStopsAfterThreshold(t *testing.T
 	if row, err := publicPosts.Get("p1"); err != nil || row != nil {
 		t.Fatalf("pending row should be hidden, row=%v err=%v", row, err)
 	}
+	if rows, err := publicPosts.Scan(10, 0); err != nil || len(rows) != 0 {
+		t.Fatalf("pending scan=%v err=%v", rows, err)
+	}
+	if n := publicPosts.Count(); n != 0 {
+		t.Fatalf("pending count=%d", n)
+	}
+	release()
 	run := waitForWorkflowRun(t, db, "completed")
 	if run.Action != "approve" || run.Reasoning == "" {
 		t.Fatalf("unexpected run: %+v", run)
@@ -366,6 +379,13 @@ func TestWorkflowRowTriggerHoldsUntilApprovedAndStopsAfterThreshold(t *testing.T
 	}
 	if row, err := publicPosts.Get("p1"); err != nil || row == nil {
 		t.Fatalf("completed row should be visible, row=%v err=%v", row, err)
+	}
+
+	if rows, err := publicPosts.Scan(10, 0); err != nil || len(rows) != 1 || rows[0]["id"] != "p1" {
+		t.Fatalf("completed scan=%v err=%v", rows, err)
+	}
+	if n := publicPosts.Count(); n != 1 {
+		t.Fatalf("completed count=%d", n)
 	}
 
 	if _, err := posts.Insert(db, map[string]any{"id": "p2", "userId": "u1", "body": "second"}); err != nil {

@@ -1593,43 +1593,22 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]any, error) {
 	if offset < 0 {
 		offset = 0
 	}
-	total := ti.ti.Count()
-	if total <= 0 {
-		return []map[string]any{}, nil
-	}
-	chunkSize := limit * 2
-	if chunkSize < 256 {
-		chunkSize = 256
-	}
-	if chunkSize > 4096 {
-		chunkSize = 4096
-	}
-	physicalOffset := 0
 	visibleSkipped := 0
 	out := make([]map[string]any, 0, limit)
-	for physicalOffset < total && len(out) < limit {
-		rows, err := ti.ti.Scan(chunkSize, physicalOffset)
-		if err != nil {
-			return nil, err
+	err := ti.ti.Walk(func(row map[string]any) bool {
+		filtered, ok := ti.filterReadableRow(row)
+		if !ok {
+			return true
 		}
-		if len(rows) == 0 {
-			break
+		if visibleSkipped < offset {
+			visibleSkipped++
+			return true
 		}
-		physicalOffset += len(rows)
-		for _, row := range rows {
-			filtered, ok := ti.filterReadableRow(row)
-			if !ok {
-				continue
-			}
-			if visibleSkipped < offset {
-				visibleSkipped++
-				continue
-			}
-			out = append(out, filtered)
-			if len(out) >= limit {
-				break
-			}
-		}
+		out = append(out, filtered)
+		return len(out) < limit
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -1644,25 +1623,14 @@ func (ti *TableInstance) Count() int {
 	if !ti.requiresRowReadFiltering() {
 		return ti.ti.Count()
 	}
-	total := ti.ti.Count()
-	if total <= 0 {
-		return 0
-	}
-	const chunkSize = 512
-	physicalOffset := 0
 	visible := 0
-	for physicalOffset < total {
-		rows, err := ti.ti.Scan(chunkSize, physicalOffset)
-		if err != nil || len(rows) == 0 {
-			break
+	// Count has no error result; retain the count accumulated before a read error.
+	_ = ti.ti.Walk(func(row map[string]any) bool {
+		if ti.allowRead(row) {
+			visible++
 		}
-		physicalOffset += len(rows)
-		for _, row := range rows {
-			if ti.allowRead(row) {
-				visible++
-			}
-		}
-	}
+		return true
+	})
 	return visible
 }
 

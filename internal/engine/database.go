@@ -3184,6 +3184,42 @@ func (ti *TableInstance) Scan(limit, offset int) ([]map[string]interface{}, erro
 	return results, nil
 }
 
+// Walk visits committed, decodable rows in storage order until visit returns
+// false. Only one page of decoded rows is buffered. User callbacks run without
+// page locks, so policies may safely perform nested reads or writes.
+func (ti *TableInstance) Walk(visit func(map[string]interface{}) bool) error {
+	start := time.Now()
+	scannedCount, visited := 0, 0
+	defer func() {
+		reqtrace.AddDuration("table_walk", ti.Name, "", visited, scannedCount, "", start)
+	}()
+	pageCount := atomic.LoadUint32(&ti.tableFile.PageCount)
+	var rows []map[string]interface{}
+	for p := uint32(0); p < pageCount; p++ {
+		page, err := ti.tableFile.GetPage(p)
+		if err != nil {
+			return fmt.Errorf("read page %d: %w", p, err)
+		}
+		page.ForEachSlot(func(_ int, data []byte) bool {
+			scannedCount++
+			row, err := ti.deserializeCurrentRow(data)
+			if err == nil && ti.rowVisibleToScans(row) {
+				rows = append(rows, row)
+			}
+			return true
+		})
+		for _, row := range rows {
+			visited++
+			if !visit(row) {
+				return nil
+			}
+		}
+		clear(rows)
+		rows = rows[:0]
+	}
+	return nil
+}
+
 // ScanFilter iterates all rows and returns those matching the predicate.
 // It counts all matches but only collects rows in the [offset, offset+limit) window.
 // Pass limit <= 0 to collect all matches (no pagination).
