@@ -1,6 +1,6 @@
 module github.com/marcisbee/flop/examples/blog-go-react
 
-go 1.24.3
+go 1.26.10
 
 require github.com/marcisbee/flop v0.0.0
 
@@ -25,9 +25,9 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/image v0.36.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
+	golang.org/x/image v0.45.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )
 
 replace github.com/marcisbee/flop => ../..

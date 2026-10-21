@@ -12,10 +12,11 @@ import (
 // unauthenticated credential endpoints. It exists to blunt online
 // brute-force and email-bombing abuse; it is not a general traffic shaper.
 type RateLimiter struct {
-	mu     sync.Mutex
-	hits   map[string]rateLimitBucket
-	limit  int
-	window time.Duration
+	mu          sync.Mutex
+	hits        map[string]rateLimitBucket
+	limit       int
+	window      time.Duration
+	nextCleanup time.Time
 }
 
 type rateLimitBucket struct {
@@ -43,21 +44,29 @@ func (l *RateLimiter) Allow(key string) bool {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	bucket, ok := l.hits[key]
-	if !ok || now.Sub(bucket.windowStart) >= l.window {
-		bucket = rateLimitBucket{windowStart: now}
-	}
-	bucket.count++
-	l.hits[key] = bucket
-	// Bound memory: once the map grows large, drop fully expired buckets.
-	if len(l.hits) > 10000 {
+	// Expiration maintenance is periodic, not a full map scan on every
+	// rejected request. Keep a hard bound even while every bucket is live.
+	if !now.Before(l.nextCleanup) {
 		for k, b := range l.hits {
 			if now.Sub(b.windowStart) >= l.window {
 				delete(l.hits, k)
 			}
 		}
+		l.nextCleanup = now.Add(l.window)
 	}
-	return bucket.count <= l.limit
+	bucket, ok := l.hits[key]
+	if !ok && len(l.hits) >= 10000 {
+		return false
+	}
+	if !ok || now.Sub(bucket.windowStart) >= l.window {
+		bucket = rateLimitBucket{windowStart: now}
+	}
+	if bucket.count >= l.limit {
+		return false
+	}
+	bucket.count++
+	l.hits[key] = bucket
+	return true
 }
 
 // ClientIP returns the client address of a request for rate-limit keying.
