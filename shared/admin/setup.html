@@ -60,6 +60,18 @@ button[type=submit]:hover{background:#0054c4}button:active{transform:scale(.98)}
 .error{text-align:left;padding:12px;background:var(--danger-hover-bg);border-radius:8px;overflow-wrap:anywhere}
 @media(max-width:480px){body{padding:20px}.login-container{padding:28px 24px}}
 @media(prefers-reduced-motion:reduce){button:active{transform:none}}
+
+/* Entry to the workspace, using the same typography and materials. */
+:root{--bg:#f2f2f4;--bg-surface:#fff;--text-heading:#202124;--text:#393a40;--text-muted:#6b6c73;--border:#e3e3e8;--row-border:#ededf0;--accent:#5355d5;--bg-active:#ededff;--accent-hover:#4042b3}
+@media(prefers-color-scheme:dark){:root{--bg:#151518;--bg-surface:#202024;--text-heading:#f5f5f7;--text:#dcdce2;--text-muted:#aaaab5;--border:#35353b;--row-border:#303036;--accent:#a8a7ff;--bg-active:#34334e;--accent-hover:#c0bfff}}
+.logo svg{background:var(--text-heading);color:var(--bg-surface)}
+body{padding:40px;background:var(--bg)}
+.login-container,.setup-container{max-width:960px;width:100%;padding:64px;display:grid;grid-template-columns:1fr 1fr;column-gap:80px;border:0;border-radius:28px;box-shadow:none}
+.logo{grid-column:1;justify-content:flex-start;align-self:start;margin-bottom:36px}.logo svg{color:var(--text-heading)}
+h1{grid-column:1;text-align:left;font-size:46px;line-height:1.08;letter-spacing:-2px;font-weight:650}.subtitle{grid-column:1;text-align:left;font-size:15px;line-height:1.6;margin:20px 0 0;max-width:28ch}
+form{grid-column:2;grid-row:1 / span 4;align-self:center}.field label{text-transform:none;letter-spacing:0;font-size:12px}.field input{background:var(--bg);border:1px solid transparent;border-radius:12px;padding:14px;font-size:16px}
+button[type=submit]{background:#5355d5;border-radius:12px;padding:14px}button[type=submit]:hover{background:#4042b3}
+@media(max-width:700px){body{padding:20px;align-items:flex-start}.login-container,.setup-container{display:block;padding:36px 24px;margin:40px 0;max-width:440px}.logo{margin-bottom:40px}h1{font-size:38px}.subtitle{margin:16px 0 32px}form{margin-top:32px}}
 </style>
 </head>
 <body>

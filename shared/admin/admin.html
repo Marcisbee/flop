@@ -499,6 +499,72 @@ td{padding:10px 16px;height:48px;font-size:12px}
   .mobile-row-hint{display:flex;align-items:center;gap:4px;margin-right:auto;color:var(--accent);font-size:11px;text-align:left}
   .data-table .empty-row{padding:24px}
 }
+
+/* Workspace: global destinations above a focused, full-width canvas. */
+:root{--bg:#f2f2f4;--bg-surface:#fff;--text-heading:#202124;--text:#393a40;--text-muted:#6b6c73;--border:#e3e3e8;--row-border:#ededf0;--accent:#5355d5;--bg-active:#ededff;--accent-hover:#4042b3}
+@media(prefers-color-scheme:dark){:root{--bg:#151518;--bg-surface:#202024;--text-heading:#f5f5f7;--text:#dcdce2;--text-muted:#aaaab5;--border:#35353b;--row-border:#303036;--accent:#a8a7ff;--bg-active:#34334e;--accent-hover:#c0bfff}}
+#app{display:flex;flex-direction:column;padding:0;gap:0;background:var(--bg)}
+.workspace-header{flex-shrink:0;background:color-mix(in srgb,var(--bg-surface) 82%,transparent);backdrop-filter:blur(16px)}
+.workspace-top{height:88px;display:flex;align-items:center;justify-content:space-between;padding:0 40px;gap:24px}
+.workspace-brand{display:flex;align-items:center;gap:12px;color:var(--text-heading);text-decoration:none;font-size:25px;letter-spacing:-1px;font-weight:700;line-height:1.1}
+.workspace-brand>svg{width:36px;height:36px;background:var(--text-heading);color:var(--bg-surface);padding:8px;border-radius:12px}
+.workspace-caption{display:block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);font-weight:500;margin-top:5px}
+.workspace-segments{display:flex;padding:5px;border-radius:16px;background:var(--bg);gap:4px}
+.workspace-segments a{display:flex;align-items:center;justify-content:center;gap:9px;min-width:120px;padding:10px 18px;border-radius:11px;text-decoration:none;color:var(--text-muted);font-weight:550}
+.workspace-segments a[aria-current]{background:var(--bg-surface);color:var(--text-heading);box-shadow:0 2px 6px #0000000c}
+.workspace-account{display:flex;align-items:center;gap:8px;background:none;border:0;color:var(--text-muted);cursor:pointer;font-size:12px;min-height:44px}
+.workspace-subnav{display:flex;justify-content:center;gap:32px;overflow:auto;padding:0 20px}
+.workspace-subnav a{flex-shrink:0;padding:10px 2px 14px;text-decoration:none;color:var(--text-muted);font-size:12px;border-bottom:2px solid transparent}
+.workspace-subnav a[aria-current]{color:var(--accent);border-color:var(--accent)}
+.workspace-location{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 36px;font-size:12px;color:var(--text-muted);flex-shrink:0}
+.workspace-location>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workspace-location>span>span{margin:0 10px;color:var(--text-ghost)}
+.table-switcher{border:0;background:var(--bg-surface);border-radius:20px;flex-shrink:0}
+.main{margin:0 24px 24px;border:0;border-radius:22px;box-shadow:0 4px 28px #00000004;overflow:hidden;flex:1;min-height:0}
+.sidebar{display:none;position:fixed;inset:16px auto 16px 16px;width:340px;max-width:calc(100vw - 32px);z-index:100;padding:16px;background:var(--bg-surface);border:1px solid var(--border);border-radius:22px;box-shadow:0 24px 80px #0003}
+.sidebar.is-open{display:flex}.nav-close{display:inline-flex}.nav-scrim{display:block;position:fixed;inset:0;background:#15152055;backdrop-filter:blur(4px);z-index:99;border:0;border-radius:0}
+.sidebar-header{padding:8px 8px 24px}.sidebar-search{background:var(--bg);border:0}.sidebar-footer{display:none}.sidebar-item.active{background:var(--bg-active)}
+.overview{padding:48px clamp(24px,6vw,100px);width:100%;max-width:1440px;margin:auto}
+.library-hero{display:flex;justify-content:space-between;align-items:center;gap:40px;padding-bottom:42px}
+.overview-kicker{font-size:11px;letter-spacing:.03em;text-transform:none;color:var(--text-muted);margin-bottom:20px}
+.overview h1{font-size:clamp(36px,4.3vw,60px);letter-spacing:-.055em;line-height:1.08;font-weight:650}.overview h1 span{color:var(--text-muted)}
+.overview-description{font-size:14px;margin:20px 0 0;line-height:1.6}
+.library-totals{display:flex;gap:48px;padding:32px;border-left:1px solid var(--border)}.library-totals strong{display:block;font-size:42px;font-weight:500;letter-spacing:-2px;color:var(--text-heading);line-height:1.2}.library-totals span{display:block;font-size:12px;color:var(--text-muted);margin-top:8px;white-space:nowrap}
+.library-toolbar{display:flex;align-items:center;justify-content:space-between;gap:24px}.library-toolbar h2{font-size:20px;letter-spacing:-.6px;font-weight:600}
+.library-search{display:flex;align-items:center;gap:10px;background:var(--bg);border-radius:12px;padding:10px 14px;color:var(--text-muted)}.library-search input{border:0;background:none;outline:none;color:var(--text);width:220px;min-width:0;font:inherit}
+.library-scopes{display:flex;gap:20px;margin:22px 0 16px}.library-scopes button{border:0;background:none;color:var(--text-muted);cursor:pointer;padding:6px 0;font-size:12px}.library-scopes button[aria-pressed=true]{color:var(--accent);font-weight:650}
+.library-list{border-top:1px solid var(--border)}.library-columns,.overview-table{display:grid;grid-template-columns:minmax(0,1fr) 150px 100px 20px;align-items:center;gap:20px}
+.library-columns{padding:12px 18px;font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted)}.library-columns span:nth-child(3){text-align:right}
+.overview-table{width:100%;border:0;border-bottom:1px solid var(--row-border);border-radius:0;padding:18px;color:var(--text);background:none;text-align:left}.overview-table:hover{background:var(--bg);border-color:var(--row-border)}
+.library-name{display:flex;align-items:center;gap:16px;min-width:0}.library-name strong{font-size:14px;letter-spacing:-.2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.library-icon{display:flex;padding:10px;border-radius:11px;background:var(--bg-active);color:var(--accent)}.library-kind{font-size:12px;color:var(--text-muted)}.library-count{text-align:right;font-variant-numeric:tabular-nums;font-size:14px}.overview-table>span:last-child{color:var(--text-muted)}
+.library-footnote,.library-empty{padding:24px 0;color:var(--text-muted);font-size:12px}
+.panel-toolbar,.analytics-toolbar{padding:28px 32px;border:0;background:var(--bg-surface)}.panel-title,.analytics-title{font-size:30px;letter-spacing:-1.2px}.panel-meta{font-size:12px;letter-spacing:0}.btn-primary{background:#5355d5;border-color:#5355d5}.btn-primary:hover{background:#4042b3}
+.table-container{padding:0 16px}.data-table th{background:var(--bg-surface);border-bottom:1px solid var(--border);padding-top:16px;padding-bottom:16px}.data-table td{height:58px}.th-type{font-weight:400}
+.pagination{border:0;background:var(--bg-surface);padding:18px 28px}
+.row-editor{width:430px;max-width:45%;border:0;border-left:1px solid var(--border);background:var(--bg);box-shadow:none}.row-editor-header{padding:24px;background:var(--bg);border:0}.row-editor-title{font-size:24px;letter-spacing:-.8px}.row-editor-body{padding:12px 24px 24px;gap:22px}.row-editor-field input,.row-editor-field select,.row-editor-field textarea{background:var(--bg-surface);border:1px solid transparent;border-radius:12px;padding:12px}.row-editor-readonly{border:0}.row-editor-actions{background:var(--bg);border:0}
+.analytics-body,.observe-body{background:var(--bg-surface);padding:8px 32px 32px}.analytics-cards{gap:0;background:var(--bg);border-radius:18px;padding:24px 0}.analytics-card{border:0;border-right:1px solid var(--border);border-radius:0;background:none;padding:0 28px}.analytics-card:last-child{border:0}.analytics-card-value{font-size:38px;letter-spacing:-1.5px}.analytics-chart-wrap{border:0;border-radius:0;padding:24px 0}.analytics-logs,.observe-table-wrap{border-radius:16px}
+.workflow-page,.backups-page,.mail-page{background:var(--bg-surface);padding:40px;max-width:1400px;width:100%;margin:0 auto}.workflow-title,.backups-title{font-size:36px;letter-spacing:-1.3px}.workflow-card,.mail-card,.workflow-form,.backups-card{background:var(--bg);border:0;border-radius:20px}.workflow-tabs{background:var(--bg);border:0;border-radius:12px;padding:4px;align-self:flex-start}.workflow-tab{border:0;border-radius:9px}.workflow-tab.active{background:var(--bg-surface);color:var(--text-heading)}
+@media(max-width:1100px){.workspace-top{padding:0 24px}.library-totals{gap:24px;padding:20px}.row-editor{max-height:none}.table-layout{flex-direction:row}}
+@media(max-width:760px){
+ .workspace-header{backdrop-filter:none}
+ .workspace-top{height:70px;padding:0 20px}.workspace-brand{font-size:22px}.workspace-brand>svg{width:32px;height:32px}.workspace-caption{font-size:9px}.workspace-account span{display:none}
+ .workspace-segments{position:fixed;bottom:max(12px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:10;padding:6px;background:color-mix(in srgb,var(--bg-surface) 92%,transparent);backdrop-filter:blur(16px);box-shadow:0 8px 36px #0002;border:1px solid var(--border);border-radius:24px;gap:4px}
+ .workspace-segments a{min-width:82px;padding:9px 12px;flex-direction:column;gap:4px;border-radius:18px;font-size:10px}.workspace-segments a[aria-current]{background:var(--bg-active);color:var(--accent);box-shadow:none}
+ .workspace-subnav{justify-content:flex-start;gap:28px;padding:0 22px}.workspace-subnav a{font-size:12px;padding-bottom:12px}
+ .workspace-location{padding:12px 16px;font-size:11px}.table-switcher{font-size:12px;padding:7px 12px;min-height:38px}
+ .main{margin:0 0 92px;border-radius:20px 20px 0 0}.overview{padding:28px 22px}.library-hero{display:block;padding-bottom:28px}.overview-kicker{margin-bottom:16px}.overview h1{font-size:40px}.overview-description{font-size:13px;margin-top:16px}
+ .library-totals{border:0;padding:24px 0 0;gap:40px}.library-totals strong{font-size:28px;letter-spacing:-1px}.library-totals span{font-size:10px;margin-top:3px}
+ .library-toolbar{display:block}.library-toolbar h2{font-size:20px;margin-bottom:16px}.library-search{padding:11px 14px}.library-search input{width:100%;font-size:16px}.library-scopes{margin:12px 0}.library-scopes button{min-height:44px}
+ .library-columns{display:none}.overview-table{grid-template-columns:minmax(0,1fr) 40px 12px;gap:12px;padding:16px 0}.library-kind{display:none}.library-name{gap:12px}.library-name strong{font-size:14px}.library-count{font-size:13px}
+ .panel-toolbar,.analytics-toolbar{padding:24px 20px 20px}.panel-title,.analytics-title{font-size:30px}.table-container{padding:0}.data-table tbody{padding:0 16px;background:var(--bg-surface)}.data-table tbody tr{border:0;border-bottom:1px solid var(--border);border-radius:0;background:none;padding:16px 0;margin:0}.data-table tbody tr.selected{background:var(--bg-active)}.data-table td{height:auto;padding:6px 0}.data-table td.td-actions{border:0;padding-bottom:0}.data-table td.mobile-field{grid-template-columns:70px minmax(0,1fr)}
+ .row-editor{position:fixed;inset:0;z-index:20;width:100%;max-width:none;height:100dvh;border:0;border-radius:0}.row-editor-header{padding:24px 20px 16px}.row-editor-body{padding:16px 20px}.row-editor-actions{padding:16px 20px calc(16px + env(safe-area-inset-bottom))}.row-editor-field input,.row-editor-field select,.row-editor-field textarea{font-size:16px}
+ .analytics-body,.observe-body{padding:8px 20px 24px}.analytics-cards{padding:16px 0;gap:20px 0}.analytics-card{padding:0 16px}.analytics-card:nth-child(2n){border:0}.analytics-card-value{font-size:28px}.analytics-card-label{font-size:10px}.analytics-chart-wrap{padding:16px 0}.analytics-layout{flex-direction:column}
+ .workflow-page,.backups-page,.mail-page{padding:28px 20px}.workflow-title,.backups-title{font-size:32px}.workflow-tabs{align-self:stretch}.workflow-form,.workflow-card,.mail-card{padding:20px}.toast-container{bottom:100px}
+ .sidebar{inset:12px;width:calc(100vw - 24px);max-width:none;padding:12px;border-radius:22px}.sidebar-item{min-height:48px}
+}
+@media(prefers-reduced-transparency:reduce){.workspace-header,.workspace-segments{background:var(--bg-surface);backdrop-filter:none}.nav-scrim{backdrop-filter:none}}
+@media(prefers-contrast:more){.workspace-segments,.main{border:1px solid var(--text-muted)}}
+
 </style>
 </head>
 <body>
@@ -710,7 +776,7 @@ function Toasts() {
 
 // ── Components ──
 
-function Sidebar({ navOpen, onCloseNav, tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, workflowEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectWorkflow, onSelectMail, onSelectBackups, onLogout }) {
+function Sidebar({ navOpen, onCloseNav, tables, archiveTables, currentTable, currentArchive, viewMode, onSelect, onSelectArchive }) {
   const [tableSearch, setTableSearch] = useState('');
   
   const filteredTables = useMemo(() => {
@@ -722,7 +788,7 @@ function Sidebar({ navOpen, onCloseNav, tables, archiveTables, currentTable, cur
   return html`
     <nav id="navigation" aria-label="Admin navigation" class=${"sidebar" + (navOpen ? " is-open" : "")} onClick=${e => { if (e.target.closest(".sidebar-item")) onCloseNav(); }}>
       <div class="sidebar-header">
-        <a class="logo-sm" href="#" aria-label="Database overview" onClick=${onCloseNav}>${icons.db}<span>flop</span><span class="brand-caption">ADMIN</span></a><button class="btn-icon nav-close" aria-label="Close navigation" onClick=${onCloseNav}>${icons.x}</button>
+        <a class="logo-sm" href="#" aria-label="Database overview" onClick=${onCloseNav}>${icons.db}<span>Tables</span></a><button class="btn-icon nav-close" aria-label="Close navigation" onClick=${onCloseNav}>${icons.x}</button>
       </div>
       <div class="sidebar-search">
         ${icons.search}
@@ -758,84 +824,41 @@ function Sidebar({ navOpen, onCloseNav, tables, archiveTables, currentTable, cur
           `)}
           </details>
         `}
-        ${mediaEnabled && html`
-          <div class="sidebar-section-label" style="padding:10px 8px 4px">ASSETS</div>
-          <button
-            aria-current=${viewMode === 'media' ? "page" : undefined} class=${"sidebar-item" + (viewMode === 'media' ? " active" : "")}
-            onClick=${onSelectMedia}
-          >
-            <span class="sidebar-item-icon">${icons.image}</span>
-            <span class="sidebar-item-label">Media</span>
-          </button>
-        `}
-        <div class="sidebar-section-label" style="padding:10px 8px 4px">SYSTEM</div>
-        ${workflowEnabled && html`
-          <button
-            aria-current=${viewMode === 'workflow' ? "page" : undefined} class=${"sidebar-item" + (viewMode === 'workflow' ? " active" : "")}
-            onClick=${onSelectWorkflow}
-          >
-            <span class="sidebar-item-icon">${icons.pulse}</span>
-            <span class="sidebar-item-label">AI Workflows</span>
-          </button>
-        `}
-        <button
-          aria-current=${viewMode === 'mail' ? "page" : undefined} class=${"sidebar-item" + (viewMode === 'mail' ? " active" : "")}
-          onClick=${onSelectMail}
-        >
-          <span class="sidebar-item-icon">${icons.mail}</span>
-          <span class="sidebar-item-label">Mail</span>
-        </button>
-        <button
-          aria-current=${viewMode === 'backups' ? "page" : undefined} class=${"sidebar-item" + (viewMode === 'backups' ? " active" : "")}
-          onClick=${onSelectBackups}
-        >
-          <span class="sidebar-item-icon">${icons.clock}</span>
-          <span class="sidebar-item-label">Backups</span>
-        </button>
-        ${analyticsEnabled && html`
-          <div class="sidebar-section-label" style="padding:10px 8px 4px">OBSERVE</div>
-          <button
-            aria-current=${viewMode === 'analytics-volume' ? "page" : undefined} class=${"sidebar-item" + (viewMode === 'analytics-volume' ? " active" : "")}
-            onClick=${onSelectAnalyticsVolume}
-          >
-            <span class="sidebar-item-icon">${icons.chart}</span>
-            <span class="sidebar-item-label">Request Volume</span>
-          </button>
-          <button
-            aria-current=${viewMode === 'analytics-performance' ? "page" : undefined} class=${"sidebar-item" + (viewMode === 'analytics-performance' ? " active" : "")}
-            onClick=${onSelectAnalyticsPerformance}
-          >
-            <span class="sidebar-item-icon">${icons.chart}</span>
-            <span class="sidebar-item-label">Request Performance</span>
-          </button>
-        `}
-        ${observeEnabled && html`
-          <button
-            aria-current=${viewMode === 'observe' ? "page" : undefined} class=${"sidebar-item" + (viewMode === 'observe' ? " active" : "")}
-            onClick=${onSelectObserve}
-          >
-            <span class="sidebar-item-icon">${icons.pulse}</span>
-            <span class="sidebar-item-label">Observe</span>
-          </button>
-        `}
-      </div>
-      <div class="sidebar-footer">
-        <button class="sidebar-action danger" onClick=${onLogout}>${icons.signout} Sign Out</button>
       </div>
     </nav>
   `;
 }
 
 function EmptyState({ tables, onSelect, loading, error, onRetry }) {
+  const [query, setQuery] = useState('');
+  const [scope, setScope] = useState('application');
+  const matching = tables.filter(t => (scope === 'all' || !t.name.startsWith('_')) && t.name.toLowerCase().includes(query.toLowerCase()));
+  const rows = tables.reduce((total, t) => total + Number(t.rowCount || 0), 0);
   return html`<section class="overview">
-    <div class="overview-kicker">Your database</div>
-    <h1>Database overview</h1>
-    <p class="overview-description">Browse your data, manage your services, and keep an eye on what’s happening.</p>
-    <h2 class="overview-heading">Tables <span class="panel-meta">${tables.length}</span></h2>
-    ${loading ? html`<p role="status">Loading your tables…</p>` : error ? html`<p role="alert">${error} <button class="btn" onClick=${onRetry}>Try again</button></p>` : tables.length ? html`<div class="overview-grid">
-      ${tables.map(t => html`<button class="overview-table" onClick=${() => onSelect(t.name)}>${icons.table}<span><strong>${t.name}</strong><small>${fmtCount(t.rowCount)} ${t.rowCount === 1 ? "row" : "rows"}${t.materialized ? ' · Materialized' : ''}</small></span></button>`)}
-    </div>` : html`<p class="overview-description">No tables yet. Tables defined in your application will appear here.</p>`}
+    <div class="library-hero">
+      <div><div class="overview-kicker">Workspace / Data</div><h1>Your data.<br /><span>Room to explore.</span></h1>
+      <p class="overview-description">Find a table. Open a record. Make it yours.</p></div>
+      <div class="library-totals"><div><strong>${fmtCount(tables.length)}</strong><span>Tables</span></div><div><strong>${fmtCount(rows)}</strong><span>Total records</span></div></div>
+    </div>
+    <div class="library-toolbar"><h2>Table library</h2><label class="library-search">${icons.search}<input type="search" aria-label="Search table library" placeholder="Search tables" value=${query} onInput=${e => setQuery(e.target.value)} /></label></div>
+    <div class="library-scopes" role="group" aria-label="Table scope"><button aria-pressed=${scope === 'application'} onClick=${() => setScope('application')}>Application</button><button aria-pressed=${scope === 'all'} onClick=${() => setScope('all')}>All tables</button></div>
+    ${loading ? html`<p role="status">Loading your tables…</p>` : error ? html`<p role="alert">${error} <button class="btn" onClick=${onRetry}>Try again</button></p>` : html`<div class="library-list">
+      <div class="library-columns"><span>Table</span><span>Type</span><span>Records</span><span></span></div>
+      ${matching.map(t => html`<button class="overview-table" onClick=${() => onSelect(t.name)}><span class="library-name"><span class="library-icon">${icons.table}</span><strong>${t.name}</strong></span><span class="library-kind">${t.materialized ? 'Materialized' : t.name.startsWith('_') ? 'System' : 'Application'}</span><span class="library-count">${fmtCount(t.rowCount)}</span><span aria-hidden="true">↗</span></button>`)}
+      ${!matching.length && html`<p class="library-empty">${query ? 'No tables match your search.' : scope === 'application' ? 'No application tables. Choose All tables to see system tables.' : 'No tables yet. Tables defined in your application will appear here.'}</p>`}
+    </div>`}
+    <div class="library-footnote">Select a table to browse and edit its records.</div>
   </section>`;
+}
+
+function WorkspaceNav({ viewMode, analyticsEnabled, mediaEnabled, observeEnabled, workflowEnabled, onLogout }) {
+  const group = viewMode.startsWith('analytics') || viewMode === 'observe' ? 'activity' : ['workflow','mail','backups'].includes(viewMode) ? 'services' : 'data';
+  const destinations = group === 'data' ? [['', 'Tables', true], ['_media', 'Media', mediaEnabled]] : group === 'activity' ? [['_analytics-volume','Request volume',analyticsEnabled],['_analytics-performance','Performance',analyticsEnabled],['_observe','Live activity',observeEnabled]] : [['_workflow','Workflows',workflowEnabled],['_mail','Mail',true],['_backups','Backups',true]];
+  return html`<header class="workspace-header"><div class="workspace-top"><a href="#" class="workspace-brand" aria-label="Database overview">${icons.db}<span>flop<span class="workspace-caption">Workspace</span></span></a>
+    <nav class="workspace-segments" aria-label="Workspace sections"><a href="#" aria-current=${group === 'data' ? 'page' : undefined}>${icons.table}<span>Data</span></a>${(analyticsEnabled || observeEnabled) && html`<a href=${analyticsEnabled ? '#_analytics-volume' : '#_observe'} aria-current=${group === 'activity' ? 'page' : undefined}>${icons.chart}<span>Activity</span></a>`}<a href=${workflowEnabled ? '#_workflow' : '#_mail'} aria-current=${group === 'services' ? 'page' : undefined}>${icons.settings || icons.pulse}<span>Services</span></a></nav>
+    <button class="workspace-account" aria-label="Sign out" onClick=${onLogout}>${icons.signout}<span>Sign out</span></button></div>
+    <nav class="workspace-subnav" aria-label="Section pages">${destinations.filter(d => d[2]).map(([hash,label]) => html`<a href=${'#' + hash} aria-current=${hash ? viewMode === hash.slice(1) ? 'page' : undefined : group === 'data' && viewMode !== 'media' ? 'page' : undefined}>${label}</a>`)}</nav>
+  </header>`;
 }
 
 function valueToEditorInput(field, value) {
@@ -3490,16 +3513,13 @@ function App() {
     function keydown(e) {
       if (e.key === 'Escape') { e.preventDefault(); closeNav(); }
       if (e.key !== 'Tab') return;
-      const items = [...nav.querySelectorAll('a,button,input')].filter(el => !el.disabled && el.getClientRects().length);
+      const items = [...nav.querySelectorAll('a,button,input,summary')].filter(el => !el.disabled && el.getClientRects().length);
       const first = items[0], last = items[items.length - 1];
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
     }
-    const desktop = matchMedia('(min-width:761px)');
-    const resize = () => { if (desktop.matches) setNavOpen(false); };
     document.addEventListener('keydown', keydown);
-    desktop.addEventListener('change', resize);
-    return () => { document.removeEventListener('keydown', keydown); desktop.removeEventListener('change', resize); };
+    return () => { document.removeEventListener('keydown', keydown); };
   }, [navOpen, closeNav]);
   const [tables, setTables] = useState([]);
   const [archiveTables, setArchiveTables] = useState([]);
@@ -3673,41 +3693,6 @@ function App() {
     window.location.hash = '_archive/' + encodeURIComponent(name);
   }, []);
 
-  const selectAnalyticsVolume = useCallback(() => {
-    setViewMode('analytics-volume');
-    window.location.hash = '_analytics-volume';
-  }, []);
-
-  const selectAnalyticsPerformance = useCallback(() => {
-    setViewMode('analytics-performance');
-    window.location.hash = '_analytics-performance';
-  }, []);
-
-  const selectObserve = useCallback(() => {
-    setViewMode('observe');
-    window.location.hash = '_observe';
-  }, []);
-
-  const selectMedia = useCallback(() => {
-    setViewMode('media');
-    window.location.hash = '_media';
-  }, []);
-
-  const selectBackups = useCallback(() => {
-    setViewMode('backups');
-    window.location.hash = '_backups';
-  }, []);
-
-  const selectMail = useCallback(() => {
-    setViewMode('mail');
-    window.location.hash = '_mail';
-  }, []);
-
-  const selectWorkflow = useCallback(() => {
-    setViewMode('workflow');
-    window.location.hash = '_workflow';
-  }, []);
-
   const currentSchema = useMemo(() => {
     if (!currentTable) return null;
     const source = currentArchive ? archiveTables : tables;
@@ -3716,10 +3701,8 @@ function App() {
   }, [tables, archiveTables, currentTable, currentArchive]);
 
   return html`
-    <header class="mobile-bar" inert=${navOpen}>
-      <button ref=${navTrigger} class="btn-icon" aria-label="Open navigation" aria-expanded=${navOpen} aria-controls="navigation" onClick=${() => setNavOpen(true)}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>
-      <strong>flop</strong><small>Admin console</small>
-    </header>
+    <div inert=${navOpen}><${WorkspaceNav} viewMode=${viewMode} analyticsEnabled=${analyticsEnabled} mediaEnabled=${mediaEnabled} observeEnabled=${observeEnabled} workflowEnabled=${workflowEnabled} onLogout=${logout} /></div>
+    <div class="workspace-location" inert=${navOpen}><span>Workspace <span aria-hidden="true">/</span> ${viewMode === 'table' ? currentTable || 'Table library' : viewMode.startsWith('analytics') ? 'Activity' : titleCaseToken(viewMode)}</span><button ref=${navTrigger} class="btn table-switcher" aria-label="Open navigation" aria-expanded=${navOpen} aria-controls="navigation" onClick=${() => setNavOpen(true)}>${icons.table} Browse tables</button></div>
     ${navOpen && html`<button class="nav-scrim" tabindex="-1" aria-label="Close navigation" onClick=${closeNav}></button>`}
     <${Sidebar}
       navOpen=${navOpen}
@@ -3729,20 +3712,8 @@ function App() {
       currentTable=${currentTable}
       currentArchive=${currentArchive}
       viewMode=${viewMode}
-      analyticsEnabled=${analyticsEnabled}
-      mediaEnabled=${mediaEnabled}
-      observeEnabled=${observeEnabled}
-      workflowEnabled=${workflowEnabled}
       onSelect=${selectTable}
       onSelectArchive=${selectArchive}
-      onSelectMedia=${selectMedia}
-      onSelectAnalyticsVolume=${selectAnalyticsVolume}
-      onSelectAnalyticsPerformance=${selectAnalyticsPerformance}
-      onSelectObserve=${selectObserve}
-      onSelectWorkflow=${selectWorkflow}
-      onSelectMail=${selectMail}
-      onSelectBackups=${selectBackups}
-      onLogout=${logout}
     />
     <main class="main" inert=${navOpen}>
       ${(viewMode === 'analytics-volume' || viewMode === 'analytics-performance') && analyticsEnabled
