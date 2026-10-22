@@ -4,7 +4,7 @@ go 1.26.10
 
 require (
 	github.com/marcisbee/flop v0.0.0
-	go.mongodb.org/mongo-driver v1.17.6
+	go.mongodb.org/mongo-driver v1.17.7
 )
 
 require (
