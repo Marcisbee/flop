@@ -493,13 +493,16 @@ func (db *Database) drainCommitQueue() {
 }
 
 // Checkpoint flushes all tables and writes meta as one database-wide
-// consistency boundary.
+// consistency boundary. Checkpointing is deferred while buffered writes remain;
+// acknowledged commits remain recoverable from the WAL and transaction journal.
 func (db *Database) Checkpoint() error {
 	return db.withConsistentTablesLocked(nil)
 }
 
 // WithConsistentSnapshot checkpoints the database and invokes fn while all
-// table writes remain blocked. This is intended for backup readers.
+// table writes remain blocked. This is intended for backup readers. If buffered
+// transactions are pending, it returns an error without invoking fn; callers
+// can retry after those transactions commit or roll back.
 func (db *Database) WithConsistentSnapshot(fn func(dataDir string) error) error {
 	return db.withConsistentTablesLocked(fn)
 }
@@ -526,6 +529,23 @@ func (db *Database) withConsistentTablesLocked(fn func(dataDir string) error) er
 			tables[i].mu.Unlock()
 		}
 	}()
+
+	// Pages and indexes contain buffered mutations before their commit decision.
+	// Do not publish any participant or retire the journal until every table is
+	// safe to checkpoint. Waiting here would deadlock commits on transactionMu.
+	for _, table := range tables {
+		if table.hasPendingRows() {
+			if fn != nil {
+				return fmt.Errorf("snapshot unavailable: buffered transactions pending; retry after commit or rollback")
+			}
+			for _, participant := range tables {
+				if err := participant.wal.Fsync(); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
 
 	for _, table := range tables {
 		if err := table.checkpointLocked(); err != nil {
@@ -3734,6 +3754,12 @@ func (ti *TableInstance) Checkpoint() error {
 
 // checkpointLocked performs a checkpoint while ti.mu is exclusively held.
 func (ti *TableInstance) checkpointLocked() error {
+	// The exclusive table lock prevents new mutations; pending keys stay set
+	// until the durable commit decision (or completed rollback). Never flush
+	// their pages/indexes or advance the WAL checkpoint past buffered records.
+	if ti.hasPendingRows() {
+		return ti.wal.Fsync()
+	}
 	if ti.wal != nil && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
 		return nil
 	}
