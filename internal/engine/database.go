@@ -48,8 +48,11 @@ type Database struct {
 	commitDraining bool
 
 	// Cross-table transaction coordinator.
-	transactionMu sync.Mutex
-	txJournal     transactionJournal
+	transactionMu    sync.Mutex
+	txCommitMu       sync.Mutex
+	txCommitQueue    []commitSlot
+	txCommitDraining bool
+	txJournal        transactionJournal
 }
 
 type commitSlot struct {

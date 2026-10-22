@@ -1,7 +1,12 @@
 package engine
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/marcisbee/flop/internal/schema"
@@ -30,6 +35,10 @@ func TestOpenRejectsInvalidSyncMode(t *testing.T) {
 	if err := db.Open(coordinatedTestDefs()); err == nil {
 		t.Fatal("expected invalid sync mode to be rejected")
 	}
+}
+
+func TestRecoveryIgnoresPreparedCrossTableTransaction(t *testing.T) {
+	testRecoveryCrossTableDecision(t, transactionPrepared, false)
 }
 
 func TestRecoveryIgnoresAbortedCrossTableTransaction(t *testing.T) {
@@ -111,4 +120,101 @@ func testRecoveryCrossTableDecision(t *testing.T, state string, wantRows bool) {
 			t.Fatalf("unexpected aborted row in %s: %v", tableName, row)
 		}
 	}
+}
+
+// Acknowledged concurrent commits must survive without a clean close. If one
+// participant cannot persist, none of that transaction may reappear on reopen.
+func TestConcurrentTransactionCrashRecovery(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("participant_failure=%t", failure), func(t *testing.T) {
+			dir := t.TempDir()
+			cmd := exec.Command(os.Args[0], "-test.run=^TestConcurrentTransactionCrashHelper$")
+			cmd.Env = append(os.Environ(), "FLOP_TX_CRASH_DIR="+dir, "FLOP_TX_CRASH_FAILURE="+strconv.FormatBool(failure))
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("child: %v\n%s", err, out)
+			}
+			db := NewDatabase(DatabaseConfig{DataDir: dir, SyncMode: "full"})
+			if err := db.Open(coordinatedTestDefs()); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			for i := 0; i < 64; i++ {
+				for _, name := range []string{"left", "right"} {
+					row, err := db.GetTable(name).Get(strconv.Itoa(i))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if failure {
+						if row != nil {
+							t.Fatalf("failed transaction %d recovered in %s", i, name)
+						}
+					} else if row == nil || row["value"] != name {
+						t.Fatalf("acknowledged transaction %d missing or incorrect in %s: %v", i, name, row)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestConcurrentTransactionCrashHelper(t *testing.T) {
+	dir := os.Getenv("FLOP_TX_CRASH_DIR")
+	if dir == "" {
+		return
+	}
+	db := NewDatabase(DatabaseConfig{DataDir: dir, SyncMode: "full"})
+	if err := db.Open(coordinatedTestDefs()); err != nil {
+		t.Fatal(err)
+	}
+	failure := os.Getenv("FLOP_TX_CRASH_FAILURE") == "true"
+	if failure {
+		if err := db.GetTable("right").wal.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := make(chan struct{})
+	var ready, done sync.WaitGroup
+	ready.Add(64)
+	done.Add(64)
+	for i := 0; i < 64; i++ {
+		go func(i int) {
+			defer done.Done()
+			buffers := make(map[string]*walBufEntry)
+			for _, name := range []string{"left", "right"} {
+				if _, err := db.GetTable(name).Insert(map[string]interface{}{"id": strconv.Itoa(i), "value": name}, buffers); err != nil {
+					t.Error(err)
+					ready.Done()
+					return
+				}
+			}
+			ready.Done()
+			<-start
+			err := db.EnqueueCommit(buffers)
+			if failure {
+				if err == nil {
+					t.Error("acknowledged failed participant")
+				}
+				for _, name := range []string{"left", "right"} {
+					if e := db.GetTable(name).RollbackInsert(strconv.Itoa(i)); e != nil {
+						t.Error(e)
+					}
+				}
+				db.DiscardTransaction(buffers)
+			} else if err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	if t.Failed() {
+		os.Exit(1)
+	}
+	// Deliberately omit Close/checkpoint: only acknowledged WAL decisions survive.
+	os.Exit(0)
 }

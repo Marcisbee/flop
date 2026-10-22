@@ -117,6 +117,62 @@ func (db *Database) coordinatedFlush(walBuffers map[string]*walBufEntry) error {
 		return nil
 	}
 
+	slot := commitSlot{walBuffers: walBuffers, done: make(chan error, 1)}
+	db.txCommitMu.Lock()
+	db.txCommitQueue = append(db.txCommitQueue, slot)
+	start := !db.txCommitDraining
+	db.txCommitDraining = true
+	db.txCommitMu.Unlock()
+	if start {
+		go db.drainTransactionCommits()
+	}
+	return <-slot.done
+}
+
+// Drain only already-waiting callers: an uncontended commit has no batching
+// delay. Bound each batch so checkpoint callers can acquire transactionMu
+// between batches even under sustained write load.
+func (db *Database) drainTransactionCommits() {
+	const maxBatch = 64
+	for {
+		db.txCommitMu.Lock()
+		if len(db.txCommitQueue) == 0 {
+			db.txCommitDraining = false
+			db.txCommitQueue = nil
+			db.txCommitMu.Unlock()
+			return
+		}
+		n := min(len(db.txCommitQueue), maxBatch)
+		batch := db.txCommitQueue[:n:n]
+		db.txCommitQueue = db.txCommitQueue[n:]
+		db.txCommitMu.Unlock()
+
+		merged := make(map[string]*walBufEntry)
+		for _, slot := range batch {
+			for name, entry := range slot.walBuffers {
+				m := merged[name]
+				if m == nil {
+					m = &walBufEntry{}
+					merged[name] = m
+				}
+				m.records = append(m.records, entry.records...)
+				m.txIDs = append(m.txIDs, entry.txIDs...)
+				m.pending = append(m.pending, entry.pending...)
+			}
+		}
+		// One journal decision covers every participant transaction ID in the
+		// batch. On failure every caller rolls back; on success every WAL is
+		// durable before any caller is acknowledged. The journal format and
+		// recovery rules are unchanged.
+		err := db.flushTransactionBatch(merged)
+		for i := range batch {
+			batch[i].done <- err
+			batch[i] = commitSlot{}
+		}
+	}
+}
+
+func (db *Database) flushTransactionBatch(walBuffers map[string]*walBufEntry) error {
 	db.transactionMu.Lock()
 	defer db.transactionMu.Unlock()
 
