@@ -1317,6 +1317,9 @@ func (ctx *ReducerCtx) RequireAuth() (*AuthContext, error) {
 	return ctx.Request.Auth, nil
 }
 
+// Transaction runs a callback atomically with respect to other explicit
+// transactions on this database. Callbacks are serialized through commit or
+// rollback; a callback must not wait for another Transaction on the same database.
 func Transaction[T any](ctx *ReducerCtx, fn func(*Tx) (T, error)) (T, error) {
 	if fn == nil {
 		var zero T
@@ -1326,7 +1329,11 @@ func Transaction[T any](ctx *ReducerCtx, fn func(*Tx) (T, error)) (T, error) {
 		var zero T
 		return zero, errors.New("transaction requires reducer context with database")
 	}
+	ctx.DB.db.explicitTransactionMu.Lock()
+	defer ctx.DB.db.explicitTransactionMu.Unlock()
 	inner := newArchiveTxn(ctx.DB.db)
+	// Also undo buffered changes if the callback panics.
+	defer inner.rollback()
 	tx := &Tx{
 		DB: &DBAccessor{
 			db:            ctx.DB.db,

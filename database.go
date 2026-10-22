@@ -66,6 +66,10 @@ type Database struct {
 	tablePolicy          map[string]tablePolicyMeta
 	materialized         map[string]*materializedRuntime
 	cascadeRefs          map[string][]cascadeArchiveRef
+
+	// Explicit callbacks mutate live pages and retain undo images until commit.
+	// Keep their reads, writes, and rollback images in one serial order.
+	explicitTransactionMu sync.Mutex
 }
 
 // AnalyticsEvent records one retained observability entry in the admin analytics store.
