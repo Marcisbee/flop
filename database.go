@@ -556,14 +556,10 @@ func (d *Database) trackedAccessor(tracker *tableAccessTracker, auth *AuthContex
 	return &DBAccessor{db: d, tracker: tracker, auth: auth, enforcePolicy: true}
 }
 
-// Checkpoint flushes all pending writes to disk.
+// Checkpoint flushes committed writes to disk. It defers checkpointing while
+// transactions have buffered writes; acknowledged commits remain recoverable.
 func (d *Database) Checkpoint() error {
-	for _, t := range d.db.Tables {
-		if err := t.Checkpoint(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return d.db.Checkpoint()
 }
 
 // Close closes the database and stops cron jobs.
