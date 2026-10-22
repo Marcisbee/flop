@@ -56,7 +56,14 @@ identical settings. This requests a database checkpoint every 100 ms and a
 lookup every millisecond. The report adds `checkpoint_ms` and `read_ms`
 (p50/p99/p99.9). The lookup timer can coalesce when delayed; these are diagnostic
 lookup latencies, including lookups that return no visible row, not an open-loop
-read-throughput benchmark. Compare writes with and without this additional
+read-throughput benchmark. `read_calls` and `read_missing` distinguish successful
+lookups from requests that see no visible row. `checkpoint_calls` counts requests;
+`checkpoint_publications` counts calls after which the durable `bench0` manifest
+generation advanced. `published_checkpoint_ms` reports only those calls. A
+successful checkpoint request can defer publication while transactions are
+pending, so request latency alone is not persistence latency. Manifest inspection
+runs after the timed call and adds diagnostic I/O; apply it identically to both
+revisions. Compare writes with and without this additional
 load. Successful timing measurements do not establish checkpoint atomicity;
 run recovery qualification separately.
 
@@ -68,3 +75,9 @@ FLOP_CONCURRENT_OPS=1000 FLOP_CONCURRENT_CHECKPOINT=1 \
   -test.bench 'BenchmarkConcurrentDurable/writers=8$/tx=.*/shared=false$' \
   -test.benchtime=1x -test.count=5 -test.timeout=10m
 ```
+
+For an alternating comparison, build `baseline.test` and `candidate.test` with
+identical benchmark instrumentation, then run each binary with `-test.count=1`
+five times in fresh processes. Alternate the order on each pair, keep every
+sample in a distinct log, and retain each binary's checksum. This avoids a fixed
+baseline-first ordering and isolates process state between samples.

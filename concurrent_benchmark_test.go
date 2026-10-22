@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/marcisbee/flop/internal/storage"
 )
 
 // BenchmarkConcurrentDurable measures scheduled arrival through acknowledgement,
@@ -50,7 +52,8 @@ func runConcurrentDurable(b *testing.B, writers int, explicit, shared bool) {
 		return fallback
 	}
 	n, rate := setting("FLOP_CONCURRENT_OPS", 10000), setting("FLOP_CONCURRENT_RATE", 1000)
-	app := New(Config{DataDir: b.TempDir(), SyncMode: "full"})
+	dataDir := b.TempDir()
+	app := New(Config{DataDir: dataDir, SyncMode: "full"})
 	tables := make([]*Table[concurrentRow], 2)
 	for i := range tables {
 		tables[i] = AutoTable[concurrentRow](app, fmt.Sprintf("bench%d", i), func(t *TableBuilder[concurrentRow]) { t.Field("ID").Primary(); t.Field("Value").Required() })
@@ -85,6 +88,8 @@ func runConcurrentDurable(b *testing.B, writers int, explicit, shared bool) {
 	succeeded := make([]bool, n)
 	reads := make([]float64, 0)
 	checkpoints := make([]float64, 0)
+	publications := make([]float64, 0)
+	readMissing := 0
 	var next atomic.Int64
 	var errors atomic.Int64
 	var firstErr error
@@ -118,6 +123,11 @@ func runConcurrentDurable(b *testing.B, writers int, explicit, shared bool) {
 		}
 	}()
 	if os.Getenv("FLOP_CONCURRENT_CHECKPOINT") == "1" {
+		manifest, err := storage.ReadLatestCheckpointManifest(dataDir, "bench0")
+		if err != nil || manifest == nil {
+			b.Fatalf("initial checkpoint manifest: %v", err)
+		}
+		generation := manifest.Generation
 		observers.Add(2)
 		go func() {
 			defer observers.Done()
@@ -130,7 +140,23 @@ func runConcurrentDurable(b *testing.B, writers int, explicit, shared bool) {
 				case <-tick.C:
 					s := time.Now()
 					fail(db.Checkpoint())
-					checkpoints = append(checkpoints, float64(time.Since(s))/1e6)
+					elapsed := float64(time.Since(s)) / 1e6
+					checkpoints = append(checkpoints, elapsed)
+					// Inspect the durable generation after timing the call: a
+					// successful request may defer publication under write load.
+					manifest, err := storage.ReadLatestCheckpointManifest(dataDir, "bench0")
+					if err != nil {
+						fail(err)
+						return
+					}
+					if manifest == nil {
+						fail(fmt.Errorf("checkpoint manifest missing"))
+						return
+					}
+					if manifest.Generation > generation {
+						publications = append(publications, elapsed)
+					}
+					generation = manifest.Generation
 				}
 			}
 		}()
@@ -143,7 +169,10 @@ func runConcurrentDurable(b *testing.B, writers int, explicit, shared bool) {
 				case <-stop:
 					return
 				case scheduled := <-tick.C:
-					_, e := tables[0].Get(db, "0")
+					row, e := tables[0].Get(db, "0")
+					if row == nil {
+						readMissing++
+					}
 					fail(e)
 					reads = append(reads, float64(time.Since(scheduled))/1e6)
 				}
@@ -214,7 +243,7 @@ func runConcurrentDurable(b *testing.B, writers int, explicit, shared bool) {
 			successLatencies = append(successLatencies, latencies[i])
 		}
 	}
-	report := map[string]any{"writers": writers, "transaction": explicit, "shared": shared, "operations": n, "rate": rate, "attempt_ms": quantiles(latencies), "write_ms": quantiles(successLatencies), "read_ms": quantiles(reads), "checkpoint_ms": quantiles(checkpoints), "throughput": float64(len(successLatencies)) / duration, "checkpoint": os.Getenv("FLOP_CONCURRENT_CHECKPOINT") == "1", "peak_heap_bytes": peakHeap.Load(), "errors": errors.Load(), "go": runtime.Version(), "gomaxprocs": runtime.GOMAXPROCS(0)}
+	report := map[string]any{"writers": writers, "transaction": explicit, "shared": shared, "operations": n, "rate": rate, "attempt_ms": quantiles(latencies), "write_ms": quantiles(successLatencies), "read_ms": quantiles(reads), "checkpoint_ms": quantiles(checkpoints), "checkpoint_calls": len(checkpoints), "checkpoint_publications": len(publications), "published_checkpoint_ms": quantiles(publications), "read_calls": len(reads), "read_missing": readMissing, "throughput": float64(len(successLatencies)) / duration, "checkpoint": os.Getenv("FLOP_CONCURRENT_CHECKPOINT") == "1", "peak_heap_bytes": peakHeap.Load(), "errors": errors.Load(), "go": runtime.Version(), "gomaxprocs": runtime.GOMAXPROCS(0)}
 	data, _ := json.Marshal(report)
 	fmt.Printf("CONCURRENT %s\n", data)
 	if firstErr != nil {
