@@ -170,3 +170,33 @@ reads must follow table policies; policy-protected responses use `private, no-st
 to avoid reuse after logout or account switching. SSE no longer emits table activity
 for updates that are unreadable both before and after the change. Flop retains
 exact-case email semantics.
+
+## Concurrent explicit transactions
+
+`flop.Transaction` groups durable commits from independent writers. Typed point
+reads and writes reserve their rows through commit or rollback. If another
+explicit transaction owns a needed row, the operation returns
+`flop.ErrTransactionConflict`; callers can use `errors.Is` and retry the entire
+transaction with bounded backoff. Callbacks are never replayed automatically.
+Keep external side effects outside retried callbacks. Panics roll back buffered
+writes before releasing reservations. Point reads through the transaction see its
+own latest inserts, updates, and deletes, including repeated writes to one key.
+
+These reservations do not provide snapshot isolation for scans or index queries,
+and do not serialize ordinary writers with explicit transactions. Ordinary point
+reads return the last committed value while a row update or delete is pending;
+pending inserts remain invisible. These before-images exist only until commit or
+rollback and are not a persistent read cache.
+
+Explicit transactions persist their complete cross-table redo data in one shared,
+checksummed log before acknowledgement. Recovery merges that data with ordinary
+per-table WAL records by LSN. A database checkpoint retires the shared log only
+after all tables are durable. Existing version-1 transaction journals are read on
+upgrade. Opening a database upgrades its journal marker to version 2; older engine
+versions reject it rather than silently ignore the new redo log. Keep a backup
+before upgrading if you need to return to an older engine.
+
+The
+[embedded engine benchmark](benchmarks/engines/README.md) compares Flop,
+SQLite, and Turso with equivalent workloads and full durability, including
+conflict retries and correctness checks after reopening.
