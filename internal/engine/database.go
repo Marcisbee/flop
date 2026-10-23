@@ -2010,6 +2010,16 @@ func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
 	defer rowLock.Unlock()
+	if ti.isPendingKey(key) {
+		return ti.getPendingUnlocked(key)
+	}
+	return ti.getUnlocked(key)
+}
+
+// Keep before-image decoding off the ordinary point-read hot path. Commit may
+// clear the pending marker between the checks; the row lock still excludes a
+// new mutation, so falling through to the current row is safe.
+func (ti *TableInstance) getPendingUnlocked(key string) (map[string]interface{}, error) {
 	if p, ok := ti.pendingRows.Load(key); ok {
 		raw := p.(*pendingRow).before
 		if raw == nil {
@@ -2017,7 +2027,6 @@ func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 		}
 		return ti.deserializeCurrentRow(raw)
 	}
-
 	return ti.getUnlocked(key)
 }
 

@@ -29,6 +29,12 @@ refuses to overwrite an existing adapter. Build sequentially, then collect with
 no competing builds, tests, or measurements. The same adapter is compiled against
 both Flop revisions; engine code is not copied between revisions.
 
+For a focused recheck, `--case-indices 14,20,24,26,21,27,28,29,30,40,41,42,43,44,45,46`
+selects saturated transactions at 1/8/32/64 independent workers and 8/64 shared
+workers, all point-read and mixed cases, and all checkpoint diagnostics. Indices
+are zero-based in the full matrix and are recorded in the manifest. A filtered
+series is a partial comparison and must not be presented as the full matrix.
+
 The collector retains every process log, JSON sample, engine binary hash,
 revision, driver version, host, and filesystem. It rotates/reverses engine order
 between repeats. A process failure stops collection; failed operations stay in
