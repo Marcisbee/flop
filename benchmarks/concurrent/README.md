@@ -81,3 +81,8 @@ identical benchmark instrumentation, then run each binary with `-test.count=1`
 five times in fresh processes. Alternate the order on each pair, keep every
 sample in a distinct log, and retain each binary's checksum. This avoids a fixed
 baseline-first ordering and isolates process state between samples.
+
+This original harness records each transaction attempt without retrying row
+conflicts. For a complete before/after comparison against SQLite and Turso,
+including bounded conflict retries, saturation, process RSS, CRUD, and reopen
+verification, use [the embedded engine comparison](../engines/README.md).

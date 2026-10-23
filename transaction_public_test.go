@@ -2,7 +2,9 @@ package flop
 
 import (
 	"errors"
+	"strconv"
 	"testing"
+	"time"
 )
 
 type txUser struct {
@@ -135,6 +137,179 @@ func TestPublicTransactionRollsBackArchives(t *testing.T) {
 			records, _, err := db.db.GetTable("users").ScanArchived(10, 0)
 			if err != nil || len(records) != 0 {
 				t.Fatalf("archive after rollback: %#v, err %v", records, err)
+			}
+		})
+	}
+}
+
+// Concurrent callbacks must not mistake another transaction's buffered update
+// for a missing row, or save that uncommitted update as their rollback image.
+func TestPublicTransactionConcurrentSameKey(t *testing.T) {
+	for _, failure := range []string{"none", "callback", "panic"} {
+		t.Run(failure, func(t *testing.T) {
+			app := New(Config{DataDir: t.TempDir(), SyncMode: "full"})
+			tables := []*Table[txUser]{
+				AutoTable[txUser](app, "left", func(tb *TableBuilder[txUser]) { tb.Field("ID").Primary() }),
+				AutoTable[txUser](app, "right", func(tb *TableBuilder[txUser]) { tb.Field("ID").Primary() }),
+			}
+			db, err := app.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			ctx := &ReducerCtx{DB: db.trackedAccessor(nil, nil)}
+			for _, table := range tables {
+				if _, err := table.Insert(ctx, txUser{ID: "same", Name: "0"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			abortErr := errors.New("abort callback")
+			start := make(chan struct{})
+			errs := make(chan error, 8)
+			for writer := range 8 {
+				go func() {
+					<-start
+					deadline := time.Now().Add(time.Minute)
+					for attempt := 0; attempt < 125; attempt++ {
+						err := func() (err error) {
+							defer func() {
+								if p := recover(); p != nil {
+									if p != abortErr {
+										panic(p)
+									}
+									err = abortErr
+								}
+							}()
+							_, err = Transaction(ctx, func(tx *Tx) (bool, error) {
+								for _, table := range tables {
+									row, err := table.Get(tx, "same")
+									if err != nil {
+										return false, err
+									}
+									if row == nil {
+										return false, errors.New("existing row unavailable")
+									}
+									count, err := strconv.Atoi(row.Name)
+									if err != nil {
+										return false, err
+									}
+									if err := table.Update(tx, "same", Set("name", strconv.Itoa(count+1))); err != nil {
+										return false, err
+									}
+									// Hold the public callback open after the buffered write.
+									time.Sleep(time.Millisecond)
+								}
+								if failure != "none" && (writer+attempt)%2 == 0 {
+									if failure == "panic" {
+										panic(abortErr)
+									}
+									return false, abortErr
+								}
+								return true, nil
+							})
+							return err
+						}()
+						if errors.Is(err, ErrTransactionConflict) && time.Now().Before(deadline) {
+							attempt--
+							time.Sleep(time.Millisecond)
+							continue
+						}
+						if err != nil && !errors.Is(err, abortErr) {
+							errs <- err
+							return
+						}
+					}
+					errs <- nil
+				}()
+			}
+			close(start)
+			for range 8 {
+				if err := <-errs; err != nil {
+					t.Errorf("contending transaction: %v", err)
+				}
+			}
+			want := "1000"
+			if failure != "none" {
+				want = "500"
+			}
+			check := func() {
+				for _, table := range tables {
+					row, err := table.Get(ctx, "same")
+					if err != nil || row == nil || row.Name != want {
+						t.Fatalf("%s: got %#v, err %v", table.name, row, err)
+					}
+				}
+			}
+			check()
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = app.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx = &ReducerCtx{DB: db.trackedAccessor(nil, nil)}
+			check()
+		})
+	}
+}
+
+// Disjoint callbacks must be able to finish while another callback is open;
+// a contending callback must return a retryable conflict rather than block.
+func TestPublicTransactionRowReservations(t *testing.T) {
+	for _, secondKey := range []string{"b", "a"} {
+		t.Run(secondKey, func(t *testing.T) {
+			app := New(Config{DataDir: t.TempDir(), SyncMode: "full"})
+			table := AutoTable[txUser](app, "rows", func(tb *TableBuilder[txUser]) { tb.Field("ID").Primary() })
+			db, err := app.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			for _, key := range []string{"a", "b"} {
+				if _, err := table.Insert(db, txUser{ID: key, Name: "old"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx := &ReducerCtx{DB: db.trackedAccessor(nil, nil)}
+			held := make(chan struct{})
+			release := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				_, err := Transaction(ctx, func(tx *Tx) (bool, error) {
+					if err := table.Update(tx, "a", Set("name", "first")); err != nil {
+						return false, err
+					}
+					close(held)
+					<-release
+					return true, nil
+				})
+				done <- err
+			}()
+			<-held
+			second := make(chan error, 1)
+			go func() {
+				_, err := Transaction(ctx, func(tx *Tx) (bool, error) { return true, table.Update(tx, secondKey, Set("name", "second")) })
+				second <- err
+			}()
+			select {
+			case err := <-second:
+				if secondKey == "a" && !errors.Is(err, ErrTransactionConflict) {
+					t.Errorf("same-key write: %v", err)
+				}
+				if secondKey == "b" && err != nil {
+					t.Errorf("disjoint write: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Error("second callback blocked behind unrelated/open callback")
+			}
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			// The reservation must have been released after the first commit.
+			if _, err := Transaction(ctx, func(tx *Tx) (bool, error) { return true, table.Update(tx, "a", Set("name", "released")) }); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

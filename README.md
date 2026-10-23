@@ -170,3 +170,19 @@ reads must follow table policies; policy-protected responses use `private, no-st
 to avoid reuse after logout or account switching. SSE no longer emits table activity
 for updates that are unreadable both before and after the change. Flop retains
 exact-case email semantics.
+
+## Concurrent explicit transactions
+
+`flop.Transaction` groups durable commits from independent writers. Typed point
+reads and writes reserve their rows through commit or rollback. If another
+explicit transaction owns a needed row, the operation returns
+`flop.ErrTransactionConflict`; callers can use `errors.Is` and retry the entire
+transaction with bounded backoff. Callbacks are never replayed automatically.
+Keep external side effects outside retried callbacks. Panics roll back buffered
+writes before releasing reservations.
+
+These reservations do not provide snapshot isolation for scans or index queries,
+and ordinary operations retain their existing visibility behavior. The
+[embedded engine benchmark](benchmarks/engines/README.md) compares Flop,
+SQLite, and Turso with equivalent workloads and full durability, including
+conflict retries and correctness checks after reopening.

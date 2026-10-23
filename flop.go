@@ -1090,6 +1090,12 @@ func (t *Table[T]) Insert(scope any, row T) (T, error) {
 	}
 	var out map[string]any
 	if tx != nil {
+		if pk := toString(data[ti.primaryKeyField()]); pk != "" {
+			if err := tx.inner.lockRow(t.name, pk); err != nil {
+				var zero T
+				return zero, err
+			}
+		}
 		out, err = ti.insertWithTx(data, tx.inner)
 		if err == nil && tx.inner != nil {
 			pk := toString(out[ti.primaryKeyField()])
@@ -1317,6 +1323,14 @@ func (ctx *ReducerCtx) RequireAuth() (*AuthContext, error) {
 	return ctx.Request.Auth, nil
 }
 
+// ErrTransactionConflict means another explicit transaction owns a row needed
+// by this callback. Retry the whole transaction; callbacks are not replayed here.
+var ErrTransactionConflict = errors.New("transaction row conflict; retry transaction")
+
+// Transaction buffers typed writes until a durable commit. Point reads and
+// writes reserve their rows until commit or rollback; conflicting callbacks
+// return ErrTransactionConflict rather than observing another callback's writes.
+// Scan and index queries retain their existing visibility semantics.
 func Transaction[T any](ctx *ReducerCtx, fn func(*Tx) (T, error)) (T, error) {
 	if fn == nil {
 		var zero T
@@ -1327,8 +1341,10 @@ func Transaction[T any](ctx *ReducerCtx, fn func(*Tx) (T, error)) (T, error) {
 		return zero, errors.New("transaction requires reducer context with database")
 	}
 	inner := newArchiveTxn(ctx.DB.db)
+	defer inner.rollback()
 	tx := &Tx{
 		DB: &DBAccessor{
+			transaction:   inner,
 			db:            ctx.DB.db,
 			tracker:       ctx.DB.tracker,
 			auth:          ctx.DB.auth,

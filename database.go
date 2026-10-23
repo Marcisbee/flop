@@ -34,6 +34,9 @@ import (
 
 // Database wraps the internal engine and exposes table operations.
 type Database struct {
+	transactionRowsMu sync.Mutex
+	transactionRows   map[transactionRow]*archiveTxn
+
 	app                  *App
 	db                   *engine.Database
 	authService          *server.AuthService
@@ -118,7 +121,11 @@ type cascadeArchiveRef struct {
 	multi     bool
 }
 
+type transactionRow struct{ table, key string }
+
 type archiveTxn struct {
+	lockedRows []transactionRow
+
 	db     *Database
 	txBuf  map[string]*engine.WalBufEntry
 	undo   []func()
@@ -131,6 +138,8 @@ var testArchiveCommitHook func() error
 
 // TableInstance wraps internal engine table and provides CRUD operations.
 type TableInstance struct {
+	transaction *archiveTxn
+
 	ti            *engine.TableInstance
 	db            *Database
 	name          string
@@ -1205,6 +1214,11 @@ func (ti *TableInstance) InsertMany(rows []map[string]any, flushEvery int) (int,
 
 // Get retrieves a row by primary key.
 func (ti *TableInstance) Get(pk string) (map[string]any, error) {
+	if ti != nil && ti.transaction != nil {
+		if err := ti.transaction.lockRow(ti.name, pk); err != nil {
+			return nil, err
+		}
+	}
 	ti.markRead()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
@@ -1233,6 +1247,11 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, tx *arch
 	ti.markWrite()
 	if ti.isNil() {
 		return nil, fmt.Errorf("table is nil")
+	}
+	if tx != nil {
+		if err := tx.lockRow(ti.name, pk); err != nil {
+			return nil, err
+		}
 	}
 	needsUpdatePolicy := ti.enforcePolicy && ti.requiresUpdatePolicy()
 	needsFieldWrite := ti.enforcePolicy && ti.requiresFieldWritePolicyForIncoming(fields)
@@ -1369,6 +1388,11 @@ func (ti *TableInstance) deleteWithTx(pk string, tx *archiveTxn) (bool, error) {
 	ti.markWrite()
 	if ti.isNil() {
 		return false, fmt.Errorf("table is nil")
+	}
+	if tx != nil {
+		if err := tx.lockRow(ti.name, pk); err != nil {
+			return false, err
+		}
 	}
 	if ti.enforcePolicy && ti.requiresDeletePolicy() {
 		row, err := ti.ti.Get(pk)
@@ -1978,6 +2002,9 @@ func (ti *TableInstance) archiveCascade(tx *archiveTxn, pk, cascadeGroupID, root
 	if tx == nil || ti == nil || ti.ti == nil {
 		return nil, fmt.Errorf("archive transaction unavailable")
 	}
+	if err := tx.lockRow(ti.name, pk); err != nil {
+		return nil, err
+	}
 	if cascadeGroupID == "" {
 		group, err := newArchiveGroupID()
 		if err != nil {
@@ -2140,6 +2167,11 @@ func (ti *TableInstance) rawRow(pk string) ([]byte, error) {
 	if ti == nil || ti.ti == nil {
 		return nil, fmt.Errorf("table is nil")
 	}
+	if ti.transaction != nil {
+		if err := ti.transaction.lockRow(ti.name, pk); err != nil {
+			return nil, err
+		}
+	}
 	return ti.ti.GetRaw(pk)
 }
 
@@ -2288,6 +2320,7 @@ func (tx *archiveTxn) rollback() {
 	// Make restored rows visible only after all mutations have been undone.
 	tx.db.db.DiscardTransaction(tx.txBuf)
 	tx.closed = true
+	tx.releaseRows()
 }
 
 func (tx *archiveTxn) commit() error {
@@ -2305,6 +2338,7 @@ func (tx *archiveTxn) commit() error {
 		}
 	}
 	tx.closed = true
+	defer tx.releaseRows()
 	for _, fn := range tx.after {
 		if err := fn(); err != nil {
 			return err
@@ -4250,5 +4284,43 @@ func (d *Database) cleanupExpiredPurposeTokens(now time.Time) {
 				_, _ = table.Delete(toString(row["id"]))
 			}
 		}
+	}
+}
+
+// Reservations protect callback reads and undo images until durable commit or
+// rollback. Never wait while holding other row reservations: report a conflict
+// so callers can retry the entire transaction without deadlocking.
+func (tx *archiveTxn) lockRow(table, key string) error {
+	if tx == nil {
+		return nil
+	}
+	if tx.closed {
+		return fmt.Errorf("transaction is closed")
+	}
+	row := transactionRow{table, key}
+	tx.db.transactionRowsMu.Lock()
+	defer tx.db.transactionRowsMu.Unlock()
+	if owner := tx.db.transactionRows[row]; owner != nil {
+		if owner == tx {
+			return nil
+		}
+		return ErrTransactionConflict
+	}
+	if tx.db.transactionRows == nil {
+		tx.db.transactionRows = make(map[transactionRow]*archiveTxn)
+	}
+	tx.db.transactionRows[row] = tx
+	tx.lockedRows = append(tx.lockedRows, row)
+	return nil
+}
+func (tx *archiveTxn) releaseRows() {
+	tx.db.transactionRowsMu.Lock()
+	defer tx.db.transactionRowsMu.Unlock()
+	for _, row := range tx.lockedRows {
+		delete(tx.db.transactionRows, row)
+	}
+	tx.lockedRows = nil
+	if len(tx.db.transactionRows) == 0 {
+		tx.db.transactionRows = nil
 	}
 }

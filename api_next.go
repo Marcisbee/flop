@@ -334,6 +334,8 @@ func (t *tableAccessTracker) tablesFromMask(mask []uint64) []string {
 }
 
 type DBAccessor struct {
+	transaction *archiveTxn
+
 	db            *Database
 	tracker       *tableAccessTracker
 	auth          *AuthContext
@@ -353,6 +355,7 @@ func (a *DBAccessor) Table(name string) *TableInstance {
 		tableID = -1
 	}
 	return &TableInstance{
+		transaction:   a.transaction,
 		ti:            ti,
 		db:            a.db,
 		name:          name,
