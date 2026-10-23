@@ -53,6 +53,8 @@ type Database struct {
 	txCommitQueue    []commitSlot
 	txCommitDraining bool
 	txJournal        transactionJournal
+	txDecisions      *storage.WAL
+	txRecovery       map[string][]storage.WALEntry
 }
 
 type commitSlot struct {
@@ -161,6 +163,10 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	db.lock = lock
 	db.opened = true
 	defer func() {
+		if !db.opened && db.txDecisions != nil {
+			_ = db.txDecisions.Close()
+			db.txDecisions = nil
+		}
 		if !db.opened && db.lock != nil {
 			_ = db.lock.Close()
 			db.lock = nil
@@ -173,6 +179,12 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 	if err := db.loadTransactionJournal(); err != nil {
 		db.opened = false
 		return err
+	}
+	for name := range db.txRecovery {
+		if _, ok := tableDefs[name]; !ok {
+			db.opened = false
+			return fmt.Errorf("transaction redo references missing table %q", name)
+		}
 	}
 	for _, tx := range db.txJournal.Transactions {
 		for tableName := range tx.Tables {
@@ -224,13 +236,14 @@ func (db *Database) Open(tableDefs map[string]*schema.TableDef) error {
 		return fmt.Errorf("checkpoint opened database: %w", err)
 	}
 
+	db.txRecovery = nil
 	return nil
 }
 
 func (db *Database) checkpointAfterOpen() error {
-	needsRecoveryCheckpoint := len(db.txJournal.Transactions) > 0
+	needsRecoveryCheckpoint := len(db.txJournal.Transactions) > 0 || len(db.txRecovery) > 0
 	for _, table := range db.Tables {
-		if table.wal != nil && table.wal.CurrentLSN() != table.wal.CheckpointLSN() {
+		if table.wal != nil && (table.wal.CurrentLSN() != table.wal.CheckpointLSN() || table.wal.NeedsFormatUpgrade()) {
 			needsRecoveryCheckpoint = true
 			break
 		}
@@ -574,6 +587,9 @@ func (db *Database) Close() error {
 		db.commitMu.Lock()
 		draining := db.commitDraining || len(db.commitQueue) > 0
 		db.commitMu.Unlock()
+		db.txCommitMu.Lock()
+		draining = draining || db.txCommitDraining || len(db.txCommitQueue) > 0
+		db.txCommitMu.Unlock()
 		if !draining {
 			break
 		}
@@ -586,6 +602,11 @@ func (db *Database) Close() error {
 	}
 	for _, table := range db.Tables {
 		if err := table.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if db.txDecisions != nil {
+		if err := db.txDecisions.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -642,7 +663,8 @@ type TableInstance struct {
 	pageLocks     [updateLockShards]sync.Mutex
 	uniqueLocks   [updateLockShards]sync.Mutex
 	walCountMu    sync.Mutex
-	pendingRows   sync.Map // key (string) → *int32 refcount
+	pendingRows   sync.Map // key (string) → *pendingRow
+	pendingMu     sync.Mutex
 	checkpointGen uint64
 	walEntryCount int
 	autoIDNext    map[string]int64
@@ -902,6 +924,13 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 	entries, err := ti.wal.Replay()
 	if err != nil {
 		return false, err
+	}
+	if redo := ti.db.txRecovery[ti.Name]; len(redo) > 0 {
+		entries = append(entries, redo...)
+		sort.SliceStable(entries, func(i, j int) bool { return entries[i].LSN < entries[j].LSN })
+		for _, entry := range redo {
+			ti.wal.AdvanceRecoveryLSN(entry.LSN)
+		}
 	}
 	if len(entries) == 0 {
 		return false, nil
@@ -1981,8 +2010,12 @@ func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
 	defer rowLock.Unlock()
-	if ti.isPendingKey(key) {
-		return nil, nil
+	if p, ok := ti.pendingRows.Load(key); ok {
+		raw := p.(*pendingRow).before
+		if raw == nil {
+			return nil, nil
+		}
+		return ti.deserializeCurrentRow(raw)
 	}
 
 	return ti.getUnlocked(key)
@@ -1992,8 +2025,8 @@ func (ti *TableInstance) GetRaw(key string) ([]byte, error) {
 	rowLock := ti.rowLockForKey(key)
 	rowLock.Lock()
 	defer rowLock.Unlock()
-	if ti.isPendingKey(key) {
-		return nil, nil
+	if p, ok := ti.pendingRows.Load(key); ok {
+		return append([]byte(nil), p.(*pendingRow).before...), nil
 	}
 	_, raw, ok, err := ti.getRawUnlocked(key)
 	if err != nil || !ok {
@@ -2197,7 +2230,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 		locked = false
 		return ti.updateSlowLocked(key, updates, txBuf, silent, condition)
 	}
-	ti.addPendingKey(key)
+	ti.addPendingRow(key, oldRaw)
 	pendingAdded = true
 
 	if !page.UpdateRow(int(pointer.SlotIndex), serialized) {
@@ -2325,7 +2358,7 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	}
 	failpoint.Hit("update_slow_after_wal_record")
 	pendingAdded := false
-	ti.addPendingKey(key)
+	ti.addPendingRow(key, storage.SerializeRow(existing, ti.def.CompiledSchema, uint16(ti.currentVersion)))
 	pendingAdded = true
 	defer func() {
 		if pendingAdded {
@@ -2663,7 +2696,7 @@ func (ti *TableInstance) Delete(key string, txBuf map[string]*walBufEntry) (bool
 	}
 	failpoint.Hit("delete_after_wal_record")
 	pendingAdded := false
-	ti.addPendingKey(key)
+	ti.addPendingRow(key, rawData)
 	pendingAdded = true
 	defer func() {
 		if pendingAdded {
@@ -2801,7 +2834,7 @@ func (ti *TableInstance) Archive(key string, opts ArchiveOptions, txBuf map[stri
 	archiveRecord, _ := ti.wal.BuildRecordWithLSN(txID, storage.WALOpArchiveInsert, archiveSerialized)
 
 	pendingAdded := false
-	ti.addPendingKey(key)
+	ti.addPendingRow(key, rawData)
 	pendingAdded = true
 	defer func() {
 		if pendingAdded {
@@ -3101,45 +3134,35 @@ func (ti *TableInstance) bumpWALEntryCount(delta int) bool {
 	return false
 }
 
-func (ti *TableInstance) addPendingKey(key string) {
+type pendingRow struct {
+	refs   int
+	before []byte
+}
+
+func (ti *TableInstance) addPendingKey(key string) { ti.addPendingRow(key, nil) }
+
+func (ti *TableInstance) addPendingRow(key string, before []byte) {
 	if key == "" {
 		return
 	}
-	for {
-		if v, ok := ti.pendingRows.Load(key); ok {
-			p := v.(*int32)
-			old := atomic.LoadInt32(p)
-			if old > 0 && atomic.CompareAndSwapInt32(p, old, old+1) {
-				return
-			}
-			// Ref dropped to 0 and was (or is being) deleted — retry via LoadOrStore.
-		}
-		var initial int32 = 1
-		if _, loaded := ti.pendingRows.LoadOrStore(key, &initial); !loaded {
-			return
-		}
-		// Another goroutine raced; loop back and try incrementing.
+	ti.pendingMu.Lock()
+	defer ti.pendingMu.Unlock()
+	if v, ok := ti.pendingRows.Load(key); ok {
+		v.(*pendingRow).refs++
+		return
 	}
+	ti.pendingRows.Store(key, &pendingRow{refs: 1, before: append([]byte(nil), before...)})
 }
 
 func (ti *TableInstance) clearPendingKeys(keys []string) {
+	ti.pendingMu.Lock()
+	defer ti.pendingMu.Unlock()
 	for _, key := range keys {
-		if key == "" {
-			continue
-		}
-		v, ok := ti.pendingRows.Load(key)
-		if !ok {
-			continue
-		}
-		p := v.(*int32)
-		for {
-			old := atomic.LoadInt32(p)
-			if old <= 1 {
+		if v, ok := ti.pendingRows.Load(key); ok {
+			p := v.(*pendingRow)
+			p.refs--
+			if p.refs == 0 {
 				ti.pendingRows.Delete(key)
-				break
-			}
-			if atomic.CompareAndSwapInt32(p, old, old-1) {
-				break
 			}
 		}
 	}
@@ -3746,7 +3769,7 @@ func (ti *TableInstance) searchFullTextByScan(fields []string, query string, lim
 // Checkpoint flushes all dirty pages, indexes, and WAL.
 func (ti *TableInstance) Checkpoint() error {
 	// Fast path: if WAL has no new entries since last checkpoint, skip heavy index rewrite.
-	if ti.wal != nil && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
+	if ti.wal != nil && !ti.wal.NeedsFormatUpgrade() && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
 		return nil
 	}
 
@@ -3763,7 +3786,7 @@ func (ti *TableInstance) checkpointLocked() error {
 	if ti.hasPendingRows() {
 		return ti.wal.Fsync()
 	}
-	if ti.wal != nil && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
+	if ti.wal != nil && !ti.wal.NeedsFormatUpgrade() && ti.wal.CurrentLSN() == ti.wal.CheckpointLSN() {
 		return nil
 	}
 	ti.secondaryPersistMu.Lock()

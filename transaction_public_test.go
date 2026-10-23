@@ -314,3 +314,62 @@ func TestPublicTransactionRowReservations(t *testing.T) {
 		})
 	}
 }
+
+// Readers must retain the last committed point value while a callback changes
+// or removes it; a pending insert must stay invisible. Check commit and abort.
+func TestPublicTransactionPointReadVisibility(t *testing.T) {
+	for _, abort := range []bool{false, true} {
+		t.Run(strconv.FormatBool(abort), func(t *testing.T) {
+			app := New(Config{DataDir: t.TempDir(), SyncMode: "full"})
+			users := AutoTable[txUser](app, "users", func(tb *TableBuilder[txUser]) { tb.Field("ID").Primary() })
+			db, err := app.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			ctx := &ReducerCtx{DB: db.trackedAccessor(nil, nil)}
+			for _, id := range []string{"update", "delete"} {
+				if _, err := users.Insert(ctx, txUser{ID: id, Name: "before"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stop := errors.New("abort")
+			_, err = Transaction(ctx, func(tx *Tx) (bool, error) {
+				if err := users.Update(tx, "update", Set("name", "after")); err != nil {
+					return false, err
+				}
+				if _, err := users.Delete(tx, "delete"); err != nil {
+					return false, err
+				}
+				if _, err := users.Insert(tx, txUser{ID: "insert", Name: "after"}); err != nil {
+					return false, err
+				}
+				for _, id := range []string{"update", "delete"} {
+					row, err := users.Get(ctx, id)
+					if err != nil || row == nil || row.Name != "before" {
+						t.Errorf("pending %s read = %#v, %v; want committed before", id, row, err)
+					}
+				}
+				row, err := users.Get(ctx, "insert")
+				if err != nil || row != nil {
+					t.Errorf("pending insert visible: %#v, %v", row, err)
+				}
+				if abort {
+					return false, stop
+				}
+				return true, nil
+			})
+			if abort && !errors.Is(err, stop) || !abort && err != nil {
+				t.Fatal(err)
+			}
+			row, err := users.Get(ctx, "update")
+			want := "after"
+			if abort {
+				want = "before"
+			}
+			if err != nil || row == nil || row.Name != want {
+				t.Fatalf("final read = %#v, %v", row, err)
+			}
+		})
+	}
+}

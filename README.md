@@ -182,7 +182,20 @@ Keep external side effects outside retried callbacks. Panics roll back buffered
 writes before releasing reservations.
 
 These reservations do not provide snapshot isolation for scans or index queries,
-and ordinary operations retain their existing visibility behavior. The
+and do not serialize ordinary writers with explicit transactions. Ordinary point
+reads return the last committed value while a row update or delete is pending;
+pending inserts remain invisible. These before-images exist only until commit or
+rollback and are not a persistent read cache.
+
+Explicit transactions persist their complete cross-table redo data in one shared,
+checksummed log before acknowledgement. Recovery merges that data with ordinary
+per-table WAL records by LSN. A database checkpoint retires the shared log only
+after all tables are durable. Existing version-1 transaction journals are read on
+upgrade. Opening a database upgrades its journal marker to version 2; older engine
+versions reject it rather than silently ignore the new redo log. Keep a backup
+before upgrading if you need to return to an older engine.
+
+The
 [embedded engine benchmark](benchmarks/engines/README.md) compares Flop,
 SQLite, and Turso with equivalent workloads and full durability, including
 conflict retries and correctness checks after reopening.
