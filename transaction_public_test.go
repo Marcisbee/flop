@@ -373,3 +373,106 @@ func TestPublicTransactionPointReadVisibility(t *testing.T) {
 		})
 	}
 }
+
+// Point reads in the callback must see its latest writes while outside readers
+// retain committed values, including repeated mutations and delete/reinsert.
+func TestPublicTransactionReadsOwnWrites(t *testing.T) {
+	for _, abort := range []bool{false, true} {
+		t.Run(strconv.FormatBool(abort), func(t *testing.T) {
+			app := New(Config{DataDir: t.TempDir(), SyncMode: "full"})
+			users := AutoTable[txUser](app, "users", func(tb *TableBuilder[txUser]) { tb.Field("ID").Primary() })
+			db, err := app.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			ctx := &ReducerCtx{DB: db.trackedAccessor(nil, nil)}
+			original := txUser{ID: "one", Name: "before"}
+			if _, err := users.Insert(ctx, original); err != nil {
+				t.Fatal(err)
+			}
+			check := func(scope any, id, name string) {
+				t.Helper()
+				got, err := users.Get(scope, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if name == "" {
+					if got != nil {
+						t.Fatalf("%s: expected absent, got %#v", id, got)
+					}
+					return
+				}
+				if got == nil || got.Name != name {
+					t.Fatalf("%s: want %s, got %#v", id, name, got)
+				}
+			}
+			stop := errors.New("abort callback")
+			_, err = Transaction(ctx, func(tx *Tx) (bool, error) {
+				for _, name := range []string{"first", "second"} {
+					if err := users.Update(tx, "one", Update{"name": name}); err != nil {
+						return false, err
+					}
+					check(tx, "one", name)
+					check(ctx, "one", "before")
+					row, err := tx.DB.Table("users").Get("one")
+					if err != nil || row["name"] != name {
+						t.Fatalf("accessor read: %#v, %v", row, err)
+					}
+				}
+				if ok, err := users.Delete(tx, "one"); err != nil || !ok {
+					t.Fatalf("delete: %v, %v", ok, err)
+				}
+				check(tx, "one", "")
+				check(ctx, "one", "before")
+				if _, err := users.Insert(tx, txUser{ID: "one", Name: "replacement"}); err != nil {
+					return false, err
+				}
+				check(tx, "one", "replacement")
+				check(ctx, "one", "before")
+				if _, err := users.Insert(tx, txUser{ID: "new", Name: "inserted"}); err != nil {
+					return false, err
+				}
+				check(tx, "new", "inserted")
+				check(ctx, "new", "")
+				if err := users.Update(tx, "new", Update{"name": "changed"}); err != nil {
+					return false, err
+				}
+				check(tx, "new", "changed")
+				check(ctx, "new", "")
+				if ok, err := users.Delete(tx, "new"); err != nil || !ok {
+					t.Fatalf("delete insert: %v, %v", ok, err)
+				}
+				check(tx, "new", "")
+				check(ctx, "new", "")
+				if abort {
+					return false, stop
+				}
+				return true, nil
+			})
+			if abort {
+				if !errors.Is(err, stop) {
+					t.Fatal(err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			want := "replacement"
+			if abort {
+				want = "before"
+			}
+			check(ctx, "one", want)
+			check(ctx, "new", "")
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = app.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx = &ReducerCtx{DB: db.trackedAccessor(nil, nil)}
+			check(ctx, "one", want)
+			check(ctx, "new", "")
+		})
+	}
+}

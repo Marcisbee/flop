@@ -1212,6 +1212,15 @@ func (ti *TableInstance) InsertMany(rows []map[string]any, flushEvery int) (int,
 	return count, nil
 }
 
+// readRow preserves transaction-local point visibility for policy checks and
+// mutation bookkeeping as well as public reads.
+func (ti *TableInstance) readRow(pk string, tx *archiveTxn) (map[string]any, error) {
+	if tx != nil {
+		return ti.ti.GetInTransaction(pk, tx.txBuf)
+	}
+	return ti.ti.Get(pk)
+}
+
 // Get retrieves a row by primary key.
 func (ti *TableInstance) Get(pk string) (map[string]any, error) {
 	if ti != nil && ti.transaction != nil {
@@ -1224,7 +1233,7 @@ func (ti *TableInstance) Get(pk string) (map[string]any, error) {
 		return nil, fmt.Errorf("table is nil")
 	}
 	ti.ensureMaterializedReadable()
-	row, err := ti.ti.Get(pk)
+	row, err := ti.readRow(pk, ti.transaction)
 	if err != nil || row == nil {
 		return row, err
 	}
@@ -1256,7 +1265,7 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, tx *arch
 	needsUpdatePolicy := ti.enforcePolicy && ti.requiresUpdatePolicy()
 	needsFieldWrite := ti.enforcePolicy && ti.requiresFieldWritePolicyForIncoming(fields)
 	if needsUpdatePolicy || needsFieldWrite {
-		oldRow, err := ti.ti.Get(pk)
+		oldRow, err := ti.readRow(pk, tx)
 		if err != nil {
 			return nil, err
 		}
@@ -1277,7 +1286,7 @@ func (ti *TableInstance) updateWithTx(pk string, fields map[string]any, tx *arch
 		}
 	}
 	var removedRefs []schema.FileRef
-	oldRowForCleanup, err := ti.ti.Get(pk)
+	oldRowForCleanup, err := ti.readRow(pk, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -1395,7 +1404,7 @@ func (ti *TableInstance) deleteWithTx(pk string, tx *archiveTxn) (bool, error) {
 		}
 	}
 	if ti.enforcePolicy && ti.requiresDeletePolicy() {
-		row, err := ti.ti.Get(pk)
+		row, err := ti.readRow(pk, tx)
 		if err != nil {
 			return false, err
 		}
@@ -2171,6 +2180,9 @@ func (ti *TableInstance) rawRow(pk string) ([]byte, error) {
 		if err := ti.transaction.lockRow(ti.name, pk); err != nil {
 			return nil, err
 		}
+	}
+	if ti.transaction != nil {
+		return ti.ti.GetRawInTransaction(pk, ti.transaction.txBuf)
 	}
 	return ti.ti.GetRaw(pk)
 }

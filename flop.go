@@ -1156,7 +1156,7 @@ func (t *Table[T]) Update(scope any, id string, updates ...Update) error {
 		_, err = ti.updateWithTx(id, merged, tx.inner)
 		if err == nil && len(before) > 0 && tx.inner != nil {
 			tx.inner.addUndo(func() { _ = ti.rollbackRawRow(before) })
-			if after, getErr := ti.ti.Get(id); getErr == nil && len(after) > 0 {
+			if after, getErr := ti.readRow(id, tx.inner); getErr == nil && len(after) > 0 {
 				if tableDefCanContainMedia(ti.ti.GetDef()) {
 					tx.inner.addMedia(mediaIndexSyncRowOp(t.name, after))
 				}

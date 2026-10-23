@@ -2016,6 +2016,44 @@ func (ti *TableInstance) Get(key string) (map[string]interface{}, error) {
 	return ti.getUnlocked(key)
 }
 
+// GetInTransaction reads the current row only when this transaction has
+// mutated it. Other pending rows retain ordinary committed visibility.
+func (ti *TableInstance) GetInTransaction(key string, buffers map[string]*WalBufEntry) (map[string]interface{}, error) {
+	if !ti.transactionOwnsMutation(key, buffers) {
+		return ti.Get(key)
+	}
+	rowLock := ti.rowLockForKey(key)
+	rowLock.Lock()
+	defer rowLock.Unlock()
+	return ti.getUnlocked(key)
+}
+
+func (ti *TableInstance) transactionOwnsMutation(key string, buffers map[string]*WalBufEntry) bool {
+	if entry := buffers[ti.Name]; entry != nil {
+		for _, pending := range entry.pending {
+			if pending == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GetRawInTransaction supplies the immediate undo image for repeated writes.
+func (ti *TableInstance) GetRawInTransaction(key string, buffers map[string]*WalBufEntry) ([]byte, error) {
+	if !ti.transactionOwnsMutation(key, buffers) {
+		return ti.GetRaw(key)
+	}
+	rowLock := ti.rowLockForKey(key)
+	rowLock.Lock()
+	defer rowLock.Unlock()
+	_, raw, ok, err := ti.getRawUnlocked(key)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return append([]byte(nil), raw...), nil
+}
+
 // Keep before-image decoding off the ordinary point-read hot path. Commit may
 // clear the pending marker between the checks; the row lock still excludes a
 // new mutation, so falling through to the current row is safe.

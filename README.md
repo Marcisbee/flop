@@ -179,7 +179,8 @@ explicit transaction owns a needed row, the operation returns
 `flop.ErrTransactionConflict`; callers can use `errors.Is` and retry the entire
 transaction with bounded backoff. Callbacks are never replayed automatically.
 Keep external side effects outside retried callbacks. Panics roll back buffered
-writes before releasing reservations.
+writes before releasing reservations. Point reads through the transaction see its
+own latest inserts, updates, and deletes, including repeated writes to one key.
 
 These reservations do not provide snapshot isolation for scans or index queries,
 and do not serialize ordinary writers with explicit transactions. Ordinary point
