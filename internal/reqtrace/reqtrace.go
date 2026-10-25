@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +31,9 @@ type Collector struct {
 var (
 	activeMu sync.Mutex
 	active   = make(map[int64]*Collector)
+	// Updated under activeMu alongside the bindings. This only avoids looking
+	// up a goroutine ID when no request can possibly collect the operation.
+	hasActive atomic.Bool
 )
 
 // Start binds a new collector to the current goroutine.
@@ -41,6 +45,7 @@ func Start() *Collector {
 	}
 	activeMu.Lock()
 	active[gid] = c
+	hasActive.Store(true)
 	activeMu.Unlock()
 	return c
 }
@@ -54,12 +59,16 @@ func (c *Collector) End() {
 	activeMu.Lock()
 	if active[gid] == c {
 		delete(active, gid)
+		hasActive.Store(len(active) != 0)
 	}
 	activeMu.Unlock()
 }
 
 // Current returns the collector bound to the current goroutine, if any.
 func Current() *Collector {
+	if !hasActive.Load() {
+		return nil
+	}
 	gid := curGID()
 	if gid <= 0 {
 		return nil
@@ -76,6 +85,10 @@ func Add(span Span) {
 	if c == nil {
 		return
 	}
+	c.add(span)
+}
+
+func (c *Collector) add(span Span) {
 	c.mu.Lock()
 	c.spans = append(c.spans, span)
 	c.mu.Unlock()
@@ -83,6 +96,11 @@ func Add(span Span) {
 
 // AddDuration appends a span with duration metadata from a start timestamp.
 func AddDuration(op, table, index string, rows, scanned int, note string, started time.Time) {
+	if !hasActive.Load() {
+		return
+	}
+	// Capture the operation's timing before collector lookup, so goroutine
+	// stack inspection is not charged to the database operation itself.
 	ms := time.Since(started).Milliseconds()
 	span := Span{
 		Op:       op,
@@ -95,7 +113,9 @@ func AddDuration(op, table, index string, rows, scanned int, note string, starte
 		Started:  started.UnixMilli(),
 		Finished: time.Now().UnixMilli(),
 	}
-	Add(span)
+	if c := Current(); c != nil {
+		c.add(span)
+	}
 }
 
 // Spans returns a copy of collected spans.

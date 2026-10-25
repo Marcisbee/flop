@@ -1,4 +1,8 @@
-# Mapped secondary-index lookup comparison
+# Mapped secondary-index lookup comparison (first iteration)
+
+This report records the first iteration at `da942630c83b03b38eb86a77f50d13a57367027a`.
+The [follow-up profile and comparison](query-tracing-overhead.md) cover the final
+query-overhead improvements in this PR.
 
 Flop now searches persisted non-unique index keys before decoding the matching
 row-pointer list. Previously, every binary-search probe allocated and decoded the
@@ -27,7 +31,7 @@ path when their secondary indexes have been persisted and reopened.
 ## Environment and method
 
 - Baseline Flop: `d27e88a216b631d2d84d39501bdf58ce21622bfc`.
-- Candidate: that commit plus the `internal/storage/index_mapped.go` change in this PR.
+- Candidate: `da942630c83b03b38eb86a77f50d13a57367027a`.
 - Strike: `07b5071ababf3b692a6afb518603404f8bc4d097`, which pins that exact baseline Flop version.
 - Go 1.26.10, Linux/amd64, AMD Ryzen 9 9950X, default GOMAXPROCS (32).
 - Identical measurement-only benchmark files on both revisions.

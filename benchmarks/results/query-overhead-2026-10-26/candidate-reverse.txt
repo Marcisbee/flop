@@ -1,0 +1,36 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/engine
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkMappedSecondaryLookup/trace=off/hit=false-32         	 1456995	       163.8 ns/op	      16 B/op	       1 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=false-32         	 1472199	       162.8 ns/op	      16 B/op	       1 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=false-32         	 1471624	       163.6 ns/op	      16 B/op	       1 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=false-32         	 1456165	       163.9 ns/op	      16 B/op	       1 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=false-32         	 1445722	       164.5 ns/op	      16 B/op	       1 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=true-32          	   88849	      2784 ns/op	    5459 B/op	      93 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=true-32          	   98613	      2347 ns/op	    5459 B/op	      93 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=true-32          	   98290	      2336 ns/op	    5459 B/op	      93 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=true-32          	   94297	      2643 ns/op	    5459 B/op	      93 allocs/op
+BenchmarkMappedSecondaryLookup/trace=off/hit=true-32          	   95448	      2343 ns/op	    5459 B/op	      93 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=false-32     	   19729	     12241 ns/op	    1456 B/op	      11 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=false-32     	   19753	     12026 ns/op	    1456 B/op	      11 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=false-32     	   19956	     12014 ns/op	    1456 B/op	      11 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=false-32     	   19981	     11986 ns/op	    1456 B/op	      11 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=false-32     	   19820	     12059 ns/op	    1456 B/op	      11 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=true-32      	   15975	     15027 ns/op	    6899 B/op	     103 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=true-32      	   16298	     14654 ns/op	    6899 B/op	     103 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=true-32      	   16401	     14625 ns/op	    6899 B/op	     103 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=true-32      	   16449	     14700 ns/op	    6899 B/op	     103 allocs/op
+BenchmarkMappedSecondaryLookup/trace=request/hit=true-32      	   16401	     14537 ns/op	    6899 B/op	     103 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=false-32         	   30410	      7787 ns/op	     272 B/op	       5 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=false-32         	   30982	      7811 ns/op	     272 B/op	       5 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=false-32         	   30973	      7984 ns/op	     272 B/op	       5 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=false-32         	   30914	      7768 ns/op	     272 B/op	       5 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=false-32         	   30942	      7798 ns/op	     272 B/op	       5 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=true-32          	   22066	     10880 ns/op	    5715 B/op	      97 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=true-32          	   22837	     10250 ns/op	    5715 B/op	      97 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=true-32          	   23163	     10349 ns/op	    5715 B/op	      97 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=true-32          	   23353	     10317 ns/op	    5715 B/op	      97 allocs/op
+BenchmarkMappedSecondaryLookup/trace=other-request/hit=true-32          	   23346	     10359 ns/op	    5715 B/op	      97 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/engine	37.612s

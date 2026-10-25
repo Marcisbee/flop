@@ -325,6 +325,11 @@ func (m *MultiIndex) GetAll(key string) []schema.RowPointer {
 		base := m.mapped.GetAll(key)
 		added := m.data[key]
 		tombs := m.deleted[key]
+		// The mapped decoder already returns an owned snapshot. With no
+		// overlay to merge, copying it again only adds allocation and work.
+		if base != nil && len(added) == 0 && len(tombs) == 0 {
+			return base
+		}
 		out := make([]schema.RowPointer, 0, len(base)+len(added))
 		for _, p := range base {
 			if len(tombs) > 0 {
