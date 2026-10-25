@@ -1,0 +1,16 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/engine
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkMappedSecondaryLookup/hit=false-32         	   22780	     10518 ns/op	    4881 B/op	      14 allocs/op
+BenchmarkMappedSecondaryLookup/hit=false-32         	   23360	     10262 ns/op	    4881 B/op	      14 allocs/op
+BenchmarkMappedSecondaryLookup/hit=false-32         	   23342	     10252 ns/op	    4881 B/op	      14 allocs/op
+BenchmarkMappedSecondaryLookup/hit=false-32         	   23188	     10373 ns/op	    4881 B/op	      14 allocs/op
+BenchmarkMappedSecondaryLookup/hit=false-32         	   23026	     10336 ns/op	    4882 B/op	      14 allocs/op
+BenchmarkMappedSecondaryLookup/hit=true-32          	   18236	     13155 ns/op	    9821 B/op	     105 allocs/op
+BenchmarkMappedSecondaryLookup/hit=true-32          	   18946	     12565 ns/op	    9822 B/op	     105 allocs/op
+BenchmarkMappedSecondaryLookup/hit=true-32          	   19030	     12621 ns/op	    9822 B/op	     105 allocs/op
+BenchmarkMappedSecondaryLookup/hit=true-32          	   19029	     12489 ns/op	    9822 B/op	     105 allocs/op
+BenchmarkMappedSecondaryLookup/hit=true-32          	   19179	     12536 ns/op	    9822 B/op	     105 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/engine	11.997s

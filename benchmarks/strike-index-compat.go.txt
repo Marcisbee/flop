@@ -1,0 +1,116 @@
+// Run from the Strike module with GOWORK selecting baseline or candidate Flop.
+// Arguments: disposable data directory, seed|mutate|verify.
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"time"
+
+	"github.com/marcisbee/flop"
+	app "github.com/marcisbee/strike-flop/go-app"
+)
+
+type fixture struct {
+	Users         []string
+	Notifications map[string][]string
+}
+
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+func main() {
+	if len(os.Args) != 3 {
+		panic("usage: compat DISPOSABLE_DIR seed|mutate|verify")
+	}
+	dir, mode := os.Args[1], os.Args[2]
+	application, _ := app.BuildWithDataDir(dir)
+	db, err := application.Open()
+	must(err)
+	deadline := time.Now().Add(30 * time.Second)
+	for !db.Table("notifications").SecondaryIndexesReady() {
+		if time.Now().After(deadline) {
+			panic("notification indexes did not become ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	manifest := filepath.Join(dir, "compat-fixture.json")
+	f := fixture{Notifications: map[string][]string{}}
+	if mode == "seed" {
+		if _, err := os.Stat(manifest); !os.IsNotExist(err) {
+			panic("fixture already exists")
+		}
+		for i := 0; i < 8; i++ {
+			user, err := db.Table("users").Insert(map[string]any{"email": fmt.Sprintf("compat-%d@example.com", i), "password": "test-password", "handle": fmt.Sprintf("compat-%d", i), "display_name": "Compatibility fixture"})
+			must(err)
+			id := app.Str(user["id"])
+			f.Users = append(f.Users, id)
+			for j := 0; j < 32; j++ {
+				n, err := db.Table("notifications").Insert(map[string]any{"receiver_user_id": id, "type": "new_follower"})
+				must(err)
+				f.Notifications[id] = append(f.Notifications[id], app.Str(n["id"]))
+			}
+		}
+	} else {
+		raw, err := os.ReadFile(manifest)
+		must(err)
+		must(json.Unmarshal(raw, &f))
+	}
+	verify := func() {
+		for _, id := range f.Users {
+			rows, err := db.Table("notifications").FindByIndex("receiver_user_id", id)
+			must(err)
+			got := make([]string, 0, len(rows))
+			for _, row := range rows {
+				if app.Str(row["receiver_user_id"]) != id {
+					panic("wrong receiver")
+				}
+				got = append(got, app.Str(row["id"]))
+			}
+			want := slices.Clone(f.Notifications[id])
+			slices.Sort(want)
+			slices.Sort(got)
+			if !slices.Equal(got, want) {
+				panic(fmt.Sprintf("notification mismatch: %v != %v", got, want))
+			}
+			payload, err := app.BuildAuthMePayload(db, &flop.AuthContext{ID: id, Roles: []string{"user"}})
+			must(err)
+			if app.Int(payload["unread_notifications"]) != len(want) {
+				panic("incorrect unread count")
+			}
+		}
+		missing, err := db.Table("notifications").FindByIndex("receiver_user_id", "missing-user")
+		must(err)
+		if len(missing) != 0 {
+			panic("missing receiver returned notifications")
+		}
+	}
+	verify()
+	if mode == "mutate" {
+		a, b := f.Users[0], f.Users[1]
+		moved, removed := f.Notifications[a][0], f.Notifications[a][1]
+		_, err := db.Table("notifications").Update(moved, map[string]any{"receiver_user_id": b})
+		must(err)
+		deleted, err := db.Table("notifications").Delete(removed)
+		must(err)
+		if !deleted {
+			panic("delete failed")
+		}
+		f.Notifications[a] = f.Notifications[a][2:]
+		f.Notifications[b] = append(f.Notifications[b], moved)
+		n, err := db.Table("notifications").Insert(map[string]any{"receiver_user_id": a, "type": "new_follower"})
+		must(err)
+		f.Notifications[a] = append(f.Notifications[a], app.Str(n["id"]))
+		verify()
+	}
+	must(db.Close())
+	raw, err := json.Marshal(f)
+	must(err)
+	must(os.WriteFile(manifest, raw, 0600))
+	fmt.Printf("%s: 8 users, 256 notification IDs and auth unread counts verified; database closed cleanly\n", mode)
+}

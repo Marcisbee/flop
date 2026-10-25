@@ -1,0 +1,46 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/storage
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=false-32         	82162522	        14.55 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=false-32         	81842833	        14.70 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=false-32         	83119519	        14.56 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=false-32         	81754059	        14.62 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=false-32         	82825675	        14.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=true-32          	46108788	        25.68 ns/op	       8 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=true-32          	46302265	        25.56 ns/op	       8 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=true-32          	44720570	        25.47 ns/op	       8 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=true-32          	46182295	        26.73 ns/op	       8 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=false/hit=true-32          	42983868	        26.12 ns/op	       8 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=false-32          	 6379060	       186.6 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=false-32          	 6433706	       186.3 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=false-32          	 6457026	       186.3 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=false-32          	 6390981	       187.8 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=false-32          	 6443874	       187.0 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=true-32           	 6704694	       177.2 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=true-32           	 6800239	       176.2 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=true-32           	 6786836	       176.8 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=true-32           	 6754992	       176.0 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=1/mapped=true/hit=true-32           	 6806124	       176.3 ns/op	      96 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=false-32        	82305818	        14.63 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=false-32        	69845895	        14.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=false-32        	79845073	        15.26 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=false-32        	77639796	        15.49 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=false-32        	75843976	        15.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=true-32         	 9081206	       143.7 ns/op	     512 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=true-32         	 8362052	       158.1 ns/op	     512 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=true-32         	 8045112	       149.2 ns/op	     512 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=true-32         	 7948484	       148.3 ns/op	     512 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=false/hit=true-32         	 8428969	       148.0 ns/op	     512 B/op	       1 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  585202	      2191 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  583098	      2226 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  533998	      2217 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  566184	      2202 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  498762	      2202 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  570043	      2298 ns/op	    6145 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  555499	      2246 ns/op	    6145 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  561606	      2271 ns/op	    6145 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  577098	      2246 ns/op	    6145 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  529849	      2285 ns/op	    6145 B/op	      12 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/storage	52.580s
