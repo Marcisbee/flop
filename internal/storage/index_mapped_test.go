@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/marcisbee/flop/internal/schema"
@@ -70,46 +72,75 @@ func TestMappedIndexOverlayMutations(t *testing.T) {
 	}
 }
 
+// The same ordered postings must survive mapped reads, overlay mutations and
+// another checkpoint/reopen. Shared prefixes, binary keys and misses exercise
+// both directions of the key search without depending on its implementation.
 func TestMappedMultiIndexReadWriteAndOverlay(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "likes.smidx")
-
-	m := NewMultiIndex()
-	m.Add("k1", schema.RowPointer{PageNumber: 1, SlotIndex: 1})
-	m.Add("k1", schema.RowPointer{PageNumber: 1, SlotIndex: 2})
-	m.Add("k2", schema.RowPointer{PageNumber: 2, SlotIndex: 1})
-	if err := WriteMappedMultiIndexFile(path, m); err != nil {
-		t.Fatalf("write mapped multi: %v", err)
+	path := filepath.Join(t.TempDir(), "likes.smidx")
+	idx := NewMultiIndex()
+	keys := []string{"", "a", "a\x00", "a\x00b", "tenant/shared/01", "tenant/shared/02", "é", "\xff"}
+	want := make(map[string][]schema.RowPointer)
+	for i, key := range keys {
+		for j := 0; j <= i; j++ {
+			p := schema.RowPointer{PageNumber: uint32(i + 1), SlotIndex: uint16(j)}
+			idx.Add(key, p)
+			want[key] = append(want[key], p)
+		}
 	}
-
-	loaded, err := ReadMappedMultiIndexFile(path)
-	if err != nil {
-		t.Fatalf("read mapped multi: %v", err)
+	for cycle := 0; cycle < 3; cycle++ {
+		if err := WriteMappedMultiIndexFile(path, idx); err != nil {
+			t.Fatal(err)
+		}
+		idx.Clear()
+		var err error
+		idx, err = ReadMappedMultiIndexFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range append(append([]string{}, keys...), "a\x00a", "tenant/shared/015", "zz", "\xffz") {
+			if got := idx.GetAll(key); !slices.Equal(got, want[key]) {
+				t.Fatalf("cycle %d key %q: got %v, want %v", cycle, key, got, want[key])
+			}
+		}
+		for _, key := range keys {
+			old := want[key][0]
+			idx.Delete(key, old)
+			want[key] = want[key][1:]
+			p := schema.RowPointer{PageNumber: uint32(100 + cycle), SlotIndex: uint16(len(key))}
+			idx.Add(key, p)
+			want[key] = append(want[key], p)
+			if got := idx.GetAll(key); !slices.Equal(got, want[key]) {
+				t.Fatalf("overlay cycle %d key %q: got %v, want %v", cycle, key, got, want[key])
+			}
+		}
 	}
-
-	if got := len(loaded.GetAll("k1")); got != 2 {
-		t.Fatalf("k1 len = %d, want 2", got)
-	}
-
-	// Overlay: delete one base pointer, add one new pointer.
-	loaded.Delete("k1", schema.RowPointer{PageNumber: 1, SlotIndex: 1})
-	loaded.Add("k1", schema.RowPointer{PageNumber: 3, SlotIndex: 3})
-	ptrs := loaded.GetAll("k1")
-	if len(ptrs) != 2 {
-		t.Fatalf("k1 len after overlay = %d, want 2", len(ptrs))
-	}
+	idx.Clear()
 }
 
 func TestMultiIndexGetAllReturnsSnapshot(t *testing.T) {
-	idx := NewMultiIndex()
-	want := schema.RowPointer{PageNumber: 7, SlotIndex: 3}
-	idx.Add("k", want)
-
-	got := idx.GetAll("k")
-	got[0] = schema.RowPointer{PageNumber: 99, SlotIndex: 9}
-
-	current := idx.GetAll("k")
-	if len(current) != 1 || current[0] != want {
-		t.Fatalf("GetAll exposed mutable index storage: got %+v, want %+v", current, want)
+	for _, mapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mapped=%t", mapped), func(t *testing.T) {
+			idx := NewMultiIndex()
+			want := schema.RowPointer{PageNumber: 7, SlotIndex: 3}
+			idx.Add("k", want)
+			if mapped {
+				path := filepath.Join(t.TempDir(), "index.smidx")
+				if err := WriteMappedMultiIndexFile(path, idx); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				idx, err = ReadMappedMultiIndexFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(idx.Clear)
+			got := idx.GetAll("k")
+			got[0] = schema.RowPointer{PageNumber: 99, SlotIndex: 9}
+			current := idx.GetAll("k")
+			if len(current) != 1 || current[0] != want {
+				t.Fatalf("GetAll exposed mutable index storage: got %+v, want %+v", current, want)
+			}
+		})
 	}
 }

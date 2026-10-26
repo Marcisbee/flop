@@ -1,0 +1,16 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/storage
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  122672	      2376 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  103034	      2329 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  103053	      2308 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	  110551	      2356 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=false-32         	   95470	      2394 ns/op	    6144 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  101758	      2387 ns/op	    6145 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  107476	      2323 ns/op	    6145 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  115476	      2220 ns/op	    6145 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  105682	      2373 ns/op	    6145 B/op	      12 allocs/op
+BenchmarkMultiIndexLookup/postings=64/mapped=true/hit=true-32          	  108555	      2304 ns/op	    6145 B/op	      12 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/storage	3.242s

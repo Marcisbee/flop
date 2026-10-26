@@ -244,27 +244,21 @@ func (m *mappedMultiBase) EntryCount() int {
 }
 
 func (m *mappedMultiBase) GetAll(key string) []schema.RowPointer {
-	if m == nil || m.count == 0 {
+	// Search only key headers. Decoding postings at each binary-search step
+	// allocates and reads values belonging to unrelated keys (including misses).
+	_, off, count, ok := m.findEntryHeader(key)
+	if !ok || count < 0 || off < 0 || off > len(m.data) || count > (len(m.data)-off)/6 {
 		return nil
 	}
-	target := []byte(key)
-	lo, hi := 0, m.count-1
-	for lo <= hi {
-		mid := (lo + hi) / 2
-		k, ptrs, ok := m.entry(mid)
-		if !ok {
-			return nil
+	out := make([]schema.RowPointer, count)
+	for i := range out {
+		out[i] = schema.RowPointer{
+			PageNumber: binary.LittleEndian.Uint32(m.data[off : off+4]),
+			SlotIndex:  binary.LittleEndian.Uint16(m.data[off+4 : off+6]),
 		}
-		switch bytes.Compare(k, target) {
-		case 0:
-			return ptrs
-		case -1:
-			lo = mid + 1
-		default:
-			hi = mid - 1
-		}
+		off += 6
 	}
-	return nil
+	return out
 }
 
 func (m *mappedMultiBase) HasPointer(key string, pointer schema.RowPointer) bool {
