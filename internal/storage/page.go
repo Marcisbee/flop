@@ -230,15 +230,20 @@ func (p *Page) ReadRow(slotIndex int) []byte {
 	return result
 }
 
-// DeleteRow marks a slot as deleted (tombstone).
-func (p *Page) DeleteRow(slotIndex int) {
+// DeleteRow marks a slot as deleted and reports whether it contained a row.
+func (p *Page) DeleteRow(slotIndex int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if slotIndex >= int(p.SlotCount) {
-		return
+	if slotIndex < 0 || slotIndex >= int(p.SlotCount) {
+		return false
+	}
+	_, length := p.getSlot(slotIndex)
+	if length == 0 {
+		return false
 	}
 	p.setSlot(slotIndex, 0, 0)
 	p.writeHeader()
+	return true
 }
 
 // UpdateRow tries to update a row in place. Returns false if it doesn't fit.

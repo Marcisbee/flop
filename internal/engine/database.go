@@ -778,6 +778,21 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		manifestValid = storage.ValidateCheckpointManifest(dataDir, ti.Name, manifest)
 	}
 
+	// Load the checkpoint archive index before replay, then retain WAL changes.
+	// A failed manifest requires rebuilding from archive data, just as for live rows.
+	if manifest != nil && !manifestValid {
+		if err := ti.rebuildArchiveIndex(); err != nil {
+			return err
+		}
+	} else if idx, err := storage.ReadMappedIndexFile(archiveMidxPath); err == nil && idx.Size() > 0 {
+		ti.archiveIndex = idx
+	} else if idx, err := storage.ReadIndexFile(archiveIdxPath); err == nil && idx.Size() > 0 {
+		ti.archiveIndex = idx
+		_ = storage.WriteMappedIndexFile(archiveMidxPath, ti.archiveIndex)
+	} else if err := ti.rebuildArchiveIndex(); err != nil {
+		return err
+	}
+
 	ti.primaryIndex = storage.NewHashIndex()
 	replayed, err := ti.replayWAL()
 	if err != nil {
@@ -806,14 +821,6 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 		if err := ti.rebuildIndex(); err != nil {
 			return err
 		}
-	}
-	if idx, err := storage.ReadMappedIndexFile(archiveMidxPath); err == nil && idx.Size() > 0 {
-		ti.archiveIndex = idx
-	} else if idx, err := storage.ReadIndexFile(archiveIdxPath); err == nil && idx.Size() > 0 {
-		ti.archiveIndex = idx
-		_ = storage.WriteMappedIndexFile(archiveMidxPath, ti.archiveIndex)
-	} else if err := ti.rebuildArchiveIndex(); err != nil {
-		return err
 	}
 	ti.initializeAutoIncrementCounters()
 
@@ -960,6 +967,7 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 	}
 
 	applied := false
+	archivePrepared := false
 	for _, entry := range entries {
 		if entry.Op == storage.WALOpBegin || entry.Op == storage.WALOpCommit {
 			continue
@@ -970,6 +978,13 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 		}
 		if checkpointLSN > 0 && commitLSN > 0 && commitLSN <= checkpointLSN {
 			continue
+		}
+		op := storage.WALOpBase(entry.Op)
+		if !archivePrepared && (op == storage.WALOpArchiveInsert || op == storage.WALOpArchiveDelete) {
+			if err := ti.prepareArchiveReplay(entries, committedLSN, checkpointLSN); err != nil {
+				return false, err
+			}
+			archivePrepared = true
 		}
 		if err := ti.applyWALEntry(entry); err != nil {
 			return false, err
@@ -983,6 +998,61 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 		}
 	}
 	return applied, nil
+}
+
+// Reconcile only WAL-touched archive keys with physical data. Dirty archive pages
+// may have reached disk before their checkpoint index, including reused slots.
+// Matching immutable record bytes avoids decoding every archived row at startup.
+func (ti *TableInstance) prepareArchiveReplay(entries []storage.WALEntry, committed map[uint32]uint64, checkpointLSN uint64) error {
+	var inserts map[string]string
+	touched := false
+	for _, entry := range entries {
+		commitLSN, ok := committed[entry.TxID]
+		if !ok || (checkpointLSN > 0 && commitLSN > 0 && commitLSN <= checkpointLSN) {
+			continue
+		}
+		switch storage.WALOpBase(entry.Op) {
+		case storage.WALOpArchiveInsert:
+			record, err := storage.DeserializeArchivedRow(entry.Data)
+			if err != nil {
+				return err
+			}
+			if record == nil || strings.TrimSpace(record.ArchiveID) == "" {
+				continue
+			}
+			touched = true
+			if inserts == nil {
+				inserts = make(map[string]string)
+			}
+			inserts[string(entry.Data)] = record.ArchiveID
+			ti.archiveIndex.Delete(record.ArchiveID)
+		case storage.WALOpArchiveDelete:
+			touched = true
+			id := string(entry.Data)
+			record, _, err := ti.GetArchived(id)
+			if err != nil {
+				return err
+			}
+			if record == nil || record.ArchiveID != id {
+				ti.archiveIndex.Delete(id)
+			}
+		}
+	}
+	if !touched || ti.archiveFile == nil {
+		return nil
+	}
+	var count uint32
+	if err := ti.archiveFile.ForEachRow(func(scanned storage.ScannedRow) bool {
+		count++
+		if id, ok := inserts[string(scanned.Data)]; ok {
+			ti.archiveIndex.Set(id, schema.RowPointer{PageNumber: scanned.PageNumber, SlotIndex: uint16(scanned.SlotIndex)})
+		}
+		return true
+	}); err != nil {
+		return err
+	}
+	atomic.StoreUint32(&ti.archiveFile.TotalRows, count)
+	return nil
 }
 
 func (ti *TableInstance) validateStoredRows() error {
@@ -1179,9 +1249,10 @@ func (ti *TableInstance) applyWALArchiveDelete(archiveID string) error {
 	if err != nil {
 		return err
 	}
-	page.DeleteRow(int(pointer.SlotIndex))
-	ti.archiveFile.MarkPageDirty(pointer.PageNumber)
-	ti.archiveFile.DecrementTotalRows()
+	if page.DeleteRow(int(pointer.SlotIndex)) {
+		ti.archiveFile.MarkPageDirty(pointer.PageNumber)
+		ti.archiveFile.DecrementTotalRows()
+	}
 	ti.archiveIndex.Delete(archiveID)
 	return nil
 }

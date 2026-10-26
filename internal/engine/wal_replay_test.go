@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marcisbee/flop/internal/schema"
@@ -151,7 +152,7 @@ func TestWALReplayIgnoresUncommittedInsert(t *testing.T) {
 	}
 }
 
-func runReplayCrashHelper(t *testing.T, dataDir, action, failpoint string) {
+func runReplayCrashHelper(t testing.TB, dataDir, action, failpoint string) string {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=TestWALReplayHelperProcess", "--", dataDir, action)
 	cmd.Env = append(os.Environ(),
@@ -160,14 +161,15 @@ func runReplayCrashHelper(t *testing.T, dataDir, action, failpoint string) {
 		"FLOP_FAILPOINT_HIT=1",
 		"FLOP_FAILPOINT_MODE=exit",
 	)
-	err := cmd.Run()
+	out, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected helper to crash with exit code, got err=%v", err)
 	}
 	if exitErr.ExitCode() != 197 {
-		t.Fatalf("expected helper exit code 197, got %d", exitErr.ExitCode())
+		t.Fatalf("expected helper exit code 197, got %d: %s", exitErr.ExitCode(), out)
 	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestWALReplayHelperProcess(t *testing.T) {
@@ -192,6 +194,36 @@ func TestWALReplayHelperProcess(t *testing.T) {
 		}, nil)
 	case "update":
 		_, _ = ti.Update("id-base", map[string]interface{}{"title": "updated", "value": float64(2)}, nil)
+	case "archive", "archive-flushed":
+		record, err := ti.Archive("id-base", ArchiveOptions{}, nil)
+		if err != nil || record == nil {
+			os.Exit(6)
+		}
+		fmt.Print(record.ArchiveID)
+		if strings.HasSuffix(action, "-flushed") {
+			_ = db.Checkpoint()
+			os.Exit(7)
+		}
+		os.Exit(197)
+	case "restore", "restore-flushed", "reuse-flushed":
+		records, _, err := ti.ScanArchived(1, 0)
+		if err != nil || len(records) != 1 {
+			os.Exit(6)
+		}
+		if _, _, err := ti.RestoreArchived(records[0].ArchiveID, nil); err != nil {
+			os.Exit(6)
+		}
+		fmt.Print(records[0].ArchiveID)
+		if action == "reuse-flushed" {
+			if _, err := ti.Archive("id-base", ArchiveOptions{}, nil); err != nil {
+				os.Exit(6)
+			}
+		}
+		if strings.HasSuffix(action, "-flushed") {
+			_ = db.Checkpoint()
+			os.Exit(7)
+		}
+		os.Exit(197)
 	case "delete":
 		_, _ = ti.Delete("id-base", nil)
 	default:
@@ -429,4 +461,81 @@ func corruptMappedIndexFirstPointer(path string) error {
 	}
 	binary.LittleEndian.PutUint32(data[pagePos:pagePos+4], 0x7fffffff)
 	return os.WriteFile(path, data, 0o644)
+}
+
+func TestArchiveRecovery(t *testing.T) {
+	for _, scenario := range []string{"corrupt-index", "archive", "restore", "archive-flushed", "restore-flushed", "reuse-flushed"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir := t.TempDir()
+			db, ti, err := openReplayTestDB(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"id-old", "id-base"} {
+				if _, err := ti.Insert(map[string]interface{}{"id": id, "slug": id, "title": id}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old, err := ti.Archive("id-old", ArchiveOptions{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "corrupt-index" {
+				if err := corruptMappedIndexFirstPointer(filepath.Join(dir, "items.archive.midx")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				point := "unused"
+				if strings.HasSuffix(scenario, "-flushed") {
+					point = "checkpoint_after_table_flush"
+				}
+				runReplayCrashHelper(t, dir, scenario, point)
+			}
+			db, ti, err = openReplayTestDB(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if scenario == "corrupt-index" {
+				if _, row, err := ti.RestoreArchived(old.ArchiveID, nil); err != nil || row == nil || row["id"] != "id-old" {
+					t.Fatalf("restore after index corruption: row=%v err=%v", row, err)
+				}
+				return
+			}
+			records, total, err := ti.ScanArchived(10, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 2
+			restored := strings.HasPrefix(scenario, "restore") || scenario == "reuse-flushed"
+			if restored {
+				want = 0
+			}
+			if scenario == "reuse-flushed" {
+				want = 1
+			}
+			if len(records) != want || total != want {
+				t.Fatalf("archive counts after %s crash = %d/%d, want %d", scenario, len(records), total, want)
+			}
+			for _, record := range records {
+				got, _, err := ti.GetArchived(record.ArchiveID)
+				if err != nil || got == nil {
+					t.Fatalf("archived row unavailable after recovery: %v", err)
+				}
+			}
+			if restored {
+				record, _, err := ti.GetArchived(old.ArchiveID)
+				if err != nil || record != nil {
+					t.Fatalf("restored archive still visible: %v %v", record, err)
+				}
+				row, err := ti.Get("id-old")
+				if err != nil || row == nil {
+					t.Fatalf("restored live row missing: %v", err)
+				}
+			}
+		})
+	}
 }

@@ -118,6 +118,14 @@ metadata must be recaptured. Single-report `quickbench-save` and
 `quickbench-compare-last` remain exploratory helpers; use explicit series for a
 handoff so a moving “latest” file cannot replace the intended baseline.
 
+For archive recovery, measure reopening after acknowledged archive/restore
+operations and abrupt process exit. The benchmark excludes fixture setup and
+close, and rejects incorrect recovered records or counts:
+
+```sh
+go test ./internal/engine -run '^$' -bench '^BenchmarkArchiveRecovery$' -benchmem -benchtime=5x -count=5
+```
+
 For HTTP JSON or SSE hot paths, use Go microbenchmarks at their actual seam:
 
 ```sh
