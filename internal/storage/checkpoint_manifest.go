@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -98,11 +99,35 @@ func readCheckpointManifestFile(path string) (*CheckpointManifest, error) {
 
 // ComputeFileCRC32 returns CRC32 of file contents.
 func ComputeFileCRC32(path string) (uint32, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
 	}
-	return util.CRC32(data), nil
+	defer f.Close()
+	return computeOpenFileCRC32(f)
+}
+
+// Keep checksum memory bounded even for large checkpoint artifacts.
+func computeOpenFileCRC32(f *os.File) (uint32, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, os.ErrInvalid
+	}
+	buf := make([]byte, min(info.Size(), 64*1024-1)+1)
+	var sum uint32
+	for {
+		n, err := f.Read(buf)
+		sum = util.CRC32Update(sum, buf[:n])
+		if err == io.EOF {
+			return sum, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
 }
 
 // ValidateCheckpointManifest checks whether all recorded file hashes match.
@@ -111,9 +136,23 @@ func ValidateCheckpointManifest(dataDir, tableName string, manifest *CheckpointM
 	if manifest == nil || manifest.Generation == 0 {
 		return false
 	}
+	root, err := os.OpenRoot(dataDir)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
 	for relPath, expected := range manifest.Files {
-		fullPath := filepath.Join(dataDir, relPath)
-		got, err := ComputeFileCRC32(fullPath)
+		// Resolve through the directory handle so traversal and symlink swaps
+		// cannot redirect checkpoint validation outside the database.
+		f, err := root.Open(relPath)
+		if err != nil {
+			return false
+		}
+		got, err := computeOpenFileCRC32(f)
+		closeErr := f.Close()
+		if closeErr != nil {
+			return false
+		}
 		if err != nil || got != expected {
 			return false
 		}

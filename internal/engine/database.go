@@ -779,7 +779,7 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	}
 
 	ti.primaryIndex = storage.NewHashIndex()
-	replayed, err := ti.replayWAL()
+	replayed, archiveReplayed, err := ti.replayWAL()
 	if err != nil {
 		return err
 	}
@@ -807,7 +807,14 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 			return err
 		}
 	}
-	if idx, err := storage.ReadMappedIndexFile(archiveMidxPath); err == nil && idx.Size() > 0 {
+	if archiveReplayed {
+		// replayWAL already rebuilt and updated the archive index. Loading a
+		// checkpoint snapshot here would discard committed archive changes.
+	} else if forcePrimaryRebuild {
+		if err := ti.rebuildArchiveIndex(); err != nil {
+			return err
+		}
+	} else if idx, err := storage.ReadMappedIndexFile(archiveMidxPath); err == nil && idx.Size() > 0 {
 		ti.archiveIndex = idx
 	} else if idx, err := storage.ReadIndexFile(archiveIdxPath); err == nil && idx.Size() > 0 {
 		ti.archiveIndex = idx
@@ -920,10 +927,12 @@ func (ti *TableInstance) open(dataDir string, meta *schema.StoredMeta, pubsub *P
 	return nil
 }
 
-func (ti *TableInstance) replayWAL() (bool, error) {
+// replayWAL reports whether live or archive state was replayed, and whether the
+// archive index now reflects replayed records instead of its checkpoint snapshot.
+func (ti *TableInstance) replayWAL() (bool, bool, error) {
 	entries, err := ti.wal.Replay()
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if redo := ti.db.txRecovery[ti.Name]; len(redo) > 0 {
 		entries = append(entries, redo...)
@@ -933,7 +942,7 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 		}
 	}
 	if len(entries) == 0 {
-		return false, nil
+		return false, false, nil
 	}
 	if ignored := ti.db.ignoredRecoveryTxIDs(ti.Name); len(ignored) > 0 {
 		filtered := entries[:0]
@@ -944,22 +953,23 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 		}
 		entries = filtered
 		if len(entries) == 0 {
-			return false, nil
+			return false, false, nil
 		}
 	}
 
 	checkpointLSN := ti.wal.CheckpointLSN()
 	committedLSN := storage.FindCommittedTxLSN(entries)
 	if len(committedLSN) == 0 {
-		return false, nil
+		return false, false, nil
 	}
 
 	// Start from on-disk state.
 	if err := ti.rebuildIndex(); err != nil {
-		return false, err
+		return false, false, err
 	}
 
 	applied := false
+	archiveReplayed := false
 	for _, entry := range entries {
 		if entry.Op == storage.WALOpBegin || entry.Op == storage.WALOpCommit {
 			continue
@@ -971,18 +981,26 @@ func (ti *TableInstance) replayWAL() (bool, error) {
 		if checkpointLSN > 0 && commitLSN > 0 && commitLSN <= checkpointLSN {
 			continue
 		}
+		if !archiveReplayed && (storage.WALOpBase(entry.Op) == storage.WALOpArchiveInsert || storage.WALOpBase(entry.Op) == storage.WALOpArchiveDelete) {
+			// Only archive recovery needs this scan. Deletes must find existing
+			// records, and inserts must recognize already-persisted records.
+			if err := ti.rebuildArchiveIndex(); err != nil {
+				return false, false, err
+			}
+			archiveReplayed = true
+		}
 		if err := ti.applyWALEntry(entry); err != nil {
-			return false, err
+			return false, false, err
 		}
 		applied = true
 	}
 
 	if applied {
 		if err := ti.tableFile.Flush(); err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
-	return applied, nil
+	return applied, archiveReplayed, nil
 }
 
 func (ti *TableInstance) validateStoredRows() error {

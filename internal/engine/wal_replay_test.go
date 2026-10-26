@@ -192,6 +192,20 @@ func TestWALReplayHelperProcess(t *testing.T) {
 		}, nil)
 	case "update":
 		_, _ = ti.Update("id-base", map[string]interface{}{"title": "updated", "value": float64(2)}, nil)
+	case "archive":
+		if _, err := ti.Archive("id-base", ArchiveOptions{}, nil); err != nil {
+			os.Exit(6)
+		}
+		os.Exit(197)
+	case "restore":
+		records, _, err := ti.ScanArchived(10, 0)
+		if err != nil || len(records) != 1 {
+			os.Exit(6)
+		}
+		if _, _, err := ti.RestoreArchived(records[0].ArchiveID, nil); err != nil {
+			os.Exit(6)
+		}
+		os.Exit(197)
 	case "delete":
 		_, _ = ti.Delete("id-base", nil)
 	default:
@@ -429,4 +443,69 @@ func corruptMappedIndexFirstPointer(path string) error {
 	}
 	binary.LittleEndian.PutUint32(data[pagePos:pagePos+4], 0x7fffffff)
 	return os.WriteFile(path, data, 0o644)
+}
+
+func TestArchiveRecovery(t *testing.T) {
+	for _, scenario := range []string{"corrupt-index", "archive", "restore"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir := t.TempDir()
+			db, ti, err := openReplayTestDB(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"id-old", "id-base"} {
+				if _, err := ti.Insert(map[string]interface{}{"id": id, "slug": id, "title": id}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old, err := ti.Archive("id-old", ArchiveOptions{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "corrupt-index" {
+				if err := corruptMappedIndexFirstPointer(filepath.Join(dir, "items.archive.midx")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				runReplayCrashHelper(t, dir, scenario, "unused")
+			}
+			db, ti, err = openReplayTestDB(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if scenario == "corrupt-index" {
+				if _, row, err := ti.RestoreArchived(old.ArchiveID, nil); err != nil || row == nil || row["id"] != "id-old" {
+					t.Fatalf("restore after index corruption: row=%v err=%v", row, err)
+				}
+				return
+			}
+			records, _, err := ti.ScanArchived(10, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 2
+			if scenario == "restore" {
+				want = 0
+			}
+			if len(records) != want {
+				t.Fatalf("archive count after %s crash = %d, want %d", scenario, len(records), want)
+			}
+			for _, record := range records {
+				got, _, err := ti.GetArchived(record.ArchiveID)
+				if err != nil || got == nil {
+					t.Fatalf("archived row unavailable after recovery: %v", err)
+				}
+			}
+			if scenario == "restore" {
+				row, err := ti.Get("id-old")
+				if err != nil || row == nil {
+					t.Fatalf("restored live row missing: %v", err)
+				}
+			}
+		})
+	}
 }
