@@ -121,6 +121,16 @@ type AuthProviderIdentity struct {
 	EmailVerified bool
 }
 
+// AuthProviderSignupRequest is passed to Config.ProviderSignup. Fields is
+// untrusted completion input: explicitly select and validate permitted fields.
+// AppID and Identity come from the verified flow, never from signupFields.
+// Returned fields still undergo schema validation and uniqueness checks.
+type AuthProviderSignupRequest struct {
+	AppID    string
+	Identity AuthProviderIdentity
+	Fields   map[string]any
+}
+
 // AuthProviderTokenSet is normalized token material. It is encrypted before
 // persistence and refresh tokens are never returned by Flop's public APIs.
 type AuthProviderTokenSet struct {

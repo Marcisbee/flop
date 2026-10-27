@@ -1335,6 +1335,11 @@ func TestProviderSignUpCreatesAccountAndSession(t *testing.T) {
 	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
 	state, _ := startProviderFlow(t, handler, "fake", "sign_up", "", "")
 	code := callbackProviderFlow(t, handler, "fake", state, "signup")
+	body, _ := json.Marshal(map[string]any{"completionCode": code, "signupFields": map[string]any{"name": "Unconfigured"}})
+	rejected := providerRequest(t, handler, http.MethodPost, "/api/auth/provider/complete", string(body), "")
+	if rejected.Code != 400 || decodeProviderResponse(t, rejected)["code"] != "invalid_signup_fields" {
+		t.Fatal("unconfigured signup fields accepted")
+	}
 	rec := completeProviderFlow(t, handler, code, "", false)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("signup: %d %s", rec.Code, rec.Body.String())
@@ -1429,5 +1434,115 @@ func TestProviderSignUpRollsBackWhenAccountCannotAuthenticate(t *testing.T) {
 		if db.db.GetAuthTable().Count() != 0 || db.Table(systemAuthIdentityTableName).Count() != 0 || db.Table(systemAuthSessionTableName).Count() != 0 {
 			t.Fatal("failed session left partial signup")
 		}
+	}
+}
+
+func TestProviderSignUpCustomProfile(t *testing.T) {
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{
+		"signup":    {Provider: "fake", Issuer: "https://issuer.example", Subject: "custom", Email: "custom@example.com", EmailVerified: true, DisplayName: "Provider Name"},
+		"collision": {Provider: "fake", Issuer: "https://issuer.example", Subject: "other", Email: "other@example.com", EmailVerified: true},
+	}}
+	config := Config{DataDir: t.TempDir(), SyncMode: "normal", AuthProviders: map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")}}
+	callbackCalls := 0
+	var callbackOutput map[string]any
+	config.ProviderSignup = func(request AuthProviderSignupRequest) (map[string]any, error) {
+		callbackCalls++
+		if !request.Identity.EmailVerified || request.Identity.Issuer != "https://issuer.example" {
+			t.Fatal("callback received unverified identity")
+		}
+		handle, _ := request.Fields["handle"].(string)
+		name, _ := request.Fields["display_name"].(string)
+		if len(handle) < 4 || len(handle) > 15 || strings.Trim(handle, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" || len(name) < 2 || len(name) > 50 {
+			return nil, fmt.Errorf("invalid profile")
+		}
+		if callbackOutput != nil {
+			return callbackOutput, nil
+		}
+		// Select fields explicitly; arbitrary client properties never become account data.
+		return map[string]any{"handle": handle, "display_name": name}, nil
+	}
+	app := New(config)
+	Define(app, "users", func(s *SchemaBuilder) {
+		s.String("user_id").Primary("uuidv7")
+		s.String("email").Required().Unique().Email()
+		s.Bcrypt("password", 4).Required()
+		s.Roles("roles")
+		s.String("handle").Required().Unique()
+		s.String("display_name").Required()
+	})
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler := app.APIHandler(db)
+	state, _ := startProviderFlow(t, handler, "fake", "sign_up", "", "")
+	code := callbackProviderFlow(t, handler, "fake", state, "signup")
+	complete := func(code string, fields map[string]any) *httptest.ResponseRecorder {
+		body, err := json.Marshal(map[string]any{"completionCode": code, "signupFields": fields})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return providerRequest(t, handler, http.MethodPost, "/api/auth/provider/complete", string(body), "")
+	}
+	for _, fields := range []map[string]any{nil, {"handle": "BAD", "display_name": "Valid"}, {"handle": "valid_handle", "display_name": "x"}} {
+		rec := complete(code, fields)
+		if rec.Code != 400 || decodeProviderResponse(t, rec)["code"] != "invalid_signup_fields" {
+			t.Fatalf("invalid profile: %d %s", rec.Code, rec.Body.String())
+		}
+		if db.db.GetAuthTable().Count() != 0 || db.Table(systemAuthIdentityTableName).Count() != 0 || db.Table(systemAuthSessionTableName).Count() != 0 {
+			t.Fatal("invalid signup persisted state")
+		}
+	}
+	for _, field := range []string{"user_id", "email", "password", "roles", "default_role", "verified", "disabled", "unknown"} {
+		before := callbackCalls
+		rec := complete(code, map[string]any{"handle": "valid_handle", "display_name": "Valid", field: "override"})
+		if rec.Code != 400 || decodeProviderResponse(t, rec)["code"] != "invalid_signup_fields" || callbackCalls != before {
+			t.Fatalf("reserved field %s accepted: %d %s", field, rec.Code, rec.Body.String())
+		}
+	}
+	for _, output := range []map[string]any{{"roles": []any{"admin"}}, {"user_id": "chosen-id"}, {"display_name": "Missing Handle"}} {
+		callbackOutput = output
+		rec := complete(code, map[string]any{"handle": "valid_handle", "display_name": "Chosen Name"})
+		if rec.Code != 400 {
+			t.Fatalf("invalid callback output accepted: %d %s", rec.Code, rec.Body.String())
+		}
+		if db.db.GetAuthTable().Count() != 0 || db.Table(systemAuthIdentityTableName).Count() != 0 || db.Table(systemAuthSessionTableName).Count() != 0 {
+			t.Fatal("invalid callback output persisted state")
+		}
+	}
+	callbackOutput = nil
+	rec := complete(code, map[string]any{"handle": "valid_handle", "display_name": "Chosen Name"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("custom-profile signup: %d %s", rec.Code, rec.Body.String())
+	}
+	out := decodeProviderResponse(t, rec)
+	auth, err := db.authService.ValidateAccessToken(toString(out["token"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := db.db.GetAuthTable().Get(auth.ID)
+	if err != nil || row["handle"] != "valid_handle" || row["display_name"] != "Chosen Name" || row["email"] != "custom@example.com" {
+		t.Fatalf("wrong persisted profile: %v %v", row, err)
+	}
+	if _, _, err := db.authService.Refresh(toString(out["refreshToken"])); err != nil {
+		t.Fatalf("refresh signup session: %v", err)
+	}
+	if replay := complete(code, map[string]any{"handle": "another", "display_name": "Other"}); replay.Code != 410 {
+		t.Fatal("completion replay accepted")
+	}
+	state, _ = startProviderFlow(t, handler, "fake", "sign_up", "", "")
+	code = callbackProviderFlow(t, handler, "fake", state, "collision")
+	sessions := db.Table(systemAuthSessionTableName).Count()
+	rec = complete(code, map[string]any{"handle": "valid_handle", "display_name": "Other"})
+	if rec.Code != 409 || decodeProviderResponse(t, rec)["code"] != "signup_conflict" {
+		t.Fatalf("handle collision: %d %s", rec.Code, rec.Body.String())
+	}
+	if db.db.GetAuthTable().Count() != 1 || db.Table(systemAuthIdentityTableName).Count() != 1 || db.Table(systemAuthSessionTableName).Count() != sessions {
+		t.Fatal("collision persisted partial account")
+	}
+	rec = complete(code, map[string]any{"handle": "other_handle", "display_name": "Other"})
+	if rec.Code != 200 {
+		t.Fatalf("corrected collision: %d %s", rec.Code, rec.Body.String())
 	}
 }
