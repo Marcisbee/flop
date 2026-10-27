@@ -715,7 +715,7 @@ func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowI
 	return &providerCallbackResult{CompletionCode: completionCode, Status: status, ReturnTo: toString(flow["return_to"])}, nil
 }
 
-func (s *providerAuthService) complete(code string, confirm bool, auth *AuthContext, browserBinding string) (*providerCompleteResult, error) {
+func (s *providerAuthService) complete(code string, confirm bool, auth *AuthContext, browserBinding string, signupFields map[string]any) (*providerCompleteResult, error) {
 	if code == "" {
 		return nil, providerError("completion_code_required", "completion code required", 400)
 	}
@@ -761,6 +761,9 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 		return nil, providerError("provider_identity_invalid", "provider authentication failed", 400)
 	}
 	intent := toString(flow["intent"])
+	if intent != "sign_up" && len(signupFields) > 0 {
+		return nil, providerError("invalid_signup_fields", "signup fields require a signup flow", 400)
+	}
 	if intent == "link" {
 		return s.completeLink(flow, identity, confirm, auth, now)
 	}
@@ -768,7 +771,7 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 		return s.completeConsent(flow, identity, confirm, auth, now)
 	}
 	if intent == "sign_up" {
-		return s.completeSignUp(flow, identity, now)
+		return s.completeSignUp(flow, identity, signupFields, now)
 	}
 	if intent != "sign_in" {
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400)
@@ -776,7 +779,7 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 	return s.completeSignIn(flow, identity, now)
 }
 
-func (s *providerAuthService) completeSignUp(flow map[string]any, identity AuthProviderIdentity, now int64) (*providerCompleteResult, error) {
+func (s *providerAuthService) completeSignUp(flow map[string]any, identity AuthProviderIdentity, signupFields map[string]any, now int64) (*providerCompleteResult, error) {
 	if !identity.EmailVerified || strings.TrimSpace(identity.Email) == "" {
 		return nil, providerError("verified_email_required", "signup requires a verified provider email", 400)
 	}
@@ -784,16 +787,35 @@ func (s *providerAuthService) completeSignUp(flow map[string]any, identity AuthP
 	if _, exists := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject); exists {
 		return nil, providerError("identity_already_linked", "provider identity is already linked; sign in instead", 409)
 	}
+	var fields map[string]any
+	if err := s.db.authService.ValidateProviderSignupFields(signupFields); err != nil {
+		return nil, providerError("invalid_signup_fields", "signup fields are not allowed", 400, err)
+	}
+	if callback := s.db.app.config.ProviderSignup; callback != nil {
+		var err error
+		fields, err = callback(AuthProviderSignupRequest{AppID: toString(flow["app_id"]), Identity: identity, Fields: signupFields})
+		if err != nil {
+			return nil, providerError("invalid_signup_fields", "signup profile is invalid", 400, err)
+		}
+	} else if len(signupFields) > 0 {
+		return nil, providerError("invalid_signup_fields", "signup fields are not configured", 400)
+	}
+	if err := s.db.authService.ValidateProviderSignupFields(fields); err != nil {
+		return nil, providerError("invalid_signup_fields", "signup fields are not allowed", 400, err)
+	}
 	tx := newProviderTxn(s.db)
 	defer func() {
 		if !tx.closed {
 			tx.abort()
 		}
 	}()
-	principalID, err := s.db.authService.CreateProviderAccount(identity.Email, identity.DisplayName, tx.txBuf)
+	principalID, err := s.db.authService.CreateProviderAccount(identity.Email, identity.DisplayName, fields, tx.txBuf)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate unique") {
+		if err.Error() == "duplicate unique constraint on (email)" {
 			return nil, providerError("link_required", "sign in to your existing account and explicitly link this provider", 409)
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate unique") {
+			return nil, providerError("signup_conflict", "signup profile is already in use", 409, err)
 		}
 		return nil, providerError("account_creation_failed", "account could not be created", 400, err)
 	}

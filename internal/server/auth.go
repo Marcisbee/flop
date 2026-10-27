@@ -1004,10 +1004,32 @@ func (as *AuthService) createUserSession(user map[string]interface{}, reason, au
 	}, nil
 }
 
+// ValidateProviderSignupFields rejects engine-managed and security-sensitive
+// fields, including custom primary keys and role/password field kinds.
+func (as *AuthService) ValidateProviderSignupFields(fields map[string]interface{}) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	if as == nil || as.authTable == nil {
+		return fmt.Errorf("account creation unavailable")
+	}
+	if len(sanitizeRegisterExtraFields(fields)) != len(fields) {
+		return fmt.Errorf("reserved signup field")
+	}
+	compiled := as.authTable.GetDef().CompiledSchema
+	for key := range fields {
+		field := compiled.FieldMap[key]
+		if field == nil || field.AutoGenPattern != "" || field.AutoIDStrategy != "" || field.Cached || field.Kind == schema.KindRoles || field.Kind == schema.KindBcrypt || key == compiled.Fields[0].Name {
+			return fmt.Errorf("signup field is not writable")
+		}
+	}
+	return nil
+}
+
 // CreateProviderAccount inserts a passwordless account into the caller's transaction.
 // Email must already have been verified by the provider. Unique constraints reject
 // collisions; this method never selects an existing account by email.
-func (as *AuthService) CreateProviderAccount(email, name string, txBuf map[string]*engine.WalBufEntry) (string, error) {
+func (as *AuthService) CreateProviderAccount(email, name string, fields map[string]interface{}, txBuf map[string]*engine.WalBufEntry) (string, error) {
 	if as == nil || as.authTable == nil {
 		return "", fmt.Errorf("account creation unavailable")
 	}
@@ -1032,6 +1054,12 @@ func (as *AuthService) CreateProviderAccount(email, name string, txBuf map[strin
 	}
 	if as.authFieldExists("verified") {
 		data["verified"] = true
+	}
+	if err := as.ValidateProviderSignupFields(fields); err != nil {
+		return "", err
+	}
+	for key, value := range fields {
+		data[key] = value
 	}
 	row, err := as.authTable.Insert(data, txBuf)
 	if err != nil {

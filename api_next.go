@@ -792,9 +792,10 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in struct {
-			Code           string `json:"code"`
-			CompletionCode string `json:"completionCode"`
-			Confirm        bool   `json:"confirm"`
+			Code           string         `json:"code"`
+			CompletionCode string         `json:"completionCode"`
+			SignupFields   map[string]any `json:"signupFields"`
+			Confirm        bool           `json:"confirm"`
 		}
 		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
 			writeJSONBodyError(w, err)
@@ -811,7 +812,7 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		if !h.allowAuthAttempt(w, r, "provider-complete") {
 			return
 		}
-		result, err := h.db.providerAuth.complete(completionCode, in.Confirm, h.authFromRequest(r), providerBrowserBinding(r))
+		result, err := h.db.providerAuth.complete(completionCode, in.Confirm, h.authFromRequest(r), providerBrowserBinding(r), in.SignupFields)
 		if err != nil {
 			providerJSONError(w, err)
 			return

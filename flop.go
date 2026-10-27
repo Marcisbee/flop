@@ -47,6 +47,12 @@ type Config struct {
 	RequireAuthEmail      bool                          `json:"-"`
 	AuthPayloads          *AuthPayloadConfig            `json:"-"`
 	AuthProviders         map[string]AuthProviderConfig `json:"-"`
+	// ProviderSignup validates and selects application profile fields before account
+	// creation. It receives only a verified provider identity and browser-bound
+	// completion input. It must be side-effect-free and must not call provider APIs.
+	// Without a callback, completion accepts no signupFields.
+	ProviderSignup func(AuthProviderSignupRequest) (map[string]any, error) `json:"-"`
+
 	// AuthProviderApps configures app-isolated provider registrations. The map
 	// key is the stable public app ID used by browser and backend requests.
 	AuthProviderApps map[string]AuthProviderAppConfig `json:"-"`

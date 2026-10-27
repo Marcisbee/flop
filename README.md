@@ -155,8 +155,8 @@ After the callback, submit its `completionCode` to `POST /api/auth/provider/comp
 Flop creates the account, provider identity, optional grant, and authenticated
 session atomically and returns the usual access and refresh tokens. Signup
 requires a verified, nonempty provider email. The auth table must accept the
-standard registration fields and defaults; additional required fields without
-defaults prevent signup. Accounts have no usable password until one is explicitly
+standard registration fields, defaults, and any application fields selected by
+`Config.ProviderSignup` (below). Accounts have no usable password until one is explicitly
 set through the existing account recovery flow.
 
 An existing provider identity returns `identity_already_linked`; use `sign_in`.
@@ -164,6 +164,37 @@ A unique email collision returns `link_required`; authenticate the existing
 account and use the explicitly confirmed `link` flow. Provider email is never
 used to select or link an existing account. `sign_in` continues to require a
 previously linked identity and never creates accounts.
+
+Applications with required profile fields can configure `ProviderSignup` and send
+`signupFields` with the completion code:
+
+```json
+{"completionCode":"...","signupFields":{"handle":"new_user","display_name":"New User"}}
+```
+
+`Config.ProviderSignup` has the signature
+`func(AuthProviderSignupRequest) (map[string]any, error)`. The request contains
+`AppID`, the verified `Identity`, and untrusted `Fields`. Explicitly select allowed
+profile fields and validate their types, lengths, and format in this callback;
+return the selected account fields or an error. For example, an application can
+require a handle of 4–15 lowercase letters, digits, or underscores and a display
+name of 2–50 characters. It can also generate a handle from the verified identity
+when no client fields are needed. Keep the callback side-effect-free: it runs
+before the transaction, may run again after a corrected completion, and must not
+call provider APIs. Do not use it to create accounts or sessions yourself.
+
+Flop rejects unknown, primary-key, generated, password, role, email, verification,
+and account-state fields in both the input and callback output. Without a
+callback, nonempty `signupFields` are rejected. These fields are accepted only for
+`sign_up`; the provider identity and email always come from the verified flow.
+Account fields are inserted in the same transaction as the identity and session.
+Schema validation and unique constraints still apply. A callback rejection
+returns `invalid_signup_fields` (400), invalid account data returns
+`account_creation_failed` (400), and a profile uniqueness collision returns
+`signup_conflict` (409). No account or session is created on rejection; clients
+can correct fields and retry the same browser-bound completion code until it
+expires. A successful completion remains single-use. Email collisions retain
+`link_required` and never auto-link an account.
 
 Provider signup, sign-in, linking, and consent must start and finish in the same browser.
 The start endpoint sets an HttpOnly, Secure, host-only, SameSite=Lax cookie;
