@@ -19,7 +19,7 @@ const (
 	emailPasswordMask    = "******"
 )
 
-var emailTemplateNames = []string{"verification", "email-change", "password-reset"}
+var emailTemplateNames = []string{"verification", "email-change", "password-reset", "provider-signup"}
 
 // ErrAuthEmailUnavailable indicates that an authentication action email could not be delivered.
 var ErrAuthEmailUnavailable = errors.New("flop: auth email delivery unavailable")

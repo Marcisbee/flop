@@ -715,31 +715,18 @@ func (s *providerAuthService) finalizeCallbackLocked(flows *TableInstance, flowI
 	return &providerCallbackResult{CompletionCode: completionCode, Status: status, ReturnTo: toString(flow["return_to"])}, nil
 }
 
-func (s *providerAuthService) complete(code string, confirm bool, auth *AuthContext, browserBinding string, signupFields map[string]any) (*providerCompleteResult, error) {
+func (s *providerAuthService) complete(code string, confirm bool, auth *AuthContext, browserBinding string, signupFields map[string]any, emailToken string) (*providerCompleteResult, error) {
 	if code == "" {
 		return nil, providerError("completion_code_required", "completion code required", 400)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	flow, err := s.completionFlowLocked(code, browserBinding)
+	if err != nil {
+		return nil, err
+	}
 	flows := s.db.Table(systemAuthProviderFlowTableName)
-	flow, ok := flows.FindByUniqueIndex("completion_hash", hashProviderToken(code))
-	if !ok {
-		return nil, providerError("completion_gone", "completion code is invalid or expired", 410)
-	}
-	if browserBinding == "" || toString(flow["browser_binding"]) != hashProviderToken(browserBinding) {
-		return nil, providerError("provider_browser_mismatch", "provider flow belongs to another browser; start again", 403)
-	}
-
 	now := s.now().Unix()
-	if toString(flow["phase"]) != providerFlowPhaseResultReady {
-		return nil, providerError("completion_consumed", "completion code already consumed", 410)
-	}
-	if providerUnix(flow["completion_consumed_at"]) > 0 {
-		return nil, providerError("completion_consumed", "completion code already consumed", 410)
-	}
-	if providerUnix(flow["completion_expires_at"]) <= now {
-		return nil, providerError("completion_expired", "completion code expired", 410)
-	}
 	if failureCode := toString(flow["result_error_code"]); failureCode != "" {
 		_, _ = flows.Update(toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now})
 		switch failureCode {
@@ -761,7 +748,7 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 		return nil, providerError("provider_identity_invalid", "provider authentication failed", 400)
 	}
 	intent := toString(flow["intent"])
-	if intent != "sign_up" && len(signupFields) > 0 {
+	if intent != "sign_up" && (len(signupFields) > 0 || emailToken != "") {
 		return nil, providerError("invalid_signup_fields", "signup fields require a signup flow", 400)
 	}
 	if intent == "link" {
@@ -771,7 +758,7 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 		return s.completeConsent(flow, identity, confirm, auth, now)
 	}
 	if intent == "sign_up" {
-		return s.completeSignUp(flow, identity, signupFields, now)
+		return s.completeSignUp(flow, identity, signupFields, emailToken, now)
 	}
 	if intent != "sign_in" {
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400)
@@ -779,9 +766,18 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 	return s.completeSignIn(flow, identity, now)
 }
 
-func (s *providerAuthService) completeSignUp(flow map[string]any, identity AuthProviderIdentity, signupFields map[string]any, now int64) (*providerCompleteResult, error) {
+func (s *providerAuthService) completeSignUp(flow map[string]any, identity AuthProviderIdentity, signupFields map[string]any, emailToken string, now int64) (*providerCompleteResult, error) {
+	accountEmail := identity.Email
 	if !identity.EmailVerified || strings.TrimSpace(identity.Email) == "" {
-		return nil, providerError("verified_email_required", "signup requires a verified provider email", 400)
+		accountEmail = toString(flow["signup_email"])
+		if emailToken == "" {
+			return nil, providerError("verified_email_required", "supply and verify an email to finish signup", 400)
+		}
+		if accountEmail == "" || toString(flow["signup_email_token_hash"]) != hashProviderToken(emailToken) {
+			return nil, providerError("email_verification_invalid", "email verification token is invalid", 400)
+		}
+	} else if emailToken != "" {
+		return nil, providerError("email_verification_not_required", "provider email is already verified", 400)
 	}
 	identities := s.db.Table(systemAuthIdentityTableName)
 	if _, exists := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject); exists {
@@ -793,7 +789,7 @@ func (s *providerAuthService) completeSignUp(flow map[string]any, identity AuthP
 	}
 	if callback := s.db.app.config.ProviderSignup; callback != nil {
 		var err error
-		fields, err = callback(AuthProviderSignupRequest{AppID: toString(flow["app_id"]), Identity: identity, Fields: signupFields})
+		fields, err = callback(AuthProviderSignupRequest{AppID: toString(flow["app_id"]), Identity: identity, Email: accountEmail, Fields: signupFields})
 		if err != nil {
 			return nil, providerError("invalid_signup_fields", "signup profile is invalid", 400, err)
 		}
@@ -809,7 +805,7 @@ func (s *providerAuthService) completeSignUp(flow map[string]any, identity AuthP
 			tx.abort()
 		}
 	}()
-	principalID, err := s.db.authService.CreateProviderAccount(identity.Email, identity.DisplayName, fields, tx.txBuf)
+	principalID, err := s.db.authService.CreateProviderAccount(accountEmail, identity.DisplayName, fields, tx.txBuf)
 	if err != nil {
 		if err.Error() == "duplicate unique constraint on (email)" {
 			return nil, providerError("link_required", "sign in to your existing account and explicitly link this provider", 409)
@@ -1384,4 +1380,29 @@ func cleanupExpiredProviderFlowRows(flows *TableInstance, now time.Time) (int, e
 		}
 	}
 	return deleted, nil
+}
+
+// completionFlowLocked requires s.mu. Both email delivery and completion use the same browser and expiry guards.
+func (s *providerAuthService) completionFlowLocked(code, browserBinding string) (map[string]any, error) {
+	flows := s.db.Table(systemAuthProviderFlowTableName)
+	flow, ok := flows.FindByUniqueIndex("completion_hash", hashProviderToken(code))
+	if !ok {
+		return nil, providerError("completion_gone", "completion code is invalid or expired", 410)
+	}
+	if browserBinding == "" || toString(flow["browser_binding"]) != hashProviderToken(browserBinding) {
+		return nil, providerError("provider_browser_mismatch", "provider flow belongs to another browser; start again", 403)
+	}
+
+	now := s.now().Unix()
+	if toString(flow["phase"]) != providerFlowPhaseResultReady {
+		return nil, providerError("completion_consumed", "completion code already consumed", 410)
+	}
+	if providerUnix(flow["completion_consumed_at"]) > 0 {
+		return nil, providerError("completion_consumed", "completion code already consumed", 410)
+	}
+	if providerUnix(flow["completion_expires_at"]) <= now {
+		return nil, providerError("completion_expired", "completion code expired", 410)
+	}
+
+	return flow, nil
 }

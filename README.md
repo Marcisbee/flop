@@ -154,7 +154,8 @@ Provider signup uses `POST /api/auth/provider/start` with
 After the callback, submit its `completionCode` to `POST /api/auth/provider/complete`.
 Flop creates the account, provider identity, optional grant, and authenticated
 session atomically and returns the usual access and refresh tokens. Signup
-requires a verified, nonempty provider email. The auth table must accept the
+requires a verified, nonempty email, either from the provider or the continuation
+below. The auth table must accept the
 standard registration fields, defaults, and any application fields selected by
 `Config.ProviderSignup` (below). Accounts have no usable password until one is explicitly
 set through the existing account recovery flow.
@@ -174,7 +175,8 @@ Applications with required profile fields can configure `ProviderSignup` and sen
 
 `Config.ProviderSignup` has the signature
 `func(AuthProviderSignupRequest) (map[string]any, error)`. The request contains
-`AppID`, the verified `Identity`, and untrusted `Fields`. Explicitly select allowed
+`AppID`, the verified provider `Identity`, the verified account `Email`, and
+untrusted `Fields`. Explicitly select allowed
 profile fields and validate their types, lengths, and format in this callback;
 return the selected account fields or an error. For example, an application can
 require a handle of 4–15 lowercase letters, digits, or underscores and a display
@@ -186,7 +188,7 @@ call provider APIs. Do not use it to create accounts or sessions yourself.
 Flop rejects unknown, primary-key, generated, password, role, email, verification,
 and account-state fields in both the input and callback output. Without a
 callback, nonempty `signupFields` are rejected. These fields are accepted only for
-`sign_up`; the provider identity and email always come from the verified flow.
+`sign_up`; provider identity claims always come from the verified flow.
 Account fields are inserted in the same transaction as the identity and session.
 Schema validation and unique constraints still apply. A callback rejection
 returns `invalid_signup_fields` (400), invalid account data returns
@@ -195,6 +197,41 @@ returns `invalid_signup_fields` (400), invalid account data returns
 can correct fields and retry the same browser-bound completion code until it
 expires. A successful completion remains single-use. Email collisions retain
 `link_required` and never auto-link an account.
+
+When a provider supplies no verified email (for example Steam), completion returns
+`verified_email_required` without consuming the flow. Collect an email and send:
+
+```http
+POST /api/auth/provider/signup-email
+Content-Type: application/json
+
+{"completionCode":"...","email":"user@example.com"}
+```
+
+With SMTP configured, Flop returns 202 and sends the `provider-signup` email
+template containing a verification token. Ask the user to paste that token into
+the signup form, then complete with:
+
+```json
+{"completionCode":"...","emailVerificationToken":"token from email","signupFields":{"handle":"new_user","display_name":"New User"}}
+```
+
+No account or session exists before successful completion. `Email` in the signup
+callback is the verified account address; `Identity.Email` and
+`Identity.EmailVerified` remain the provider's original claims. Never treat an
+unverified provider email as proof of email ownership.
+
+Both requests require the original browser cookie. The challenge expires with
+the completion code, five minutes after the provider callback; email requests
+never extend this lifetime. Restart authorization after expiry. Requests are
+limited to one per minute per flow, in addition to HTTP auth rate limits.
+Requesting another email replaces the previous token and address. Tokens are
+random, stored only as hashes, and are never returned by the HTTP API. SMTP
+failure returns `email_delivery_failed` (502) and invalidates that token. A wrong
+token returns `email_verification_invalid` (400). Corrected profile fields may be
+retried with the same token until successful completion or expiry. Successful
+completion consumes the flow and token together. An existing account with the
+verified email still returns `link_required`; it is never selected or linked.
 
 Provider signup, sign-in, linking, and consent must start and finish in the same browser.
 The start endpoint sets an HttpOnly, Secure, host-only, SameSite=Lax cookie;

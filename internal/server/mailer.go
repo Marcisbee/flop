@@ -202,6 +202,10 @@ func (m *Mailer) SendTemplate(to, subject, templateName string, data EmailTempla
 func defaultEmailTemplates() map[string]compiledMessageTemplate {
 	templates := make(map[string]compiledMessageTemplate)
 
+	templates["provider-signup"] = mustCompileMessageTemplate("provider-signup", MessageTemplate{
+		Subject: "Verify your email to finish signup",
+		Body:    `<p>Paste this verification token into the signup form in the browser where you started:</p><code>{{.Token}}</code><p>It expires with your signup flow, at most five minutes after provider authorization. If you did not request this, ignore this email.</p>`,
+	})
 	templates["verification"] = mustCompileMessageTemplate("verification", MessageTemplate{
 		Subject: "Verify your email",
 		Body: `<!DOCTYPE html>
