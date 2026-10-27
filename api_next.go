@@ -610,6 +610,7 @@ func (h *APIHandler) handleSchema(w http.ResponseWriter) {
 			endpoint{Name: "auth_provider_discovery", Method: http.MethodGet, Path: "/api/auth/providers", Type: "auth", Access: Public()},
 			endpoint{Name: "auth_provider_start", Method: http.MethodPost, Path: "/api/auth/provider/start", Type: "auth", Access: Public()},
 			endpoint{Name: "auth_provider_callback", Method: http.MethodGet, Path: "/api/auth/provider/callback", Type: "auth", Access: Public()},
+			endpoint{Name: "auth_provider_signup_email", Method: http.MethodPost, Path: "/api/auth/provider/signup-email", Type: "auth", Access: Public()},
 			endpoint{Name: "auth_provider_complete", Method: http.MethodPost, Path: "/api/auth/provider/complete", Type: "auth", Access: Public()},
 			endpoint{Name: "auth_provider_identities", Method: http.MethodGet, Path: "/api/auth/provider/identities", Type: "auth", Access: Authenticated()},
 			endpoint{Name: "auth_provider_unlink", Method: http.MethodDelete, Path: "/api/auth/provider/identities/{identityId}", Type: "auth", Access: Authenticated()},
@@ -786,16 +787,39 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, http.StatusOK, map[string]any{"completionCode": result.CompletionCode, "status": result.Status})
+	case "/api/auth/provider/signup-email":
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var in struct {
+			CompletionCode string `json:"completionCode"`
+			Email          string `json:"email"`
+		}
+		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
+			writeJSONBodyError(w, err)
+			return
+		}
+		if !h.allowAuthAttempt(w, r, "provider-signup-email") {
+			return
+		}
+		if err := h.db.providerAuth.requestSignupEmail(in.CompletionCode, in.Email, providerBrowserBinding(r)); err != nil {
+			providerJSONError(w, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		jsonResponse(w, http.StatusAccepted, map[string]any{"ok": true})
 	case "/api/auth/provider/complete":
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var in struct {
-			Code           string         `json:"code"`
-			CompletionCode string         `json:"completionCode"`
-			SignupFields   map[string]any `json:"signupFields"`
-			Confirm        bool           `json:"confirm"`
+			Code                   string         `json:"code"`
+			CompletionCode         string         `json:"completionCode"`
+			SignupFields           map[string]any `json:"signupFields"`
+			EmailVerificationToken string         `json:"emailVerificationToken"`
+			Confirm                bool           `json:"confirm"`
 		}
 		if err := decodeStrictJSONBody(r, &in, authRequestBodyLimit); err != nil {
 			writeJSONBodyError(w, err)
@@ -812,7 +836,7 @@ func (h *APIHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		if !h.allowAuthAttempt(w, r, "provider-complete") {
 			return
 		}
-		result, err := h.db.providerAuth.complete(completionCode, in.Confirm, h.authFromRequest(r), providerBrowserBinding(r), in.SignupFields)
+		result, err := h.db.providerAuth.complete(completionCode, in.Confirm, h.authFromRequest(r), providerBrowserBinding(r), in.SignupFields, in.EmailVerificationToken)
 		if err != nil {
 			providerJSONError(w, err)
 			return

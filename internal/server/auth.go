@@ -1027,7 +1027,7 @@ func (as *AuthService) ValidateProviderSignupFields(fields map[string]interface{
 }
 
 // CreateProviderAccount inserts a passwordless account into the caller's transaction.
-// Email must already have been verified by the provider. Unique constraints reject
+// Email must already have been verified by the provider or signup email challenge. Unique constraints reject
 // collisions; this method never selects an existing account by email.
 func (as *AuthService) CreateProviderAccount(email, name string, fields map[string]interface{}, txBuf map[string]*engine.WalBufEntry) (string, error) {
 	if as == nil || as.authTable == nil {

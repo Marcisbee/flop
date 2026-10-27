@@ -126,7 +126,9 @@ type AuthProviderIdentity struct {
 // AppID and Identity come from the verified flow, never from signupFields.
 // Returned fields still undergo schema validation and uniqueness checks.
 type AuthProviderSignupRequest struct {
-	AppID    string
+	AppID string
+	// Email is the verified account address, from the provider or signup email challenge.
+	Email    string
 	Identity AuthProviderIdentity
 	Fields   map[string]any
 }
