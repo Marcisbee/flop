@@ -149,7 +149,23 @@ must be requested again. If confirmation is interrupted after consuming a link,
 request a new one. Existing access and refresh sessions remain usable for their
 respective purposes; an access token can no longer renew a session.
 
-Provider sign-in, linking, and consent must start and finish in the same browser.
+Provider signup uses `POST /api/auth/provider/start` with
+`{"provider":"google","intent":"sign_up"}` (and `appId` for multi-app configurations).
+After the callback, submit its `completionCode` to `POST /api/auth/provider/complete`.
+Flop creates the account, provider identity, optional grant, and authenticated
+session atomically and returns the usual access and refresh tokens. Signup
+requires a verified, nonempty provider email. The auth table must accept the
+standard registration fields and defaults; additional required fields without
+defaults prevent signup. Accounts have no usable password until one is explicitly
+set through the existing account recovery flow.
+
+An existing provider identity returns `identity_already_linked`; use `sign_in`.
+A unique email collision returns `link_required`; authenticate the existing
+account and use the explicitly confirmed `link` flow. Provider email is never
+used to select or link an existing account. `sign_in` continues to require a
+previously linked identity and never creates accounts.
+
+Provider signup, sign-in, linking, and consent must start and finish in the same browser.
 The start endpoint sets an HttpOnly, Secure, host-only, SameSite=Lax cookie;
 loopback development uses a non-Secure cookie. Keep cookies when calling start
 and complete, and serve these endpoints on the application's site. Same-site

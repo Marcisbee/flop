@@ -384,8 +384,8 @@ func (s *providerAuthService) startForApp(ctx context.Context, appID, provider, 
 	if err != nil {
 		return nil, err
 	}
-	if intent != "sign_in" && intent != "link" && intent != "consent" {
-		return nil, providerError("invalid_intent", "intent must be sign_in, link, or consent", 400)
+	if intent != "sign_in" && intent != "sign_up" && intent != "link" && intent != "consent" {
+		return nil, providerError("invalid_intent", "intent must be sign_in, sign_up, link, or consent", 400)
 	}
 	allowedReturns := canonicalStrings(append(append([]string{}, app.AllowedReturnURLs...), config.AllowedReturnURLs...))
 	if returnTo != "" && !exactStringMatch(allowedReturns, returnTo) {
@@ -767,10 +767,62 @@ func (s *providerAuthService) complete(code string, confirm bool, auth *AuthCont
 	if intent == "consent" {
 		return s.completeConsent(flow, identity, confirm, auth, now)
 	}
+	if intent == "sign_up" {
+		return s.completeSignUp(flow, identity, now)
+	}
 	if intent != "sign_in" {
 		return nil, providerError("provider_flow_invalid", "provider flow is invalid", 400)
 	}
 	return s.completeSignIn(flow, identity, now)
+}
+
+func (s *providerAuthService) completeSignUp(flow map[string]any, identity AuthProviderIdentity, now int64) (*providerCompleteResult, error) {
+	if !identity.EmailVerified || strings.TrimSpace(identity.Email) == "" {
+		return nil, providerError("verified_email_required", "signup requires a verified provider email", 400)
+	}
+	identities := s.db.Table(systemAuthIdentityTableName)
+	if _, exists := identities.FindByUniqueCompositeIndex([]string{"issuer", "subject"}, identity.Issuer, identity.Subject); exists {
+		return nil, providerError("identity_already_linked", "provider identity is already linked; sign in instead", 409)
+	}
+	tx := newProviderTxn(s.db)
+	defer func() {
+		if !tx.closed {
+			tx.abort()
+		}
+	}()
+	principalID, err := s.db.authService.CreateProviderAccount(identity.Email, identity.DisplayName, tx.txBuf)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate unique") {
+			return nil, providerError("link_required", "sign in to your existing account and explicitly link this provider", 409)
+		}
+		return nil, providerError("account_creation_failed", "account could not be created", 400, err)
+	}
+	tx.addInserted(s.db.Table(s.db.db.GetAuthTable().GetDef().Name), principalID)
+	linked, err := tx.insert(identities, map[string]any{
+		"principal_id": principalID, "provider": identity.Provider, "issuer": identity.Issuer, "subject": identity.Subject,
+		"display_name": identity.DisplayName, "avatar_url": identity.AvatarURL, "profile_handle": identity.ProfileHandle, "profile_url": identity.ProfileURL,
+		"email": identity.Email, "email_verified": identity.EmailVerified, "linked_at": now, "last_authenticated_at": now,
+	})
+	if err != nil {
+		return nil, providerError("provider_flow_failed", "provider signup failed", 500, err)
+	}
+	if err := tx.update(s.db.Table(systemAuthProviderFlowTableName), toString(flow["id"]), map[string]any{"phase": providerFlowPhaseConsumed, "completion_consumed_at": now}); err != nil {
+		return nil, providerError("provider_flow_failed", "provider signup failed", 500, err)
+	}
+	grant, err := s.materializeGrant(tx, flow, linked)
+	if err != nil {
+		return nil, providerError("provider_grant_failed", "provider grant could not be saved", 500, err)
+	}
+	token, refreshToken, auth, sessionID, err := s.db.authService.CreateProviderSession(principalID, toString(linked["id"]), tx.txBuf)
+	if err != nil {
+		return nil, providerError("provider_flow_failed", "provider signup failed", 500, err)
+	}
+	tx.addInserted(s.db.Table(systemAuthSessionTableName), sessionID)
+	if err := tx.commit(); err != nil {
+		return nil, providerError("provider_flow_failed", "provider signup failed", 500, err)
+	}
+	view := providerIdentityViewFromRow(linked)
+	return &providerCompleteResult{Token: token, RefreshToken: refreshToken, Auth: auth, Identity: &view, Grant: grant}, nil
 }
 
 func (s *providerAuthService) completeSignIn(flow map[string]any, identity AuthProviderIdentity, now int64) (*providerCompleteResult, error) {

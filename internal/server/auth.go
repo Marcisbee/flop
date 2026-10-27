@@ -1004,6 +1004,42 @@ func (as *AuthService) createUserSession(user map[string]interface{}, reason, au
 	}, nil
 }
 
+// CreateProviderAccount inserts a passwordless account into the caller's transaction.
+// Email must already have been verified by the provider. Unique constraints reject
+// collisions; this method never selects an existing account by email.
+func (as *AuthService) CreateProviderAccount(email, name string, txBuf map[string]*engine.WalBufEntry) (string, error) {
+	if as == nil || as.authTable == nil {
+		return "", fmt.Errorf("account creation unavailable")
+	}
+	data := map[string]interface{}{"email": email, "password": "!provider"}
+	for _, field := range []string{"name", "display_name"} {
+		if as.authFieldExists(field) && strings.TrimSpace(name) != "" {
+			data[field] = name
+		}
+	}
+	role := "user"
+	if value, ok := as.authFieldDefaultString("default_role"); ok && strings.TrimSpace(value) != "" {
+		role = strings.TrimSpace(value)
+	}
+	if strings.EqualFold(role, "unverified") {
+		role = "user"
+	}
+	if as.authFieldExists("default_role") {
+		data["default_role"] = role
+	}
+	if as.authFieldExists("roles") {
+		data["roles"] = []interface{}{role}
+	}
+	if as.authFieldExists("verified") {
+		data["verified"] = true
+	}
+	row, err := as.authTable.Insert(data, txBuf)
+	if err != nil {
+		return "", err
+	}
+	return as.getPK(row), nil
+}
+
 // CreateProviderSession validates an existing Flop user and appends a standard
 // provider-authenticated session to txBuf. The caller commits the coordinated
 // transaction before returning the generated tokens to the client.
@@ -1011,7 +1047,7 @@ func (as *AuthService) CreateProviderSession(principalID, identityID string, txB
 	if as == nil || as.authTable == nil || strings.TrimSpace(principalID) == "" || strings.TrimSpace(identityID) == "" {
 		return "", "", nil, "", fmt.Errorf("provider session unavailable")
 	}
-	user, err := as.authTable.Get(principalID)
+	user, err := as.authTable.GetInTransaction(principalID, txBuf)
 	if err != nil || user == nil {
 		return "", "", nil, "", fmt.Errorf("user not found")
 	}
