@@ -1329,3 +1329,105 @@ func assertProviderErrorCode(t *testing.T, err error, code string) {
 		t.Fatalf("provider error=%v, want code %q", err, code)
 	}
 }
+
+func TestProviderSignUpCreatesAccountAndSession(t *testing.T) {
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{"signup": {Provider: "fake", Issuer: "https://issuer.example", Subject: "new", Email: "new@example.com", EmailVerified: true, DisplayName: "New User"}}}
+	_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
+	state, _ := startProviderFlow(t, handler, "fake", "sign_up", "", "")
+	code := callbackProviderFlow(t, handler, "fake", state, "signup")
+	rec := completeProviderFlow(t, handler, code, "", false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signup: %d %s", rec.Code, rec.Body.String())
+	}
+	out := decodeProviderResponse(t, rec)
+	token := toString(out["token"])
+	claims := decodeJWTClaims(t, token)
+	id := toString(claims["sub"])
+	if id == "" || toString(out["refreshToken"]) == "" {
+		t.Fatal("missing session tokens")
+	}
+	if _, err := db.authService.ValidateAccessToken(token); err != nil {
+		t.Fatalf("invalid session: %v", err)
+	}
+	if db.authService.HasUsablePassword(id) {
+		t.Fatal("signup created usable password")
+	}
+	if db.Table(systemAuthIdentityTableName).Count() != 1 || db.db.GetAuthTable().Count() != 1 {
+		t.Fatal("signup did not create account and identity")
+	}
+	if replay := completeProviderFlow(t, handler, code, "", false); replay.Code != http.StatusGone {
+		t.Fatalf("replay: %d", replay.Code)
+	}
+	state, _ = startProviderFlow(t, handler, "fake", "sign_in", "", "")
+	code = callbackProviderFlow(t, handler, "fake", state, "signup")
+	rec = completeProviderFlow(t, handler, code, "", false)
+	if rec.Code != http.StatusOK || toString(decodeJWTClaims(t, toString(decodeProviderResponse(t, rec)["token"]))["sub"]) != id {
+		t.Fatal("subsequent sign-in failed")
+	}
+}
+
+func TestProviderSignUpRejectsUnsafeAccountCreation(t *testing.T) {
+	for _, tc := range []struct {
+		name, email, subject, want string
+		verified, existing, linked bool
+	}{
+		{name: "unverified", email: "new@example.com", subject: "new", want: "verified_email_required"},
+		{name: "missing email", subject: "new", verified: true, want: "verified_email_required"},
+		{name: "email collision", email: "existing@example.com", subject: "new", verified: true, existing: true, want: "link_required"},
+		{name: "linked identity", email: "different@example.com", subject: "existing", verified: true, existing: true, linked: true, want: "identity_already_linked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{"signup": {Provider: "fake", Issuer: "https://issuer.example", Subject: tc.subject, Email: tc.email, EmailVerified: tc.verified}}}
+			_, db, handler := providerTestApp(t, map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")})
+			if tc.existing {
+				token, _ := registerProviderTestUser(t, handler, "existing@example.com")
+				if tc.linked {
+					state, _ := startProviderFlow(t, handler, "fake", "link", token, "")
+					code := callbackProviderFlow(t, handler, "fake", state, "signup")
+					if rec := completeProviderFlow(t, handler, code, token, true); rec.Code != http.StatusOK {
+						t.Fatal(rec.Body.String())
+					}
+				}
+			}
+			accounts, identities, sessions := db.db.GetAuthTable().Count(), db.Table(systemAuthIdentityTableName).Count(), db.Table(systemAuthSessionTableName).Count()
+			state, _ := startProviderFlow(t, handler, "fake", "sign_up", "", "")
+			code := callbackProviderFlow(t, handler, "fake", state, "signup")
+			rec := completeProviderFlow(t, handler, code, "", false)
+			if rec.Code < 400 || decodeProviderResponse(t, rec)["code"] != tc.want {
+				t.Fatalf("signup: %d %s", rec.Code, rec.Body.String())
+			}
+			if accounts != db.db.GetAuthTable().Count() || identities != db.Table(systemAuthIdentityTableName).Count() || sessions != db.Table(systemAuthSessionTableName).Count() {
+				t.Fatal("rejected signup mutated accounts, identities, or sessions")
+			}
+		})
+	}
+}
+
+func TestProviderSignUpRollsBackWhenAccountCannotAuthenticate(t *testing.T) {
+	adapter := &fakeAuthProvider{identities: map[string]AuthProviderIdentity{"signup": {Provider: "fake", Issuer: "https://issuer.example", Subject: "new", Email: "new@example.com", EmailVerified: true}}}
+	app := New(Config{DataDir: t.TempDir(), SyncMode: "normal", AuthProviders: map[string]AuthProviderConfig{"fake": fakeProviderConfig(adapter, "fake", "https://issuer.example")}})
+	Define(app, "users", func(s *SchemaBuilder) {
+		s.String("id").Primary("uuidv7")
+		s.String("email").Required().Unique().Email()
+		s.Bcrypt("password", 4).Required()
+		s.Roles("roles")
+		s.Boolean("disabled").Default(true)
+	})
+	db, err := app.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler := app.APIHandler(db)
+	state, _ := startProviderFlow(t, handler, "fake", "sign_up", "", "")
+	code := callbackProviderFlow(t, handler, "fake", state, "signup")
+	for i := 0; i < 2; i++ {
+		rec := completeProviderFlow(t, handler, code, "", false)
+		if rec.Code != http.StatusInternalServerError || decodeProviderResponse(t, rec)["code"] != "provider_flow_failed" {
+			t.Fatalf("signup: %d %s", rec.Code, rec.Body.String())
+		}
+		if db.db.GetAuthTable().Count() != 0 || db.Table(systemAuthIdentityTableName).Count() != 0 || db.Table(systemAuthSessionTableName).Count() != 0 {
+			t.Fatal("failed session left partial signup")
+		}
+	}
+}

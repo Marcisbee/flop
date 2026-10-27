@@ -189,13 +189,15 @@ func TestGoogleLiveScopeAliasesCompleteAndPersistWithoutTokenExposure(t *testing
 	}
 	defer db.Close()
 	handler := app.APIHandler(db)
-	token, _ := registerProviderTestUser(t, handler, "google-link@example.com")
-
-	state, _ := startProviderFlow(t, handler, "google", "link", token, "")
+	state, _ := startProviderFlow(t, handler, "google", "sign_up", "", "")
 	completion := callbackProviderFlow(t, handler, "google", state, "valid")
-	completed := completeProviderFlow(t, handler, completion, token, true)
+	completed := completeProviderFlow(t, handler, completion, "", false)
 	if completed.Code != http.StatusOK {
 		t.Fatalf("Google completion status=%d body=%s", completed.Code, completed.Body.String())
+	}
+	token := toString(decodeProviderResponse(t, completed)["token"])
+	if _, err := db.authService.ValidateAccessToken(token); err != nil {
+		t.Fatalf("Google signup session: %v", err)
 	}
 	for _, secret := range []string{accessSecret, refreshSecret} {
 		if strings.Contains(completed.Body.String(), secret) {
