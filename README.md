@@ -127,6 +127,39 @@ make -C examples/twitter-go-react dev
 - Some React demos ship checked-in browser assets so they can run without a root TypeScript runtime.
 - Generated admin HTML under `internal/server/` is refreshed via `go generate`.
 
+## Embedded application sessions
+
+Trusted Go backends with their own sign-in flow can use Flop's session lifecycle
+for an existing account in the configured auth table:
+
+```go
+// Authenticate the account first using your application's sign-in flow.
+access, refresh, err := db.CreateSession(accountID)
+// Handle err before returning or persisting either token.
+
+// Renew with the refresh token, then persist both replacements together.
+access, refresh, err = db.RefreshSession(refresh)
+
+// At logout, use the current access token's validated identity.
+auth, err := db.ValidateAccessToken(access)
+if err == nil {
+    err = db.RevokeSession(auth.ID, auth.SessionID)
+}
+```
+
+`CreateSession` trusts the caller's authentication decision; never expose it as
+an endpoint that accepts an unverified account ID. It loads the current account,
+uses Flop's account validation and role normalization, and issues standard user
+access and refresh tokens. It does not create an account or link a provider.
+
+Refresh tokens are single-use. Refresh rotates the session and invalidates its
+previous access and refresh tokens. Use the replacement session ID for logout.
+Revocation checks account ownership, accepts repeated revocation, and leaves
+other sessions alone. A trusted backend can retain the validated account and
+session IDs to revoke after access-token expiry. No private session-table access
+is needed. These methods return errors when user authentication is unconfigured;
+superadmin sessions are outside this API.
+
 ## Security upgrade notes
 
 Build with Go 1.26.10 or a newer patched release. Applications embedding Flop
