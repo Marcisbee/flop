@@ -1068,6 +1068,37 @@ func (as *AuthService) CreateProviderAccount(email, name string, fields map[stri
 	return as.getPK(row), nil
 }
 
+// CreateSession issues a standard session after the embedding backend has
+// authenticated an existing account.
+func (as *AuthService) CreateSession(principalID string) (string, string, error) {
+	if strings.TrimSpace(principalID) == "" {
+		return "", "", fmt.Errorf("user not found")
+	}
+	user, err := as.authTable.Get(principalID)
+	if err != nil || user == nil {
+		return "", "", fmt.Errorf("user not found")
+	}
+	token, refresh, _, err := as.createUserSession(user, "embedded_login", "embedded", "", nil)
+	return token, refresh, err
+}
+
+// RevokeSession checks user ownership before using the standard revocation path.
+func (as *AuthService) RevokeSession(principalID, sessionID string) error {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	if as.sessionTable == nil || principalID == "" || sessionID == "" {
+		return fmt.Errorf("invalid session")
+	}
+	row, err := as.sessionTable.Get(sessionID)
+	if err != nil || row == nil {
+		return fmt.Errorf("session not found")
+	}
+	if toString(row["principal_type"]) != principalTypeUser || toString(row["principal_id"]) != principalID || toString(row["instance_id"]) != as.instanceID {
+		return fmt.Errorf("invalid session")
+	}
+	return as.revokeSession(sessionID, "logout")
+}
+
 // CreateProviderSession validates an existing Flop user and appends a standard
 // provider-authenticated session to txBuf. The caller commits the coordinated
 // transaction before returning the generated tokens to the client.
