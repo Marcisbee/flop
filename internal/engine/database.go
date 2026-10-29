@@ -1354,24 +1354,14 @@ func (ti *TableInstance) primaryIndexHealthy() (bool, error) {
 		return false, nil
 	}
 	pkField := ti.primaryKeyField()
-	healthy := true
 	var validationErr error
-	ti.primaryIndex.Range(func(key string, pointer schema.RowPointer) bool {
-		resolved, ok := ti.primaryIndex.Get(key)
-		if !ok || resolved != pointer {
-			healthy = false
-			return false
-		}
+	healthy := ti.primaryIndex.Validate(func(key string, pointer schema.RowPointer) bool {
 		row, err := ti.GetByPointer(pointer)
 		if err != nil {
 			validationErr = err
 			return false
 		}
-		if row == nil || toString(row[pkField]) != key {
-			healthy = false
-			return false
-		}
-		return true
+		return row != nil && toString(row[pkField]) == key
 	})
 	if validationErr != nil {
 		return false, validationErr

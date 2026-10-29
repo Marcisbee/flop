@@ -43,6 +43,10 @@ func NewHashIndexWithCapacity(capacity int) *HashIndex {
 func (h *HashIndex) Get(key string) (schema.RowPointer, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	return h.getLocked(key)
+}
+
+func (h *HashIndex) getLocked(key string) (schema.RowPointer, bool) {
 	if h.mapped != nil {
 		if p, ok := h.data[key]; ok {
 			return p, true
@@ -178,6 +182,26 @@ func (h *HashIndex) ResetWithCapacity(capacity int) {
 func (h *HashIndex) Range(fn func(string, schema.RowPointer) bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	h.rangeLocked(fn)
+}
+
+// Validate checks that every enumerated entry resolves through lookup and
+// satisfies valid. Keep both index operations under one read lock: acquiring
+// another read lock from Range can deadlock when a writer is waiting.
+// Like Range, valid must not call back into this index.
+func (h *HashIndex) Validate(valid func(string, schema.RowPointer) bool) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	healthy := true
+	h.rangeLocked(func(key string, pointer schema.RowPointer) bool {
+		resolved, ok := h.getLocked(key)
+		healthy = ok && resolved == pointer && valid(key, pointer)
+		return healthy
+	})
+	return healthy
+}
+
+func (h *HashIndex) rangeLocked(fn func(string, schema.RowPointer) bool) {
 	if h.mapped != nil {
 		seen := make(map[string]struct{}, len(h.data))
 		for k, v := range h.data {
