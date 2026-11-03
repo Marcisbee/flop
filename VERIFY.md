@@ -36,6 +36,14 @@ Deno is optional for the HTTP comparison harness in `benchmarks/compare` and
 source changes may need that demo's frontend toolchain. Consult the affected
 demo's configuration rather than installing a root JavaScript runtime.
 
+## Admin frontend
+
+The admin UI source is in `shared/admin/src`. Before `go generate` after a UI
+change, run `npm ci` and `npm run build` from `shared/admin` with Node.js 22 or
+newer. Commit the source, lockfile, built HTML, and embedded copies together.
+See `shared/admin/README.md` for the source map. Go consumers use the committed
+assets and do not need Node.js.
+
 ## Choose the closest check
 
 | Changed behavior | Baseline and iteration seam |

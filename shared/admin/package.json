@@ -1,0 +1,20 @@
+{
+  "name": "flop-admin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@cloudflare/kumo": "2.15.0",
+    "@phosphor-icons/react": "2.1.10",
+    "echarts": "6.0.0",
+    "htm": "3.1.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "prettier": "3.6.2"
+  }
+}
