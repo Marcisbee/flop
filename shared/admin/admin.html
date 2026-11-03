@@ -4,272 +4,106 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin</title>
 <style>
-:root {
-  --accent: #0078d4;
-  --accent-hover: #006cbd;
-  --error: #f48771;
-
-  /* Dark theme (default) */
-  --bg: #1e1e1e;
-  --bg-surface: #252526;
-  --bg-hover: #2a2d2e;
-  --bg-active: #37373d;
-  --bg-input: #3c3c3c;
-  --border: #3c3c3c;
-  --border-input: #4a4a4a;
-  --text: #cccccc;
-  --text-heading: #ffffff;
-  --text-muted: #999999;
-  --text-faint: #888888;
-  --text-dimmed: #666666;
-  --text-ghost: #555555;
-  --row-border: #2a2a2a;
-  --danger: #cc6666;
-  --danger-hover-bg: #2d1f1f;
-  --danger-hover-text: #f48771;
-  --scrollbar-thumb: #424242;
-  --scrollbar-thumb-hover: #4a4a4a;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --accent: #0078d4;
-    --accent-hover: #106ebe;
-    --error: #d32f2f;
-
-    --bg: #f3f3f3;
-    --bg-surface: #ffffff;
-    --bg-hover: #e8e8e8;
-    --bg-active: #d6ebff;
-    --bg-input: #ffffff;
-    --border: #e0e0e0;
-    --border-input: #cecece;
-    --text: #333333;
-    --text-heading: #1e1e1e;
-    --text-muted: #666666;
-    --text-faint: #888888;
-    --text-dimmed: #999999;
-    --text-ghost: #aaaaaa;
-    --row-border: #f0f0f0;
-    --danger: #d32f2f;
-    --danger-hover-bg: #fdecea;
-    --danger-hover-text: #c62828;
-    --scrollbar-thumb: #c1c1c1;
-    --scrollbar-thumb-hover: #a8a8a8;
-  }
-}
-
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px;overflow:hidden}
-#app{display:flex;height:100vh;width:100vw}
-
-/* Sidebar */
-.sidebar{width:240px;background:var(--bg-surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;user-select:none}
-.sidebar-header{padding:12px 16px;display:flex;align-items:center;border-bottom:1px solid var(--border)}
-.logo-sm{display:flex;align-items:center;gap:8px;color:var(--text);font-size:15px;font-weight:600}
-.logo-sm svg{color:var(--accent)}
-.sidebar-section-label{padding:8px 16px 4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-faint)}
-.sidebar-tables{flex:1;overflow-y:auto;padding:4px 8px}
-.sidebar-item{display:flex;align-items:center;width:100%;padding:5px 8px;background:none;border:none;border-radius:4px;color:var(--text);font-size:13px;cursor:pointer;gap:6px;text-align:left}
-.sidebar-item:hover{background:var(--bg-hover)}
-.sidebar-item.active{background:var(--bg-active);color:var(--text-heading)}
-.sidebar-item-icon{color:var(--text-faint);display:flex;flex-shrink:0}
-.sidebar-item.active .sidebar-item-icon{color:var(--text)}
-.sidebar-item-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sidebar-item-count{color:var(--text-dimmed);font-size:11px;font-variant-numeric:tabular-nums}
-.sidebar-item.active .sidebar-item-count{color:var(--text-muted)}
-.sidebar-footer{border-top:1px solid var(--border);padding:8px;display:flex;flex-direction:column;gap:2px}
-.sidebar-action{display:flex;align-items:center;gap:6px;padding:5px 8px;background:none;border:none;border-radius:4px;color:var(--text-muted);font-size:12px;cursor:pointer;text-align:left}
-.sidebar-action:hover{background:var(--bg-hover);color:var(--text)}
-.sidebar-action.danger{color:var(--danger)}
-.sidebar-action.danger:hover{background:var(--danger-hover-bg);color:var(--danger-hover-text)}
-
-/* Main content */
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
-
-/* Empty state */
-.empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--text-dimmed)}
-.empty-icon{opacity:0.3}
-.empty-icon svg{width:48px;height:48px}
-.empty-title{font-size:16px;color:var(--text-faint)}
-.empty-desc{font-size:13px;color:var(--text-dimmed)}
-
-/* Panel (table view) */
-.panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
-.panel-toolbar{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0}
-.panel-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--text-heading)}
-.panel-title-icon{color:var(--text-faint);display:flex}
-.panel-meta{color:var(--text-dimmed);font-size:12px;font-weight:400}
-.materialized-badge{display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;background:rgba(59,130,246,0.12);color:#60a5fa;font-size:10px;font-weight:700;letter-spacing:0.03em;text-transform:uppercase}
-.materialized-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid rgba(59,130,246,0.25);border-radius:8px;background:rgba(59,130,246,0.08);color:var(--text)}
-.materialized-banner.error{border-color:rgba(239,68,68,0.25);background:rgba(239,68,68,0.08)}
-.panel-actions{display:flex;align-items:center;gap:8px}
-
-/* Search */
-.search-box{display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;padding:0 8px}
-.search-box:focus-within{border-color:var(--accent)}
-.search-box svg{color:var(--text-faint);flex-shrink:0}
-.search-box input{background:none;border:none;color:var(--text);font-size:13px;padding:5px 0;outline:none;width:220px}
-.filter-help{color:var(--text-ghost);cursor:help;font-size:11px;user-select:none;flex-shrink:0}
-.btn-filter{background:var(--accent);border:none;border-radius:3px;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;flex-shrink:0}
-.btn-filter:hover{background:var(--accent-hover)}
-
-/* Buttons */
-.btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:12px;cursor:pointer;white-space:nowrap}
-.btn:hover{background:var(--bg-hover)}
-.btn-primary{background:var(--accent);border-color:var(--accent);color:#ffffff}
-.btn-primary:hover{background:var(--accent-hover)}
-.btn-icon{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;background:none;border:1px solid transparent;border-radius:4px;color:var(--text-faint);cursor:pointer;padding:0}
-.btn-icon:hover{background:var(--bg-hover);color:var(--text)}
-.btn-icon.danger:hover{background:var(--danger-hover-bg);color:var(--danger-hover-text)}
-.btn-icon:disabled{opacity:0.3;cursor:default;background:none}
-
-/* Table */
-.table-layout{display:flex;flex:1;min-height:0;overflow:hidden}
-.table-container{flex:1;overflow:auto;min-width:0}
-table{width:100%;border-collapse:collapse}
-thead{position:sticky;top:0;z-index:1}
-th{text-align:left;padding:6px 12px;background:var(--bg-surface);border-bottom:1px solid var(--border);font-weight:500;white-space:nowrap}
-.th-name{color:var(--text)}
-.th-type{color:var(--text-ghost);font-weight:400;font-size:11px;margin-left:4px}
-.th-actions{width:40px}
-td{padding:5px 12px;border-bottom:1px solid var(--row-border);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
-tbody tr{cursor:pointer}
-tbody tr:hover{background:var(--bg-hover)}
-tbody tr.selected{background:var(--bg-active)}
-.td-readonly{color:var(--text-faint)}
-.td-actions{text-align:center}
-.null{color:var(--text-ghost);font-style:italic}
-.empty-row{color:var(--text-dimmed);text-align:center;padding:32px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:13px}
-
-/* Row editor */
-.row-editor{width:360px;max-width:48vw;border-left:1px solid var(--border);background:var(--bg-surface);display:flex;flex-direction:column}
-.row-editor-header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px}
-.row-editor-title{font-size:13px;font-weight:600;color:var(--text-heading)}
-.row-editor-meta{font-size:11px;color:var(--text-muted)}
-.row-editor-body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
-.row-editor-field label{display:block;font-size:11px;color:var(--text-muted);margin-bottom:4px}
-.row-editor-field input,.row-editor-field select,.row-editor-field textarea{width:100%;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:3px;color:var(--text);font-size:12px;outline:none}
-.row-editor-field input:focus,.row-editor-field select:focus,.row-editor-field textarea:focus{border-color:var(--accent)}
-.row-editor-field textarea{min-height:80px;resize:vertical;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace}
-.row-editor-readonly{padding:6px 8px;border:1px solid var(--border-input);border-radius:3px;background:var(--bg);color:var(--text-faint);min-height:30px}
-.row-editor-actions{padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
-
-/* Pagination */
-.pagination{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 16px;background:var(--bg-surface);border-top:1px solid var(--border);flex-shrink:0}
-.page-info{color:var(--text-faint);font-size:12px}
-
-/* Create form */
-.create-panel{background:var(--bg-surface);border-bottom:1px solid var(--border);padding:12px 16px}
-.create-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:13px;font-weight:500;color:var(--text-heading)}
-.create-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:10px}
-.form-field label{display:block;font-size:11px;color:var(--text-muted);margin-bottom:4px}
-.type-badge{color:var(--text-dimmed);font-size:10px}
-.form-field input,.form-field select{width:100%;padding:5px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:3px;color:var(--text);font-size:13px;outline:none}
-.form-field input:focus,.form-field select:focus{border-color:var(--accent)}
-.create-actions{display:flex;align-items:center;gap:8px}
-.create-error{color:var(--error);font-size:12px}
-
 /* Analytics */
 .analytics-panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
-.analytics-toolbar{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--bg-surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0}
+.analytics-toolbar{display:flex;align-items:center;justify-content:space-between;padding:20px 24px;background:var(--bg-surface);border-bottom:1px solid var(--border);gap:12px;flex-shrink:0}
 .analytics-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--text-heading)}
 .analytics-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.analytics-select{padding:5px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:12px}
-.analytics-body{flex:1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
+.analytics-select{padding:5px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;color:var(--text);font-size:14px}
+.analytics-body{flex:1;overflow:auto;padding:24px;display:flex;flex-direction:column;gap:20px}
 .analytics-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
-.analytics-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;padding:10px}
-.analytics-card-label{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.6px}
+.analytics-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:10px}
+.analytics-card-label{color:var(--text-muted);font-size:14px;text-transform:uppercase;letter-spacing:0.6px}
 .analytics-card-value{margin-top:4px;color:var(--text-heading);font-size:18px;font-variant-numeric:tabular-nums}
-.analytics-chart-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;padding:10px}
-.analytics-chart-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:var(--text-muted);font-size:12px}
+.analytics-chart-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:10px}
+.analytics-chart-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:var(--text-muted);font-size:14px}
 .analytics-chart-box{position:relative}
 .analytics-chart{width:100%;height:156px;display:block}
-.analytics-legend{display:flex;gap:14px;color:var(--text-muted);font-size:11px;margin-top:6px}
+.analytics-legend{display:flex;gap:14px;color:var(--text-muted);font-size:14px;margin-top:6px}
 .legend-item{display:flex;align-items:center;gap:6px}
 .legend-line{width:14px;height:2px;border-radius:1px}
-.analytics-tooltip{position:absolute;z-index:5;min-width:180px;max-width:260px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:6px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);pointer-events:none}
-.tooltip-time{color:var(--text-heading);font-size:11px;margin-bottom:6px}
-.tooltip-row{display:flex;justify-content:space-between;gap:8px;color:var(--text-muted);font-size:11px}
+.analytics-tooltip{position:absolute;z-index:5;min-width:180px;max-width:260px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:10px;padding:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);pointer-events:none}
+.tooltip-time{color:var(--text-heading);font-size:14px;margin-bottom:6px}
+.tooltip-row{display:flex;justify-content:space-between;gap:8px;color:var(--text-muted);font-size:14px}
 .analytics-route-list{display:flex;flex-wrap:wrap;gap:6px}
-.analytics-route-chip{font-size:11px;padding:2px 6px;border:1px solid var(--border-input);border-radius:999px;background:var(--bg-input);color:var(--text-muted);cursor:pointer}
+.analytics-route-chip{font-size:14px;padding:2px 6px;border:1px solid var(--border-input);border-radius:999px;background:var(--bg-input);color:var(--text-muted);cursor:pointer}
 .analytics-route-chip.active{border-color:var(--accent);color:var(--text-heading)}
-.analytics-logs{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.analytics-logs{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .analytics-empty{padding:24px;color:var(--text-muted);text-align:center}
 .log-row{cursor:pointer}
 .log-row:hover{background:var(--bg-hover)}
 .analytics-layout{display:flex;gap:12px;min-height:0}
 .analytics-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px}
-.analytics-detail{width:320px;max-width:38vw;background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;max-height:min(72vh,780px)}
+.analytics-detail{width:320px;max-width:38vw;background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;max-height:min(72vh,780px)}
 .analytics-detail-header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px}
-.analytics-detail-title{font-size:13px;font-weight:600;color:var(--text-heading)}
+.analytics-detail-title{font-size:14px;font-weight:600;color:var(--text-heading)}
 .analytics-detail-body{padding:10px 12px;overflow:auto;display:flex;flex-direction:column;gap:8px}
 .detail-row{display:grid;grid-template-columns:90px minmax(0,1fr);gap:8px;align-items:start}
-.detail-key{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px}
-.detail-val{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px;color:var(--text);word-break:break-word;white-space:pre-wrap}
-.detail-pre{margin:0;padding:8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;max-height:260px;overflow:auto}
-.slow-badge{display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;background:var(--danger-hover-bg);color:var(--danger-hover-text);font-size:10px;font-weight:600}
+.detail-key{font-size:14px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px}
+.detail-val{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:14px;color:var(--text);word-break:break-word;white-space:pre-wrap}
+.detail-pre{margin:0;padding:8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px;max-height:260px;overflow:auto}
+.slow-badge{display:inline-flex;align-items:center;padding:1px 6px;border-radius:999px;background:var(--danger-hover-bg);color:var(--danger-hover-text);font-size:14px;font-weight:600}
 .trace-list{display:flex;flex-direction:column;gap:6px}
-.trace-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px}
-.trace-name{font-size:11px;color:var(--text)}
-.trace-meta{font-size:10px;color:var(--text-faint)}
+.trace-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:8px}
+.trace-name{font-size:14px;color:var(--text)}
+.trace-meta{font-size:14px;color:var(--text-faint)}
 .trace-timeline{display:flex;flex-direction:column;gap:6px}
-.trace-axis{position:relative;height:18px;border:1px solid var(--border-input);border-radius:4px;background:linear-gradient(90deg, rgba(130,150,170,0.08) 0%, rgba(130,150,170,0.02) 100%)}
+.trace-axis{position:relative;height:18px;border:1px solid var(--border-input);border-radius:8px;background:linear-gradient(90deg, rgba(130,150,170,0.08) 0%, rgba(130,150,170,0.02) 100%)}
 .trace-axis-grid{position:absolute;top:0;bottom:0;width:1px;background:var(--border-input);opacity:0.55}
-.trace-axis-labels{display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);padding:0 1px}
+.trace-axis-labels{display:flex;justify-content:space-between;font-size:14px;color:var(--text-muted);padding:0 1px}
 .trace-bar-wrap{display:flex;flex-direction:column;gap:2px}
-.trace-bar-track{position:relative;height:16px;border:1px solid var(--border-input);border-radius:4px;background:rgba(127,127,127,0.06);overflow:hidden}
-.trace-bar{position:absolute;top:1px;bottom:1px;border-radius:3px;min-width:2px;background:linear-gradient(90deg, rgba(41,179,255,0.95), rgba(30,130,220,0.95))}
+.trace-bar-track{position:relative;height:16px;border:1px solid var(--border-input);border-radius:8px;background:rgba(127,127,127,0.06);overflow:hidden}
+.trace-bar{position:absolute;top:1px;bottom:1px;border-radius:8px;min-width:2px;background:linear-gradient(90deg, rgba(41,179,255,0.95), rgba(30,130,220,0.95))}
 .trace-row-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.trace-row-ms{font-size:10px;color:var(--text-muted)}
+.trace-row-ms{font-size:14px;color:var(--text-muted)}
 .observe-panel{display:flex;flex-direction:column;flex:1;overflow:hidden}
-.observe-body{flex:1;overflow:auto;padding:12px 16px;display:flex;flex-direction:column;gap:12px}
-.observe-table-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.observe-body{flex:1;overflow:auto;padding:24px;display:flex;flex-direction:column;gap:20px}
+.observe-table-wrap{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .panel-table-scroll{flex:1;min-height:0;max-height:min(52vh,560px);overflow:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
-.mono-sm{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px}
+.mono-sm{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:14px}
 
 /* Backups */
-.workflow-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:16px}
+.workflow-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:28px 32px;gap:16px}
 .workflow-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .workflow-title{font-size:24px;font-weight:600;color:var(--text-heading)}
 .workflow-subtitle{margin-top:4px;color:var(--text-muted);line-height:1.4}
 .workflow-tabs{display:flex;gap:4px;border-bottom:1px solid var(--border)}
 .workflow-tab{padding:8px 12px;border:none;border-bottom:2px solid transparent;background:none;color:var(--text-muted);cursor:pointer}
 .workflow-tab.active{border-bottom-color:var(--accent);color:var(--text-heading)}
-.workflow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.workflow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:12px}
 .workflow-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px}
 .workflow-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .workflow-name{font-size:15px;font-weight:600;color:var(--text-heading)}
-.workflow-meta{font-size:11px;color:var(--text-muted);margin-top:3px}
+.workflow-meta{font-size:14px;color:var(--text-muted);margin-top:3px}
 .workflow-badges{display:flex;flex-wrap:wrap;gap:5px}
-.workflow-badge{padding:2px 7px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-input);font-size:10px;color:var(--text-muted)}
+.workflow-badge{padding:2px 7px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-input);font-size:14px;color:var(--text-muted)}
 .workflow-badge.on{color:#42b983;border-color:rgba(66,185,131,.35)}
 .workflow-form{background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:12px}
 .workflow-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .workflow-form .row-editor-field textarea{min-height:96px}
 .workflow-checks{display:flex;flex-wrap:wrap;gap:14px}
 .workflow-check{display:flex;align-items:center;gap:6px;color:var(--text)}
-.workflow-warning{padding:10px 12px;border:1px solid rgba(244,135,113,.35);border-radius:6px;background:rgba(244,135,113,.08);color:var(--error)}
+.workflow-warning{padding:10px 12px;border:1px solid rgba(244,135,113,.35);border-radius:10px;background:rgba(244,135,113,.08);color:var(--error)}
 .workflow-run-detail{white-space:normal;line-height:1.4;min-width:220px;max-width:420px}
-.workflow-run-label{font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);margin-bottom:3px}
+.workflow-run-label{font-size:14px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-faint);margin-bottom:3px}
 .workflow-run-action-state{font-weight:600;color:var(--text-heading)}
 .workflow-run-effect{margin-top:5px;color:var(--text)}
 .workflow-run-reasoning{white-space:normal;line-height:1.45;min-width:220px;max-width:480px;color:var(--text)}
 .workflow-run-controls{display:flex;flex-wrap:wrap;gap:4px;min-width:110px}
 .workflow-run-source{white-space:normal;min-width:150px}
-.workflow-run-source-name{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;color:var(--text-heading);font-size:11px}
+.workflow-run-source-name{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;color:var(--text-heading);font-size:14px}
 .workflow-run-source-action{margin-top:6px}
 .workflow-source-backdrop{position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:24px}
 .workflow-source-dialog{width:min(720px,100%);max-height:min(760px,calc(100vh - 48px));background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);display:flex;flex-direction:column;overflow:hidden}
 .workflow-source-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border)}
 .workflow-source-body{padding:16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
-.workflow-source-content{margin:0;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:5px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.5;color:var(--text)}
-.status-pill{display:inline-flex;padding:2px 7px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-input);font-size:10px}
+.workflow-source-content{margin:0;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:5px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:14px;line-height:1.5;color:var(--text)}
+.status-pill{display:inline-flex;padding:2px 7px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-input);font-size:14px}
 .status-pill.completed{color:#42b983}
 .status-pill.error{color:var(--error)}
 .status-pill.awaiting_approval{color:#e5b567}
 
-.backups-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:18px}
+.backups-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:28px 32px;gap:18px}
 .backups-hero{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .backups-title{font-size:24px;font-weight:600;color:var(--text-heading)}
 .backups-actions{display:flex;align-items:center;gap:8px}
@@ -280,7 +114,7 @@ tbody tr.selected{background:var(--bg-active)}
 .backup-row-main{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
 .backup-row-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-heading)}
 .backup-row-size{color:var(--text-muted);white-space:nowrap}
-.backup-row-meta{font-size:11px;color:var(--text-faint)}
+.backup-row-meta{font-size:14px;color:var(--text-faint)}
 .backup-row-actions{display:flex;align-items:center;gap:4px}
 .backup-init{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 16px;border:none;background:none;color:var(--text-heading);font-size:15px;font-weight:600;cursor:pointer;width:100%}
 .backup-init:hover{background:var(--bg-hover)}
@@ -290,26 +124,26 @@ tbody tr.selected{background:var(--bg-active)}
 .backup-option-block{display:flex;flex-direction:column;gap:14px}
 .backup-option-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
 .backup-option-row.backup-option-row-3{grid-template-columns:2fr 1fr 1fr}
-.backup-label{display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;font-weight:600}
-.backup-help{font-size:12px;color:var(--text-muted);line-height:1.35}
-.backup-input,.backup-select{width:100%;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:6px;color:var(--text);font-size:14px;outline:none}
+.backup-label{display:block;font-size:14px;color:var(--text-muted);margin-bottom:6px;font-weight:600}
+.backup-help{font-size:14px;color:var(--text-muted);line-height:1.35}
+.backup-input,.backup-select{width:100%;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:10px;color:var(--text);font-size:14px;outline:none}
 .backup-input:focus,.backup-select:focus{border-color:var(--accent)}
 .backup-checkbox{display:flex;align-items:center;gap:8px;color:var(--text)}
 .backup-footer{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-height:36px}
-.backup-status-ok{display:inline-flex;align-items:center;gap:6px;color:#42b983;background:rgba(66,185,131,0.12);padding:6px 10px;border-radius:999px;font-size:12px}
-.backup-status-error{display:inline-flex;align-items:center;gap:6px;color:var(--error);background:rgba(244,135,113,0.12);padding:6px 10px;border-radius:999px;font-size:12px}
+.backup-status-ok{display:inline-flex;align-items:center;gap:6px;color:#42b983;background:rgba(66,185,131,0.12);padding:6px 10px;border-radius:999px;font-size:14px}
+.backup-status-error{display:inline-flex;align-items:center;gap:6px;color:var(--error);background:rgba(244,135,113,0.12);padding:6px 10px;border-radius:999px;font-size:14px}
 .backup-empty{padding:22px 16px;color:var(--text-muted);text-align:center}
 .toggle{position:relative;width:40px;height:22px;border-radius:999px;border:none;background:var(--border-input);cursor:pointer;transition:background .15s ease}
 .toggle.on{background:#39b980}
-.toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:999px;background:#fff;transition:left .15s ease}
-.toggle.on .toggle-knob{left:21px}
+.toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:999px;background:#fff;transition:transform .15s ease}
+.toggle.on .toggle-knob{transform:translateX(18px)}
 .toggle:disabled{opacity:0.5;cursor:default}
-.mail-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:18px 22px;gap:18px}
+.mail-page{display:flex;flex-direction:column;flex:1;overflow:auto;padding:28px 32px;gap:18px}
 .mail-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:18px}
 .mail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
 .mail-grid.mail-grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
 .mail-section{display:flex;flex-direction:column;gap:14px}
-.mail-textarea{width:100%;min-height:180px;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:6px;color:var(--text);font-size:13px;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;outline:none;resize:vertical}
+.mail-textarea{width:100%;min-height:180px;padding:12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:10px;color:var(--text);font-size:14px;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;outline:none;resize:vertical}
 .mail-textarea:focus{border-color:var(--accent)}
 .mail-template-card{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-elevated)}
 .mail-template-title{font-size:14px;font-weight:600;color:var(--text-heading)}
@@ -324,7 +158,7 @@ tbody tr.selected{background:var(--bg-active)}
 /* File fields */
 .file-display{display:inline-flex;align-items:center;gap:6px}
 .file-thumb{width:20px;height:20px;object-fit:cover;border-radius:2px;vertical-align:middle}
-.file-link{color:var(--accent);text-decoration:none;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:12px}
+.file-link{color:var(--accent);text-decoration:none;font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',monospace;font-size:14px}
 .file-link:hover{text-decoration:underline}
 .file-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
 .file-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel-2)}
@@ -333,36 +167,39 @@ tbody tr.selected{background:var(--bg-active)}
 .file-cell-editor{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;gap:4px;padding:2px 8px;background:var(--bg);outline:1px solid var(--accent);outline-offset:-1px;z-index:2}
 .file-upload-btn{cursor:pointer}
 .file-remove{color:var(--danger)}
-.btn-sm{padding:2px 6px;font-size:11px}
+.btn-sm{padding:2px 6px;font-size:14px}
 .file-input-wrap{display:flex;align-items:center;gap:8px}
-.file-input-name{color:var(--text);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
+.file-input-name{color:var(--text);font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
 
-@media (max-width: 980px) {
-  .table-layout{flex-direction:column}
-  .row-editor{width:100%;max-width:none;max-height:45vh;border-left:none;border-top:1px solid var(--border)}
-  .analytics-layout{flex-direction:column}
-  .analytics-detail{width:100%;max-width:none}
+
+/* Console foundation. One token set, one desktop layout, one compact layout. */
+:root{color-scheme:dark;--accent:#64d8a2;--accent-hover:#83e2b6;--bg:#141414;--bg-surface:#181818;--bg-elevated:#202020;--bg-input:#1b1b1b;--bg-hover:#252525;--bg-active:#20362b;--border:#303030;--border-input:#424242;--row-border:#2b2b2b;--text:#dedede;--text-heading:#f3f3f3;--text-muted:#a9a9a9;--text-faint:#a9a9a9;--text-dimmed:#a9a9a9;--text-ghost:#999;--danger:#ffa0a0;--error:#ffa0a0;--danger-hover-bg:#3c2222;--danger-hover-text:#ffb7b7;--scrollbar-thumb:#444;--scrollbar-thumb-hover:#666;--panel-2:var(--bg-elevated);--shadow:0 16px 48px #0005;--page-gutter:24px}
+*{box-sizing:border-box;margin:0;padding:0}body{font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}button,input,select,textarea{font:inherit}button,a,input,select,textarea{touch-action:manipulation}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}a{color:inherit;text-decoration:none}small{font-size:14px}h1,h2,h3{color:var(--text-heading)}h1{font-size:22px;font-weight:600;letter-spacing:-.5px}h2{font-size:17px;font-weight:600;letter-spacing:-.2px}svg.icon-tabler{display:block;flex:0 0 auto;width:18px;height:18px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:active:not(:disabled){transform:translateY(1px)}input::placeholder,textarea::placeholder{color:var(--text-faint);opacity:1}input:not([type=checkbox]):not([type=file]),select,textarea{font-size:16px;min-height:38px}input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}.btn,.btn-icon,.btn-filter{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;line-height:20px;border-radius:5px;font-size:14px;flex-shrink:0}.btn{padding:7px 12px;font-weight:500;border:1px solid var(--border-input);background:var(--bg-input);color:var(--text);white-space:nowrap}.btn:hover{background:var(--bg-hover)}.btn-primary,.row-editor-field label.btn-primary{background:#52c18c;border-color:#52c18c;color:#0c2618}.btn-primary:hover{background:#6cd29f;border-color:#6cd29f;color:#0c2618}.btn-icon{width:36px;height:36px;padding:0;background:none;border:1px solid transparent;color:var(--text-muted)}.btn-icon:hover,.btn-icon.active{background:var(--bg-hover);color:var(--text-heading)}.btn-icon.danger:hover{color:var(--danger);background:var(--danger-hover-bg)}.btn-filter{width:32px;height:32px;min-height:32px;padding:0;background:none;border:0;color:var(--text-muted)}.btn-filter:hover{background:var(--bg-hover)}.btn-sm{min-height:32px;padding:5px 8px}
+#app{height:100dvh;display:grid;grid-template-columns:264px minmax(0,1fr);grid-template-rows:48px minmax(0,1fr);overflow:hidden}.console-bar{grid-column:1/-1;display:flex;align-items:center;gap:16px;padding:0 16px;border-bottom:1px solid var(--border);background:#171717;min-width:0}.console-brand{display:flex;align-items:center;gap:16px;color:var(--text-heading);font-size:21px;font-weight:650;letter-spacing:-1px}.console-brand span{font-size:14px;font-weight:400;letter-spacing:0;color:var(--text-muted)}.console-divider{color:#626262}.console-context{color:var(--text)}.console-session{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--text-muted)}.console-navigation{grid-column:1;grid-row:2;display:grid;grid-template-columns:56px minmax(0,1fr);min-height:0;border-right:1px solid var(--border)}.tool-rail{display:flex;align-items:center;flex-direction:column;gap:8px;padding:12px 6px;border-right:1px solid var(--border);background:#161616}.tool-rail a{position:relative;width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:5px;color:var(--text-muted)}.tool-rail a>span{position:absolute;left:48px;top:6px;padding:5px 10px;border:1px solid var(--border);border-radius:5px;background:var(--bg-elevated);z-index:30;white-space:nowrap;visibility:hidden}.tool-rail a:hover>span,.tool-rail a:focus-visible>span{visibility:visible}.tool-rail a.active{background:var(--bg-active);color:var(--accent)}.context-navigation{min-width:0;min-height:0;display:flex;flex-direction:column;background:#191919}.context-heading{padding:18px 16px 12px;font-weight:600;color:var(--text-heading)}.context-pages{display:grid;gap:2px;padding:0 8px 16px;border-bottom:1px solid var(--border)}.context-pages a{display:flex;align-items:center;gap:8px;min-height:36px;padding:7px 8px;border-radius:5px;color:var(--text-muted)}.context-pages a.active,.context-pages a:hover{background:var(--bg-hover);color:var(--text-heading)}.collection-rail{display:flex;flex-direction:column;flex:1;min-height:0}.rail-section-heading{display:flex;align-items:center;justify-content:space-between;padding:8px 8px 4px 16px;color:var(--text-muted)}.rail-section-heading .btn-icon{width:30px;height:30px;min-height:30px}.sidebar-search{display:flex;gap:6px;align-items:center;margin:0 12px 8px;padding:0 6px;border:1px solid var(--border);border-radius:5px;color:var(--text-muted)}.sidebar-search svg{width:16px}.sidebar-search input{min-width:0;width:100%;background:none;border:0;color:var(--text);padding:6px 0}.rail-scroll{flex:1;min-height:0;overflow:auto;padding:0 8px}.collection-link{border:0;background:transparent;border-radius:4px;min-height:36px;width:100%;display:flex;align-items:center;gap:8px;padding:7px 8px;text-align:left;color:var(--text-muted);font-size:14px}.collection-link>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collection-link small{margin-left:auto;font-variant-numeric:tabular-nums}.collection-link.active,.collection-link:hover{background:var(--bg-hover);color:var(--text-heading)}.collection-link.active{box-shadow:inset 2px 0 var(--accent)}.rail-foot,.rail-caption{padding:12px 16px;color:var(--text-muted)}.rail-foot{border-top:1px solid var(--border)}.workspace-content{grid-column:2;grid-row:2;min-width:0;min-height:0;display:flex;overflow:hidden}.main{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}.mobile-menu,.mobile-search-toggle{display:none}.navigation-drawer{border:1px solid var(--border);background:var(--bg-surface);color:var(--text);width:min(360px,100vw);height:100dvh;max-height:100dvh;max-width:100vw;margin:0;padding:0;overflow:auto}.navigation-drawer::backdrop{background:#0009}.drawer-heading{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid var(--border)}.drawer-destinations{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:16px;border-bottom:1px solid var(--border)}.drawer-destinations a{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid var(--border);border-radius:5px}.drawer-destinations a.active{background:var(--bg-active);color:var(--accent);border-color:#3b6a50}.navigation-drawer .collection-rail{min-height:200px}.navigation-drawer .rail-scroll{flex:none;overflow:visible}.navigation-drawer .collection-link{min-height:44px}.navigation-drawer .context-pages a{min-height:44px}
+/* Database directory. No decorative cards: every row opens a collection. */
+.collection-library{padding:24px;overflow:auto;flex:1}.library-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}.library-heading p{color:var(--text-muted);margin-top:6px}.library-total{display:flex;gap:16px;color:var(--text-muted)}.library-toolbar{display:flex;gap:16px;align-items:center;justify-content:space-between;margin-bottom:16px}.segmented{display:flex;gap:4px}.segmented button{display:flex;align-items:center;gap:8px;background:none;border:1px solid transparent;padding:7px 10px;color:var(--text-muted);min-height:36px;border-radius:5px}.segmented button small{color:var(--text-muted)}.segmented button[aria-pressed=true]{border-color:var(--border);background:var(--bg-elevated);color:var(--text-heading)}.library-search,.search-box{display:flex;align-items:center;gap:8px;padding:0 8px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:5px;min-width:0;color:var(--text-muted)}.library-search{width:260px}.library-search input,.search-box input{width:100%;min-width:0;background:transparent;border:0;outline:none;color:var(--text);padding:7px 0}.library-search:focus-within,.search-box:focus-within{outline:1px solid var(--accent)}.collection-grid{border:1px solid var(--border);border-radius:6px;overflow:hidden}.collection-directory-head,.collection-card{display:grid;grid-template-columns:minmax(0,1fr) 90px 70px 110px 18px;gap:16px;align-items:center;padding:12px 16px}.collection-directory-head{background:var(--bg-elevated);color:var(--text-muted);border-bottom:1px solid var(--border)}.collection-card{background:none;border:0;border-bottom:1px solid var(--border);width:100%;text-align:left;color:var(--text);min-height:62px}.collection-card:last-child{border-bottom:0}.collection-card:hover{background:var(--bg-hover)}.collection-identity{display:flex;gap:12px;align-items:center;min-width:0}.collection-identity>div{min-width:0}.collection-identity svg{color:var(--text-muted)}.collection-card h2{font-size:14px;font-weight:550;margin:0 0 3px}.collection-card p{color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.collection-records small{display:none}.collection-fields,.collection-kind{color:var(--text-muted)}.state-message{padding:36px 20px;text-align:center;color:var(--text-muted)}.state-message .btn{margin-top:12px}
+/* Data canvas and inspector. */
+.panel{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;overflow:hidden}.panel-toolbar,.analytics-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 24px;border-bottom:1px solid var(--border);flex-wrap:wrap;background:var(--bg);flex-shrink:0}.panel-title,.analytics-title{display:flex;align-items:center;gap:10px;font-weight:600;font-size:22px;color:var(--text-heading);min-width:0}.panel-title h1{font-size:22px}.panel-title-icon,.eyebrow{display:none}.panel-meta{color:var(--text-muted);font-size:14px;font-weight:400}.panel-actions{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.data-toolbar{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,300px);padding:12px 20px;gap:20px}.data-heading{display:flex;align-items:center;gap:12px;min-width:0}.data-heading>.panel-title{flex:1}.collection-title-line{display:flex;align-items:baseline;gap:10px;min-width:0}.collection-title-line h1{font-size:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.record-search{flex-wrap:nowrap}.record-search .search-box{flex:1}.data-viewbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 20px;border-bottom:1px solid var(--border);color:var(--text-muted);flex-shrink:0;min-height:44px}.view-tabs{display:flex;gap:20px;min-width:0;overflow:auto}.view-tabs button{white-space:nowrap;padding:11px 0 9px;min-height:44px;border:0;border-bottom:2px solid transparent;border-radius:0;background:none;color:var(--text-muted);font-size:14px}.view-tabs button[aria-pressed=true]{border-bottom-color:var(--accent);color:var(--text-heading)}.active-filter{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 20px;background:var(--bg-active);border-bottom:1px solid var(--border);font-size:14px}.active-filter span{overflow-wrap:anywhere;min-width:0}.filter-guide{padding:12px 20px;background:var(--bg-elevated);border-bottom:1px solid var(--border);color:var(--text-muted)}.table-layout{display:flex;flex:1;min-height:0;min-width:0;overflow:hidden}.table-container{flex:1;min-width:0;overflow:auto}.table-scroll-hint{display:none}table{width:100%;border-collapse:collapse}thead{position:sticky;top:0;z-index:1}th{background:var(--bg-elevated);padding:10px 12px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;font-size:14px;font-weight:500}td{border-bottom:1px solid var(--row-border);padding:9px 12px;white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis;font:14px/20px 'SF Mono',Consolas,monospace}.th-type{display:block;color:var(--text-muted);font-size:14px;font-weight:400;margin-top:2px}.records-table td,.records-table th{border-right:1px solid var(--row-border)}.records-table tbody tr{cursor:pointer}.records-table tbody tr:hover{background:var(--bg-hover)}.records-table tr.selected{background:var(--bg-active)}.records-table:not(.record-list) th:first-child,.records-table:not(.record-list) td:first-child{position:sticky;left:0;background:var(--bg);z-index:1;max-width:280px}.records-table:not(.record-list) th:first-child{background:var(--bg-elevated);z-index:2}.records-table:not(.record-list) tr.selected td:first-child{background:var(--bg-active)}.td-readonly,.null{color:var(--text-muted)}.null{font-style:italic}.td-actions{white-space:nowrap;text-align:right;width:90px;padding:4px 8px}.td-actions .btn-icon{width:32px;height:32px;min-height:32px}.empty-row{padding:32px 16px;text-align:center;font-family:inherit;white-space:normal;color:var(--text-muted)}.record-list,.record-list tbody{display:block}.record-list thead{display:none}.record-list tbody tr{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr) 80px;gap:16px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--border);min-height:68px}.record-list td{display:none;padding:0;border:0;font-family:inherit;max-width:none;min-width:0}.record-list td.mobile-preview{display:block;color:var(--text-muted)}.record-list td.mobile-primary{font-weight:550;color:var(--text-heading)}.record-list td.td-actions{display:flex;grid-column:4;order:10;gap:4px;width:auto}.record-list td.empty-row{display:block;grid-column:1/-1}.pagination{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 20px;border-top:1px solid var(--border);flex-shrink:0;background:var(--bg)}.page-info{font-size:14px;color:var(--text-muted)}.page-controls{display:flex;gap:12px;align-items:center}.schema-view{overflow:auto;flex:1;padding:20px}.section-heading{margin-bottom:20px}.section-heading p{color:var(--text-muted);margin-top:6px}.schema-field{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;padding:14px 0;border-bottom:1px solid var(--border)}.schema-field span{color:var(--text-muted)}.presentation-schema{display:none}.panel:has(.presentation-schema)>.pagination{display:none}.row-editor{width:420px;max-width:48%;flex-shrink:0;min-height:0;background:var(--bg-surface);border-left:1px solid var(--border);display:flex;flex-direction:column;box-shadow:-12px 0 32px #0002}.row-editor-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0}.row-editor-title{font-size:18px;font-weight:600;color:var(--text-heading)}.row-editor-meta{color:var(--text-muted);margin-top:4px;overflow-wrap:anywhere}.row-editor-body{padding:20px;display:flex;flex-direction:column;gap:20px;min-height:0;overflow:auto;flex:1}.row-editor-field{min-width:0}.row-editor-field label:not(.btn){display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:4px 12px;font-size:14px;color:var(--text);margin-bottom:7px}.type-badge{font-size:14px;color:var(--text-muted);font-weight:400}.row-editor-field input,.row-editor-field select,.row-editor-field textarea,.backup-input,.backup-select,.mail-textarea{border:1px solid var(--border-input);border-radius:5px;background:var(--bg-input);color:var(--text);padding:8px 10px;width:100%;font-size:16px;line-height:22px;min-height:40px}.row-editor-field textarea{min-height:120px;resize:vertical}.row-editor-readonly{padding:8px 0;color:var(--text-muted);overflow-wrap:anywhere}.row-editor-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--border);flex-shrink:0;background:var(--bg-surface)}.create-error{color:var(--error);overflow-wrap:anywhere}.materialized-badge{font-size:14px;padding:2px 6px;background:var(--bg-active);color:var(--accent);border-radius:4px}.materialized-banner{margin:12px 20px;display:flex;gap:12px;justify-content:space-between;padding:12px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:5px}.materialized-banner.error{color:var(--error)}
+/* Operational pages share the same heading, tabs and section rhythm. */
+.analytics-panel,.observe-panel{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0}.analytics-body,.observe-body{padding:20px 24px;overflow:auto;flex:1;min-height:0;display:flex;flex-direction:column;gap:20px}.analytics-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.analytics-select{font-size:16px;background:var(--bg-input);border:1px solid var(--border-input);color:var(--text);padding:6px 8px;border-radius:5px}.analytics-layout{display:flex;gap:20px;min-height:0}.analytics-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:20px}.analytics-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));border:1px solid var(--border);border-radius:5px;overflow:hidden;gap:0}.analytics-card{padding:16px;background:transparent;border:0;border-right:1px solid var(--border);border-radius:0}.analytics-card:last-child{border-right:0}.analytics-card-label{font-size:14px;text-transform:none;letter-spacing:0;color:var(--text-muted)}.analytics-card-value{font-size:26px;font-weight:550;letter-spacing:-.5px;margin-top:8px;font-variant-numeric:tabular-nums}.analytics-chart-wrap{padding:16px;border:1px solid var(--border);border-radius:5px;background:var(--bg)}.analytics-chart{height:220px;width:100%;display:block}.analytics-chart-title{font-size:14px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--text-muted);margin-bottom:12px}.analytics-logs,.observe-table-wrap{border:1px solid var(--border);border-radius:5px;overflow:hidden}.analytics-logs>.panel-toolbar{padding:12px 16px}.analytics-logs .panel-title{font-size:16px}.panel-table-scroll{overflow:auto;max-width:100%}.analytics-detail{width:360px;max-width:40%;flex-shrink:0;border:1px solid var(--border);border-radius:5px;display:flex;flex-direction:column;max-height:calc(100dvh - 230px)}.analytics-detail-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border)}.analytics-detail-body{overflow:auto;padding:16px}.workflow-page,.backups-page,.mail-page{padding:24px;display:flex;flex-direction:column;gap:20px;overflow:auto;flex:1;min-height:0}.workflow-title,.backups-title{font-size:22px;font-weight:600;letter-spacing:-.5px}.workflow-hero,.backups-hero{align-items:center;flex-wrap:wrap}.workflow-subtitle{color:var(--text-muted);margin-top:6px}.workflow-tabs{gap:20px}.workflow-tab{padding:10px 0;border-bottom-width:2px;font-size:14px;min-height:44px;white-space:nowrap}.workflow-tab.active{border-bottom-color:var(--accent)}.workflow-card,.workflow-form,.mail-card,.mail-template-card,.backups-card{border-radius:5px;box-shadow:none;background:var(--bg);border-color:var(--border)}.workflow-grid{grid-template-columns:1fr}.workflow-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 24px;padding:16px 20px}.workflow-card-header{grid-column:1/-1;align-items:center}.workflow-card .workflow-meta{margin:0}.workflow-form{max-width:1100px;width:100%;padding:20px}.workflow-form-grid{gap:20px;align-items:start}.workflow-form .row-editor-field>label{min-height:20px}.workflow-warning{border-radius:5px}.workflow-source-dialog{border-radius:6px}.mail-card{padding:20px}.mail-grid{gap:20px}.mail-grid.mail-grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}.mail-grid>div{min-width:0}.mail-inline-actions{gap:10px;align-items:center}.mail-inline-actions .backup-input,.mail-inline-actions .backup-select{flex:1 1 220px;min-width:0!important;width:auto}.mail-inline-actions+.mail-inline-actions{margin-top:12px}.mail-textarea{min-height:180px}.mail-footer{display:block;border-top:1px solid var(--border);padding-top:16px}.backup-option-block{padding:20px;border:1px solid var(--border);border-radius:5px;background:var(--bg)}.backups-options{gap:20px;padding-top:0}.backup-option-row{gap:20px}.backup-footer{padding:12px 0}.backup-label{font-size:14px;color:var(--text);font-weight:500;margin-bottom:7px}.backup-help{color:var(--text-muted);font-size:14px}.backup-row{padding:12px 16px}.backup-status-ok,.workflow-badge.on,.status-pill.completed{color:var(--accent)}.backup-status-error{color:var(--error)}.toggle{min-height:22px}.toggle.on{background:#429d71}.toggle-knob{background:#fff}.observe-summary{display:flex;gap:12px;flex-wrap:wrap}.observe-summary-card{border:1px solid var(--border);border-radius:5px;padding:16px;flex:1}.observe-toolbar{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap}.observe-help{color:var(--text-muted)}.media-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));align-content:start;gap:16px;padding:24px;overflow:auto;flex:1}.media-asset{border:1px solid var(--border);border-radius:5px;overflow:hidden;min-width:0}.media-preview{height:160px;display:flex;align-items:center;justify-content:center;background:var(--bg-elevated)}.media-preview img{width:100%;height:100%;object-fit:cover}.media-preview>svg{width:32px;height:32px;color:var(--text-muted)}.media-asset-info{padding:12px;display:grid;gap:8px}.media-asset-info strong{overflow-wrap:anywhere}.media-asset-info p,.media-asset-info>div{color:var(--text-muted);overflow-wrap:anywhere}.media-asset-info>div{display:flex;justify-content:space-between;gap:8px}.media-asset-info summary{cursor:pointer;min-height:36px;padding-top:8px}.media-empty{grid-column:1/-1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px;padding:60px 24px;color:var(--text-muted)}.media-empty h2{font-size:18px}.collection-symbol{color:var(--text-muted)}.file-item{border-radius:5px}.file-upload-btn input[hidden]{display:none}.toast-container{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:8px;z-index:1000;pointer-events:none}.toast{display:flex;align-items:center;gap:10px;padding:12px 16px;border:1px solid var(--border-input);border-radius:6px;background:var(--bg-elevated);box-shadow:var(--shadow);max-width:min(440px,calc(100vw - 32px));pointer-events:auto}.toast-success>svg{color:var(--accent)}.toast-error>svg{color:var(--error)}.hidden{display:none!important}.text-muted{color:var(--text-muted)}::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:8px}::-webkit-scrollbar-corner{background:transparent}
+
+/* Section visibility is part of the interaction contract, independent of layout. */
+.settings-tabs{border-bottom:1px solid var(--border);flex-shrink:0}.mail-page.mail-templates>.mail-delivery,.mail-page.mail-delivery>.mail-templates{display:none}.backup-configuration .backups-card{display:none}.analytics-section-overview .analytics-logs{display:none}.analytics-section-events .analytics-cards,.analytics-section-events .analytics-chart-wrap{display:none}.mail-card,.backups-card,.backup-option-block,.workflow-card,.workflow-form,.backups-hero,.workflow-hero{flex-shrink:0}.panel-table-scroll table:has(.empty-row) thead{display:none}.panel-table-scroll table:has(.empty-row){min-width:0;width:100%}.record-metadata{border-top:1px solid var(--border);padding-top:12px}.record-metadata summary{color:var(--text-muted);cursor:pointer;padding:8px 0;min-height:40px}.record-metadata[open]{display:grid;gap:12px}.record-metadata .row-editor-field{margin-top:12px}.analytics-title>svg{display:none}
+
+@media(max-width:1100px) and (min-width:761px){#app{grid-template-columns:232px minmax(0,1fr)}.console-navigation{grid-template-columns:48px minmax(0,1fr)}.tool-rail{padding:12px 3px}.tool-rail a{width:40px}.data-toolbar{grid-template-columns:1fr;gap:10px}.record-search{max-width:420px}.collection-directory-head,.collection-card{grid-template-columns:minmax(0,1fr) 70px 70px 18px}.collection-kind{display:none}.collection-directory-head span:nth-child(4){display:none}.analytics-layout{flex-direction:column}.analytics-detail{width:100%;max-width:none;max-height:none}.row-editor{width:100%;max-width:none;border:0}.editing .table-container{display:none}.record-list tbody tr{grid-template-columns:minmax(0,2fr) minmax(0,1fr) 80px}.record-list td.mobile-preview[style*="2"]{display:none}.record-list td.td-actions{grid-column:3}}
+/* Compact screens: one 48px app bar, scrollable content, a full-screen editor. */
+@media(max-width:760px),(max-height:500px) and (max-width:1100px){
+ #app{display:block;overflow:auto;overflow-anchor:none;height:100dvh}.console-bar{height:48px;padding:0 8px;gap:10px;position:static}.console-brand{font-size:20px;gap:10px}.console-brand span,.console-divider,.console-session{display:none}.console-context{font-size:14px;color:var(--text-muted);margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.console-navigation{display:none}.mobile-menu,.mobile-search-toggle{display:inline-flex}.workspace-content,.main{display:block;overflow:visible;min-height:0}.panel,.analytics-panel,.observe-panel{display:flex;overflow:visible;min-height:calc(100dvh - 48px)}.btn,.btn-icon{min-height:44px}.btn-icon{width:44px;height:44px}.btn-filter{width:36px;height:36px;min-height:36px}.btn-sm{min-height:40px}.console-bar .btn-icon{width:40px;height:44px}.panel-toolbar,.analytics-toolbar{padding:12px 16px;gap:12px}.panel-title,.analytics-title,.panel-title h1{font-size:20px}.panel-actions{width:100%}.panel-actions .search-box{flex:1;min-width:0}.panel-actions input{width:100%}.data-toolbar{padding:6px 12px;display:flex;flex-direction:column;gap:0;align-items:stretch}.data-heading{gap:4px;min-height:44px}.data-heading>.panel-title{min-width:0}.collection-title-line{gap:8px}.collection-title-line h1{font-size:18px;max-width:calc(100vw - 220px)}.collection-title-line .panel-meta{font-size:14px;white-space:nowrap}.data-heading>.btn{padding:8px 10px}.data-heading>.btn svg{display:none}.record-search{display:none;max-width:none}.record-search.search-open{display:flex;padding-top:8px;padding-bottom:6px}.data-viewbar{padding:0 16px;min-height:44px;gap:8px}.view-tabs{gap:20px}.data-viewbar>span{font-size:14px;white-space:nowrap}.active-filter{padding:6px 12px}.table-layout{display:block;overflow:visible;flex:none}.table-container{overflow-x:auto;overflow-y:visible;max-width:100%}.records-table:not(.record-list){min-width:620px}.records-table:not(.record-list) th:first-child,.records-table:not(.record-list) td:first-child{max-width:170px;min-width:150px}.table-scroll-hint{display:block;font-size:14px;color:var(--text-muted);padding:6px 16px;border-bottom:1px solid var(--border)}.record-list tbody tr{display:grid;grid-template-columns:minmax(0,1fr) 88px;grid-template-rows:auto auto;gap:2px 8px;padding:10px 12px;min-height:68px}.record-list td.mobile-preview{display:none}.record-list td.mobile-primary{display:block;grid-column:1;grid-row:1;line-height:22px;font-weight:550;white-space:nowrap}.record-list td.mobile-preview[style*="1"]{display:block;grid-column:1;grid-row:2;line-height:20px;font-size:14px;white-space:nowrap}.record-list td.td-actions{grid-column:2;grid-row:1/3;align-self:center;gap:0}.td-actions .btn-icon{width:44px;height:44px;min-height:44px}.record-list td.empty-row{grid-column:1/-1;grid-row:1/3;padding:24px 0}.pagination{padding:6px 12px;gap:8px;margin-top:auto;position:static}.page-controls{gap:6px}.page-info{font-size:14px}.schema-view{padding:16px;overflow:visible}.schema-field{grid-template-columns:1fr 1fr;gap:4px 12px;padding:12px 0}.schema-field span{grid-column:1/-1}.section-heading{margin-bottom:12px}.section-heading p{display:none}.presentation-schema{display:none}.editing .row-editor{position:fixed;inset:0;z-index:100;width:100%;max-width:none;height:100dvh;max-height:none;box-shadow:none;border:0}.row-editor-header{padding:10px 16px;min-height:64px}.row-editor-title{font-size:18px;line-height:24px}.row-editor-meta{margin-top:0;font-size:14px;max-width:calc(100vw - 84px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-editor-body{padding:16px;gap:18px}.row-editor-actions{padding:10px 16px;padding-bottom:max(10px,env(safe-area-inset-bottom));flex-wrap:wrap}.row-editor-field textarea{min-height:110px}.row-editor-readonly{padding:6px 0}.collection-library{padding:16px;overflow:visible}.library-heading{margin-bottom:16px;gap:8px;align-items:center}.library-heading h1{font-size:22px}.library-heading p{display:none}.library-total{display:block;text-align:right;font-size:14px}.library-total span{display:block}.library-toolbar{display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px}.library-search{width:100%;grid-row:1}.segmented{gap:4px}.segmented button{min-height:40px;padding:7px 10px}.collection-directory-head{display:none}.collection-card{grid-template-columns:minmax(0,1fr) auto 16px;gap:8px;padding:12px;min-height:68px}.collection-identity{gap:10px}.collection-identity>svg{display:none}.collection-card p{font-size:14px}.collection-fields,.collection-kind{display:none}.collection-records{font-size:14px}.collection-records small{display:none}.workflow-page,.backups-page,.mail-page{padding:16px;gap:16px;overflow:visible;min-height:calc(100dvh - 48px)}.workflow-title,.backups-title{font-size:22px}.workflow-subtitle{display:none}.workflow-hero,.backups-hero{align-items:center;gap:12px}.workflow-hero>.backups-actions,.backups-actions{flex-wrap:wrap}.workflow-tabs{gap:20px;overflow:auto;flex-shrink:0}.workflow-form,.mail-card{padding:16px}.workflow-grid{display:block}.workflow-card{display:flex;padding:16px;margin-bottom:12px;gap:10px}.workflow-card-header{flex-wrap:wrap;gap:12px;align-items:center}.workflow-form-grid,.mail-grid,.mail-grid.mail-grid-4,.backup-option-row,.backup-option-row.backup-option-row-3{grid-template-columns:1fr;gap:16px}.workflow-checks{gap:14px}.workflow-check{min-height:32px}.workflow-source-backdrop{padding:0}.workflow-source-dialog{width:100%;max-height:100dvh;border-radius:0}.backup-option-block{padding:16px}.backups-options{gap:16px}.backup-option-row>div{min-width:0}.backup-row{padding:12px;align-items:flex-start;flex-wrap:wrap;gap:8px}.backup-row-main{flex-basis:calc(100% - 60px)}.backup-row-actions{margin-left:auto}.backup-footer{flex-wrap:wrap}.mail-inline-actions{align-items:stretch}.mail-inline-actions .backup-input,.mail-inline-actions .backup-select{flex-basis:100%;min-width:0!important}.mail-inline-actions .btn{flex:1}.analytics-body,.observe-body{padding:16px;overflow:visible;gap:16px}.analytics-layout{display:block;overflow:visible}.analytics-main{gap:16px}.analytics-actions{width:100%;gap:8px}.analytics-actions .analytics-select{flex:1;min-width:0}.analytics-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.analytics-card{padding:12px;border-bottom:1px solid var(--border)}.analytics-card-value{font-size:24px;margin-top:4px}.analytics-chart-wrap{padding:12px}.analytics-chart{height:180px}.analytics-chart-title{font-size:14px;gap:6px}.analytics-legend{flex-wrap:wrap;gap:8px}.analytics-detail{position:fixed;inset:0;z-index:100;width:100%;height:100dvh;max-height:none;max-width:none;border:0;border-radius:0;background:var(--bg-surface)}.analytics-detail-header{padding:12px 16px}.analytics-detail-body{padding:16px;flex:1}.analytics-logs>.panel-toolbar{padding:12px;gap:12px}.analytics-logs .panel-actions{flex-wrap:wrap}.panel-table-scroll{max-width:100%;overflow:auto}.observe-toolbar{align-items:stretch}.observe-summary{display:grid;grid-template-columns:1fr 1fr;gap:8px}.observe-summary-card{padding:12px}.observe-summary-title{overflow-wrap:anywhere}.media-gallery{padding:16px;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;overflow:visible}.media-preview{height:130px}.media-asset-info{padding:10px}.media-asset-info>div{flex-wrap:wrap;gap:4px}.media-empty{padding:48px 8px}.toast-container{left:12px;right:12px;bottom:12px}.toast{max-width:none}.materialized-banner{margin:12px;flex-wrap:wrap}.filter-guide{padding:12px 16px}
 }
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}button:active:not(:disabled){transform:none}}
 
-/* Toast */
-.toast-container{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:6px;z-index:1000;pointer-events:none}
-.toast{padding:8px 14px;border-radius:4px;font-size:12px;color:#fff;pointer-events:auto}
-.toast-success{background:#16825d}
-.toast-error{background:#c72e2e}
-
-/* Scrollbar */
-::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-hover)}
-::-webkit-scrollbar-corner{background:transparent}
 </style>
 </head>
 <body>
 <div id="app"></div>
 <script type="module">
 import { h, render, Component } from 'https://esm.sh/preact@10.25.4';
-import { useState, useEffect, useRef, useCallback, useMemo } from 'https://esm.sh/preact@10.25.4/hooks';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'https://esm.sh/preact@10.25.4/hooks';
 import htm from 'https://esm.sh/htm@3.1.1';
 
 const html = htm.bind(h);
@@ -473,27 +310,58 @@ async function fetchRefOptions(tableName) {
 }
 
 // ── Icons (inline SVG) ──
+/* Tabler Icons 3.49.0 — https://github.com/tabler/tabler-icons
+Vendored SVG subset; dimensions and stroke weight adapted for this console.
+MIT License
+
+Copyright (c) 2020-2026 Paweł Kuna
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
 const icons = {
-  table: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M14 1H2a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1V2a1 1 0 00-1-1zM2 2h12v3H2V2zm0 4h5v4H2V6zm0 5h5v3H2v-3zm12 3H8v-3h6v3zm0-4H8V6h6v4z"/></svg>`,
-  plus: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>`,
-  edit: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.854 1.146a.5.5 0 00-.708 0l-8.5 8.5a.5.5 0 00-.132.235l-.5 2a.5.5 0 00.606.606l2-.5a.5.5 0 00.235-.132l8.5-8.5a.5.5 0 000-.708l-1.5-1.5zM3.474 10.257l8.026-8.026.793.793-8.026 8.026-1.118.28.325-1.073z"/><path d="M2 14h12v1H2z"/></svg>`,
-  trash: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3h3v1h-1v9a1 1 0 01-1 1H5a1 1 0 01-1-1V4H3V3h3V2a1 1 0 011-1h2a1 1 0 011 1v1zM5 4v9h6V4H5zm1 1h1v7H6V5zm3 0h1v7H9V5zM7 2v1h2V2H7z"/></svg>`,
-  download: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 13h7a.5.5 0 010 1h-7a.5.5 0 010-1zM7.5 2v7.793L5.354 7.646a.5.5 0 10-.708.708l3 3a.5.5 0 00.708 0l3-3a.5.5 0 00-.708-.708L8.5 9.793V2a.5.5 0 00-1 0z"/></svg>`,
-  upload: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 13h7a.5.5 0 010 1h-7a.5.5 0 010-1zM7.5 11V3.207L5.354 5.354a.5.5 0 11-.708-.708l3-3a.5.5 0 01.708 0l3 3a.5.5 0 01-.708.708L8.5 3.207V11a.5.5 0 01-1 0z"/></svg>`,
-  signout: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.854 8.354a.5.5 0 000-.708l-3-3a.5.5 0 10-.708.708L10.293 7.5H4a.5.5 0 000 1h6.293l-2.147 2.146a.5.5 0 00.708.708l3-3z"/><path d="M14.5 1a.5.5 0 01.5.5v13a.5.5 0 01-1 0v-13a.5.5 0 01.5-.5z"/></svg>`,
-  search: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 10-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 001.415-1.414l-3.85-3.85a1.007 1.007 0 00-.115-.1zM12 6.5a5.5 5.5 0 11-11 0 5.5 5.5 0 0111 0z"/></svg>`,
-  chevLeft: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 010 .708L5.707 8l5.647 5.646a.5.5 0 01-.708.708l-6-6a.5.5 0 010-.708l6-6a.5.5 0 01.708 0z"/></svg>`,
-  chevRight: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 01.708 0l6 6a.5.5 0 010 .708l-6 6a.5.5 0 01-.708-.708L10.293 8 4.646 2.354a.5.5 0 010-.708z"/></svg>`,
-  refresh: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2a6 6 0 015.196 3H11.5a.5.5 0 000 1H15a.5.5 0 00.5-.5V2a.5.5 0 00-1 0v2.078A7 7 0 1015 8a.5.5 0 00-1 0A6 6 0 118 2z"/></svg>`,
-  db: html`<svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><ellipse cx="8" cy="3.5" rx="5.5" ry="2"/><path d="M13.5 5.5c0 1.1-2.46 2-5.5 2s-5.5-.9-5.5-2"/><path d="M2.5 3.5v9c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2v-9" fill="none" stroke="currentColor" stroke-width="1"/><path d="M13.5 8.5c0 1.1-2.46 2-5.5 2s-5.5-.9-5.5-2" fill="none" stroke="currentColor" stroke-width="1"/></svg>`,
-  chart: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 14h14v1H0V1h1v13z"/><path d="M3 10.5l2.3-2.3 2.2 1.5 3.7-4.2.8.7-4.3 4.9-2.3-1.6L3.7 11.2z"/></svg>`,
-  pulse: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 8h2.7l1.2-3.1a.5.5 0 01.94.02L7.6 11.2l1.1-2.2a.5.5 0 01.45-.28H15v1H9.46l-1.5 3a.5.5 0 01-.93-.07L5.3 6.74 4.45 8.9A.5.5 0 013.98 9H1V8z"/></svg>`,
-  image: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zm1.5-.5a.5.5 0 00-.5.5v6.293l2.146-2.147a.5.5 0 01.708 0L8.5 10.293l1.646-1.647a.5.5 0 01.708 0L13 10.793V3.5a.5.5 0 00-.5-.5h-9zM13 12.5v-.293l-2.5-2.5-1.646 1.647a.5.5 0 01-.708 0L5.5 8.707 3 11.207v1.293a.5.5 0 00.5.5h9a.5.5 0 00.5-.5z"/><path d="M6 6a1.25 1.25 0 100-2.5A1.25 1.25 0 006 6z"/></svg>`,
-  clock: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5A6.5 6.5 0 1014.5 8 6.5 6.5 0 008 1.5zm0 12A5.5 5.5 0 118 2.5a5.5 5.5 0 010 11zm.5-8v2.793l1.854 1.853-.708.708L7.5 8.707V5.5h1z"/></svg>`,
-  mail: html`<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 3A1.75 1.75 0 000 4.75v6.5C0 12.216.784 13 1.75 13h12.5A1.75 1.75 0 0016 11.25v-6.5A1.75 1.75 0 0014.25 3H1.75zm0 1h12.5c.207 0 .4.08.544.223L8 8.44 1.206 4.223A.75.75 0 011.75 4zm-.75 1.39l4.94 3.067L1 11.932V5.39zm1.132 6.61l4.64-3.27.832.516a.75.75 0 00.792 0l.832-.516 4.64 3.27H2.132zM15 11.932l-4.94-3.475L15 5.39v6.542z"/></svg>`,
-  check: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 010 .708l-7 7a.5.5 0 01-.708 0l-3-3a.5.5 0 11.708-.708L6.5 10.293l6.646-6.647a.5.5 0 01.708 0z"/></svg>`,
-  chevDown: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M3.646 5.646a.5.5 0 01.708 0L8 9.293l3.646-3.647a.5.5 0 11.708.708l-4 4a.5.5 0 01-.708 0l-4-4a.5.5 0 010-.708z"/></svg>`,
-  chevUp: html`<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M8 5.293 4.354 8.94a.5.5 0 11-.708-.708l4-4a.5.5 0 01.708 0l4 4a.5.5 0 11-.708.708L8 5.293z"/></svg>`,
+  menu: html`<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler"><path d="M4 6h16M4 12h16M4 18h16" /></svg>`,
+  table: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-table" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14" /> <path d="M3 10h18" /> <path d="M10 3v18" /> </svg>`,
+  plus: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-plus" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M12 5l0 14" /> <path d="M5 12l14 0" /> </svg>`,
+  edit: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-pencil" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" /> <path d="M13.5 6.5l4 4" /> </svg>`,
+  trash: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-trash" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M4 7l16 0" /> <path d="M10 11l0 6" /> <path d="M14 11l0 6" /> <path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12" /> <path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3" /> </svg>`,
+  download: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-download" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" /> <path d="M7 11l5 5l5 -5" /> <path d="M12 4l0 12" /> </svg>`,
+  upload: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-upload" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" /> <path d="M7 9l5 -5l5 5" /> <path d="M12 4l0 12" /> </svg>`,
+  signout: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-logout" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2" /> <path d="M9 12h12l-3 -3" /> <path d="M18 15l3 -3" /> </svg>`,
+  search: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-search" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /> <path d="M21 21l-6 -6" /> </svg>`,
+  chevLeft: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-left" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M15 6l-6 6l6 6" /> </svg>`,
+  chevRight: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-right" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M9 6l6 6l-6 6" /> </svg>`,
+  refresh: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-refresh" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" /> <path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" /> </svg>`,
+  db: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-database" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M4 6a8 3 0 1 0 16 0a8 3 0 1 0 -16 0" /> <path d="M4 6v6a8 3 0 0 0 16 0v-6" /> <path d="M4 12v6a8 3 0 0 0 16 0v-6" /> </svg>`,
+  chart: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chart-line" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M4 19l16 0" /> <path d="M4 15l4 -6l4 2l4 -5l4 4" /> </svg>`,
+  pulse: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-activity" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M3 12h4l3 8l4 -16l3 8h4" /> </svg>`,
+  image: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-photo" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M15 8h.01" /> <path d="M3 6a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v12a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3v-12" /> <path d="M3 16l5 -5c.928 -.893 2.072 -.893 3 0l5 5" /> <path d="M14 14l1 -1c.928 -.893 2.072 -.893 3 0l3 3" /> </svg>`,
+  clock: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-history" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M12 8l0 4l2 2" /> <path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5" /> </svg>`,
+  mail: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-mail" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M3 7a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-10" /> <path d="M3 7l9 6l9 -6" /> </svg>`,
+  check: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-check" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M5 12l5 5l10 -10" /> </svg>`,
+  chevDown: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-down" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M6 9l6 6l6 -6" /> </svg>`,
+  chevUp: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-up" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M6 15l6 -6l6 6" /> </svg>`,
+  settings: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-settings" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065" /> <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" /> </svg>`,
+  automation: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-git-branch" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M5 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /> <path d="M5 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /> <path d="M15 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /> <path d="M7 8l0 8" /> <path d="M9 18h6a2 2 0 0 0 2 -2v-5" /> <path d="M14 14l3 -3l3 3" /> </svg>`,
+  archive: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-archive" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M3 6a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2" /> <path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-10" /> <path d="M10 12l4 0" /> </svg>`,
+  restore: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-restore" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M3.06 13a9 9 0 1 0 .49 -4.087" /> <path d="M3 4.001v5h5" /> <path d="M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /> </svg>`,
+  close: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-x" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M18 6l-12 12" /> <path d="M6 6l12 12" /> </svg>`,
+  help: html`<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-help-circle" > <path stroke="none" d="M0 0h24v24H0z" fill="none" /> <path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0" /> <path d="M12 16v.01" /> <path d="M12 13a2 2 0 0 0 .914 -3.782a1.98 1.98 0 0 0 -2.414 .483" /> </svg>`,
 };
 
 // ── Helpers ──
@@ -559,136 +427,59 @@ function Toasts() {
     return () => clearTimeout(t);
   }, [items]);
   if (items.length === 0) return null;
-  return html`<div class="toast-container">
-    ${items.map(t => html`<div key=${t.id} class=${"toast toast-" + t.type}>${t.message}</div>`)}
+  return html`<div class="toast-container" role="status" aria-live="polite">
+    ${items.map(t => html`<div key=${t.id} class=${"toast toast-" + t.type}>${t.type === "error" ? icons.help : icons.check}<span>${t.message}</span></div>`)}
   </div>`;
 }
 
 // ── Components ──
 
-function Sidebar({ tables, archiveTables, currentTable, currentArchive, viewMode, analyticsEnabled, mediaEnabled, observeEnabled, workflowEnabled, onSelect, onSelectArchive, onSelectMedia, onSelectAnalyticsVolume, onSelectAnalyticsPerformance, onSelectObserve, onSelectWorkflow, onSelectMail, onSelectBackups, onLogout }) {
-  const [tableSearch, setTableSearch] = useState('');
-  
-  const filteredTables = useMemo(() => {
-    const q = tableSearch.trim().toLowerCase();
-    if (!q) return tables;
-    return tables.filter(t => t.name.toLowerCase().includes(q));
-  }, [tables, tableSearch]);
-
-  return html`
-    <div class="sidebar">
-      <div class="sidebar-header">
-        <div class="logo-sm">${icons.db}<span>flop</span></div>
-      </div>
-      <div style="padding:8px;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;margin:8px;">
-        ${icons.search}
-        <input type="text" placeholder="Filter tables..." value=${tableSearch} onInput=${e => setTableSearch(e.target.value)} style="background:none;border:none;color:var(--text);font-size:12px;padding:4px 0;outline:none;width:100%;" />
-      </div>
-      <div class="sidebar-section-label">TABLES ${tableSearch && html`<span style="color:var(--text-dimmed);font-weight:400">(${filteredTables.length}/${tables.length})</span>`}</div>
-      <div class="sidebar-tables">
-        ${filteredTables.map(t => html`
-          <button
-            key=${t.name}
-            class=${"sidebar-item" + (viewMode === 'table' && !currentArchive && t.name === currentTable ? " active" : "")}
-            onClick=${() => onSelect(t.name)}
-          >
-            <span class="sidebar-item-icon">${icons.table}</span>
-            <span class="sidebar-item-label">${t.name}</span>
-            ${t.materialized && html`<span class="materialized-badge">mat</span>`}
-            <span class="sidebar-item-count">${t.rowCount}</span>
-          </button>
-        `)}
-        ${filteredTables.length === 0 && html`<div style="padding:8px 16px;color:var(--text-dimmed);font-size:12px;">No tables match "${tableSearch}"</div>`}
-        ${archiveTables && archiveTables.length > 0 && html`
-          <div class="sidebar-section-label" style="padding:10px 8px 4px">ARCHIVE</div>
-          ${archiveTables.map(t => html`
-            <button
-              key=${"archive-" + t.name}
-              class=${"sidebar-item" + (viewMode === 'table' && currentArchive && t.name === currentTable ? " active" : "")}
-              onClick=${() => onSelectArchive(t.name)}
-            >
-              <span class="sidebar-item-icon">${icons.table}</span>
-              <span class="sidebar-item-label">${t.name}</span>
-              <span class="sidebar-item-count">${t.rowCount}</span>
-            </button>
-          `)}
-        `}
-        ${mediaEnabled && html`
-          <div class="sidebar-section-label" style="padding:10px 8px 4px">ASSETS</div>
-          <button
-            class=${"sidebar-item" + (viewMode === 'media' ? " active" : "")}
-            onClick=${onSelectMedia}
-          >
-            <span class="sidebar-item-icon">${icons.image}</span>
-            <span class="sidebar-item-label">Media</span>
-          </button>
-        `}
-        <div class="sidebar-section-label" style="padding:10px 8px 4px">SYSTEM</div>
-        ${workflowEnabled && html`
-          <button
-            class=${"sidebar-item" + (viewMode === 'workflow' ? " active" : "")}
-            onClick=${onSelectWorkflow}
-          >
-            <span class="sidebar-item-icon">${icons.pulse}</span>
-            <span class="sidebar-item-label">AI Workflows</span>
-          </button>
-        `}
-        <button
-          class=${"sidebar-item" + (viewMode === 'mail' ? " active" : "")}
-          onClick=${onSelectMail}
-        >
-          <span class="sidebar-item-icon">${icons.mail}</span>
-          <span class="sidebar-item-label">Mail</span>
-        </button>
-        <button
-          class=${"sidebar-item" + (viewMode === 'backups' ? " active" : "")}
-          onClick=${onSelectBackups}
-        >
-          <span class="sidebar-item-icon">${icons.clock}</span>
-          <span class="sidebar-item-label">Backups</span>
-        </button>
-        ${analyticsEnabled && html`
-          <div class="sidebar-section-label" style="padding:10px 8px 4px">OBSERVE</div>
-          <button
-            class=${"sidebar-item" + (viewMode === 'analytics-volume' ? " active" : "")}
-            onClick=${onSelectAnalyticsVolume}
-          >
-            <span class="sidebar-item-icon">${icons.chart}</span>
-            <span class="sidebar-item-label">Request Volume</span>
-          </button>
-          <button
-            class=${"sidebar-item" + (viewMode === 'analytics-performance' ? " active" : "")}
-            onClick=${onSelectAnalyticsPerformance}
-          >
-            <span class="sidebar-item-icon">${icons.chart}</span>
-            <span class="sidebar-item-label">Request Performance</span>
-          </button>
-        `}
-        ${observeEnabled && html`
-          <button
-            class=${"sidebar-item" + (viewMode === 'observe' ? " active" : "")}
-            onClick=${onSelectObserve}
-          >
-            <span class="sidebar-item-icon">${icons.pulse}</span>
-            <span class="sidebar-item-label">Observe</span>
-          </button>
-        `}
-      </div>
-      <div class="sidebar-footer">
-        <button class="sidebar-action danger" onClick=${onLogout}>${icons.signout} Sign Out</button>
-      </div>
-    </div>
-  `;
+function WorkspaceNavigation({ viewMode, analyticsEnabled, observeEnabled, workflowEnabled, mediaEnabled, tables, archiveTables, currentTable, currentArchive, selectTable, selectArchive }) {
+  const drawer = useRef(null);
+  const group = ['mail','backups'].includes(viewMode) ? 'settings' : viewMode.startsWith('analytics') || viewMode === 'observe' ? 'activity' : viewMode === 'workflow' ? 'automation' : 'data';
+  const entries = [
+    ['data', 'Data', '', icons.db],
+    ...(analyticsEnabled || observeEnabled ? [['activity', 'Activity', analyticsEnabled ? '_analytics-volume' : '_observe', icons.chart]] : []),
+    ...(workflowEnabled ? [['automation', 'Automation', '_workflow', icons.automation]] : []),
+    ['settings', 'Settings', '_backups', icons.settings]
+  ];
+  const title = {data:'Database',activity:'Observability',automation:'Automation',settings:'Configuration'}[group];
+  const secondary = group === 'data' ? [['Collections','',icons.table], ...(mediaEnabled ? [['Media','_media',icons.image]] : [])]
+    : group === 'activity' ? [...(analyticsEnabled ? [['Requests','_analytics-volume',icons.chart],['Performance','_analytics-performance',icons.clock]] : []), ...(observeEnabled ? [['Indexes','_observe',icons.db]] : [])]
+    : group === 'settings' ? [['Backups','_backups',icons.archive],['Mail','_mail',icons.mail]] : [['Workflows','_workflow',icons.automation]];
+  const close = () => drawer.current?.close();
+  useEffect(() => { window.addEventListener('hashchange', close); return () => window.removeEventListener('hashchange', close); }, []);
+  const primary = mobile => html`<nav class=${mobile ? 'drawer-destinations' : 'tool-rail'} aria-label="Main navigation">${entries.map(([id,label,route,icon]) => html`<a href=${'#'+route} title=${label} aria-label=${label} aria-current=${group === id ? 'page' : undefined} class=${group === id ? 'active' : ''} onClick=${close}>${icon}<span>${label}</span></a>`)}</nav>`;
+  const context = () => html`<div class="context-heading">${title}</div><nav class="context-pages" aria-label="Workspace pages">${secondary.map(([label,route,icon]) => html`<a href=${'#'+route} class=${(route === '' ? viewMode === 'table' && !currentTable : route === '_'+viewMode) ? 'active' : ''} onClick=${close}>${icon}<span>${label}</span></a>`)}</nav>${group === 'data' && html`<${CollectionRail} tables=${tables} archiveTables=${archiveTables} currentTable=${currentTable} archive=${currentArchive} onSelect=${name => {close();selectTable(name)}} onSelectArchive=${name => {close();selectArchive(name)}} />`}`;
+  return html`<header class="console-bar"><button class="btn-icon mobile-menu" aria-label="Open navigation" onClick=${() => drawer.current.showModal()}>${icons.menu}</button><a class="console-brand" href="#">flop<span>Console</span></a><span class="console-divider">/</span><span class="console-context">${title}</span><span class="console-session">${icons.db} Workspace</span><button class="btn-icon" aria-label="Sign out" title="Sign out" onClick=${logout}>${icons.signout}</button></header>
+    <aside class="console-navigation">${primary(false)}<div class="context-navigation">${context()}</div></aside>
+    <dialog ref=${drawer} class="navigation-drawer" aria-label="Navigation"><div class="drawer-heading"><strong>Workspace</strong><button class="btn-icon" aria-label="Close navigation" onClick=${close}>${icons.close}</button></div>${primary(true)}${context()}</dialog>`;
 }
 
-function EmptyState() {
-  return html`
-    <div class="empty-state">
-      <div class="empty-icon">${icons.table}</div>
-      <div class="empty-title">Select a table</div>
-      <div class="empty-desc">Choose a table from the sidebar to browse its data</div>
-    </div>
-  `;
+function CollectionRail({ tables, archiveTables, currentTable, archive, onSelect, onSelectArchive }) {
+  const [query,setQuery] = useState('');
+  const [showArchive,setShowArchive] = useState(archive);
+  useEffect(() => setShowArchive(archive), [archive]);
+  const source = showArchive ? archiveTables : tables;
+  return html`<aside class="collection-rail" aria-label="Collections">
+    <div class="rail-section-heading"><span>Tables</span><button class=${'btn-icon '+(showArchive ? 'active' : '')} title=${showArchive ? 'Show active tables' : 'Show archived tables'} aria-label=${showArchive ? 'Show active tables' : 'Show archived tables'} onClick=${() => setShowArchive(v => !v)}>${icons.archive}</button></div>
+    <div class="sidebar-search">${icons.search}<input aria-label="Find collection" placeholder="Find a table…" value=${query} onInput=${e => setQuery(e.target.value)} /></div>
+    ${showArchive && html`<div class="rail-caption">Archived tables</div>`}
+    <div class="rail-scroll">${source.filter(t => t.name.toLowerCase().includes(query.toLowerCase())).sort((a,b) => Number(a.name.startsWith('_'))-Number(b.name.startsWith('_')) || a.name.localeCompare(b.name)).map(t => html`<button class=${'collection-link '+(t.name === currentTable && showArchive === archive ? 'active' : '')} onClick=${() => (showArchive ? onSelectArchive : onSelect)(t.name)}>${icons.table}<span>${t.name}</span><small>${fmtCount(t.rowCount)}</small></button>`)}</div>
+    <div class="rail-foot">${source.length} tables</div>
+  </aside>`;
+}
+
+function Overview({ tables, archiveTables, loading, error, onRetry, onSelect, onSelectArchive }) {
+  const [query,setQuery] = useState('');
+  const [archive,setArchive] = useState(false);
+  const source = archive ? archiveTables : tables;
+  const filtered = source.filter(t => t.name.toLowerCase().includes(query.toLowerCase())).sort((a,b) => Number(a.name.startsWith('_')) - Number(b.name.startsWith('_')) || a.name.localeCompare(b.name));
+  return html`<section class="collection-library" aria-label="Database overview">
+    <div class="library-heading"><div><h1>Database</h1><p>Collections</p></div><div class="library-total"><span>${tables.length} tables</span><span>${fmtCount(tables.reduce((n,t) => n + Number(t.rowCount || 0),0))} records</span></div></div>
+    <div class="library-toolbar"><div class="segmented" aria-label="Collection source"><button aria-pressed=${!archive} onClick=${() => setArchive(false)}>Active <small>${tables.length}</small></button><button aria-pressed=${archive} onClick=${() => setArchive(true)}>Archived <small>${archiveTables.length}</small></button></div><div class="library-search">${icons.search}<input type="search" aria-label="Search collections" placeholder="Search collections" value=${query} onInput=${e => setQuery(e.target.value)} /></div></div>
+    ${loading ? html`<div class="state-message" role="status">Loading collections…</div>` : error ? html`<div class="state-message" role="alert">${error}<br/><button class="btn" onClick=${onRetry}>Try again</button></div>` : html`<div class="collection-grid"><div class="collection-directory-head" aria-hidden="true"><span>Collection</span><span>Records</span><span>Fields</span><span>Type</span><span></span></div>${filtered.map(t => html`<button class="collection-card" onClick=${() => (archive ? onSelectArchive : onSelect)(t.name)}><div class="collection-identity">${icons.table}<div><h2>${t.name}</h2><p>${Object.keys(t.schema || {}).slice(0,4).join(', ') || 'No fields defined'}</p></div></div><span class="collection-records">${fmtCount(t.rowCount)}<small> records</small></span><span class="collection-fields">${Object.keys(t.schema || {}).length}</span><span class="collection-kind">${archive ? 'Archived' : t.materialized ? 'Materialized' : t.readOnly ? 'Read only' : t.name.startsWith('_') ? 'System' : 'Standard'}</span>${icons.chevRight}</button>`)}</div>${!filtered.length && html`<div class="state-message">${query ? 'No collections match your search.' : archive ? 'No archived collections.' : 'No collections yet. Define a table in your application to get started.'}</div>`}`}
+  </section>`;
 }
 
 function valueToEditorInput(field, value) {
@@ -717,13 +508,37 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
   const isCreate = mode === 'create';
   const pkField = cols[0];
   const pk = row ? row[pkField] : '';
+  const editorCols = useMemo(() => {
+    const priority = ['title', 'name', 'email', 'slug', 'excerpt', 'description', 'body'];
+    const rank = col => isAutoField(schema, col) || isReadOnly(schema, col)
+      ? 100 : priority.includes(col.toLowerCase()) ? priority.indexOf(col.toLowerCase()) : priority.length;
+    return [...cols].sort((a,b) => rank(a) - rank(b));
+  }, [cols, schema]);
   const [form, setForm] = useState({});
   const [pendingFiles, setPendingFiles] = useState({});
   const [refOptions, setRefOptions] = useState({});
   const [saving, setSaving] = useState(false);
   const [uploadingCol, setUploadingCol] = useState('');
-
+  const editorRef = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
+    const previous = document.activeElement;
+    const editor = editorRef.current;
+    editor.querySelector('button').focus();
+    const onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); closeRef.current(); }
+      if (e.key !== 'Tab' || !window.matchMedia('(max-width:760px), (max-height:500px) and (max-width:1100px)').matches) return;
+      const items = [...editor.querySelectorAll('button,input,select,textarea,a')].filter(el => !el.disabled && el.getClientRects().length);
+      if (e.shiftKey && document.activeElement === items[0]) { e.preventDefault(); items[items.length - 1].focus(); }
+      if (!e.shiftKey && document.activeElement === items[items.length - 1]) { e.preventDefault(); items[0].focus(); }
+    };
+    editor.addEventListener('keydown', onKey);
+    return () => { editor.removeEventListener('keydown', onKey); if (previous?.isConnected) previous.focus(); };
+  }, [pk, isCreate]);
+
+  // Initialize only when the record changes; live refreshes must not erase a draft.
+  useLayoutEffect(() => {
     if (!schema) return;
     const next = {};
     for (const col of cols) {
@@ -731,7 +546,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
     }
     setForm(next);
     setPendingFiles({});
-  }, [row, schema, cols, isCreate]);
+  }, [tableName, pk, isCreate, !!schema]);
 
   useEffect(() => {
     if (!schema) return;
@@ -868,17 +683,10 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
     }
   }, [tableName, pk, onReload, isCreate, setCol, readOnly, schema]);
 
-  return html`
-    <aside class="row-editor">
-      <div class="row-editor-header">
-        <div>
-          <div class="row-editor-title">${isCreate ? 'New Row' : 'Edit Row'}</div>
-          <div class="row-editor-meta">${isCreate ? ('table: ' + tableName) : (pkField + ': ' + String(pk))}</div>
-        </div>
-        <button class="btn-icon" onClick=${onClose}>&times;</button>
-      </div>
-      <div class="row-editor-body">
-        ${cols.map(col => {
+  const isMetadata = col => !readOnly && (isAutoField(schema,col) || (isCreate ? schema?.[col]?.cached === true : isReadOnly(schema,col) || row?.[col] === '[REDACTED]'));
+  const editableCols = editorCols.filter(col => !isMetadata(col));
+  const metadataCols = editorCols.filter(isMetadata);
+  const renderField = col => {
           const field = schema ? schema[col] : null;
           const val = row ? row[col] : null;
           const ro = readOnly || (isCreate
@@ -921,9 +729,9 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
                 ${!readOnly && html`
                 <label class="btn btn-sm btn-primary file-upload-btn">
                   ${uploadingCol === col ? 'Uploading...' : html`${icons.upload} Upload`}
-                  <input type="file" accept=${accept} multiple=${field.type === 'fileMulti'} onChange=${e => onUploadFile(col, e)} hidden />
+                  <input aria-label=${col} type="file" accept=${accept} multiple=${field.type === 'fileMulti'} onChange=${e => onUploadFile(col, e)} hidden />
                 </label>
-                ${field.type === 'fileSingle' && html`<button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col)}>${icons.trash} Remove</button>`}
+                ${field.type === 'fileSingle' && fileCount > 0 && html`<button class="btn btn-sm file-remove" onClick=${() => onRemoveFile(col)}>${icons.trash} Remove</button>`}
                 `}
               </div>
             </div>`;
@@ -942,14 +750,14 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
           if (field && field.type === 'bcrypt') {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <input type="password" value=${inputVal} onInput=${e => setCol(col, e.target.value)} />
+              <input aria-label=${col} type="password" value=${inputVal} onInput=${e => setCol(col, e.target.value)} />
             </div>`;
           }
 
           if (field && field.type === 'boolean') {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <select value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
+              <select aria-label=${col} value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
                 <option value="">null</option>
                 <option value="true">true</option>
                 <option value="false">false</option>
@@ -960,7 +768,7 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
           if (field && field.type === 'enum' && field.enumValues) {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <select value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
+              <select aria-label=${col} value=${inputVal} disabled=${readOnly} onChange=${e => setCol(col, e.target.value)}>
                 <option value="">--</option>
                 ${field.enumValues.map(v => html`<option key=${v} value=${v}>${v}</option>`)}
               </select>
@@ -971,31 +779,44 @@ function RowEditor({ mode = 'edit', tableName, schema, cols, row, createError, o
             const options = refOptions[col] || [];
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <select value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
+              <select aria-label=${col} value=${inputVal} onChange=${e => setCol(col, e.target.value)}>
                 <option value="">--</option>
                 ${options.map(o => html`<option key=${o.id} value=${o.id}>${o.id}${o.label !== o.id ? ' - ' + o.label : ''}</option>`)}
               </select>
             </div>`;
           }
 
-          if (field && ['json', 'vector', 'roles', 'set', 'refMulti'].includes(field.type)) {
+          if (field && (['json', 'vector', 'roles', 'set', 'refMulti'].includes(field.type) || (field.type === 'string' && (/^(body|description|content|excerpt)$/i.test(col) || String(row?.[col] || '').length > 120)))) {
             return html`<div key=${col} class="row-editor-field">
               <label>${col} <span class="type-badge">${typeLabel}</span></label>
-              <textarea value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)}></textarea>
+              <textarea aria-label=${col} value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)}></textarea>
             </div>`;
           }
 
           const inputType = field && (field.type === 'number' || field.type === 'integer' || field.type === 'timestamp') ? 'number' : 'text';
           return html`<div key=${col} class="row-editor-field">
             <label>${col} <span class="type-badge">${typeLabel}</span></label>
-            <input type=${inputType} value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)} />
+            <input aria-label=${col} type=${inputType} value=${inputVal} disabled=${readOnly} onInput=${e => setCol(col, e.target.value)} />
           </div>`;
-        })}
+          };
+
+  return html`
+    <aside class="row-editor" ref=${editorRef} aria-label=${isCreate ? "Create record" : "Record details"}>
+      <div class="row-editor-header">
+        <div>
+          <div class="row-editor-title">${isCreate ? 'New record' : readOnly ? 'Record details' : 'Edit record'}</div>
+          <div class="row-editor-meta">${tableName} / ${isCreate ? 'Create' : String(pk)}</div>
+        </div>
+        <button class="btn-icon" aria-label="Close record" onClick=${onClose}>${icons.chevLeft}</button>
+      </div>
+      <div class="row-editor-body">
+        ${editableCols.map(renderField)}
+        ${!isCreate && metadataCols.length > 0 && html`<details class="record-metadata"><summary>Record metadata · ${metadataCols.length} fields</summary>${metadataCols.map(renderField)}</details>`}
       </div>
       <div class="row-editor-actions">
         ${isCreate && createError && html`<span class="create-error" style="margin-right:auto">${createError}</span>`}
         <button class="btn" onClick=${onClose}>Close</button>
-        ${!readOnly && html`<button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${isCreate ? (saving ? 'Creating...' : 'Create Row') : (saving ? 'Saving...' : 'Save Changes')}</button>`}
+        ${!readOnly && html`<button class="btn btn-primary" disabled=${saving} onClick=${doSave}>${isCreate ? (saving ? 'Creating...' : 'Create record') : (saving ? 'Saving...' : 'Save changes')}</button>`}
       </div>
     </aside>
   `;
@@ -1012,6 +833,28 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshingMaterialized, setRefreshingMaterialized] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [filterHelp, setFilterHelp] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => { if (searchOpen) document.querySelector('.record-search input')?.focus(); }, [searchOpen]);
+  const [presentation, setPresentation] = useState(() => window.matchMedia('(max-width:760px), (max-height:500px) and (max-width:1100px)').matches ? 'records' : 'table');
+  const requestId = useRef(0);
+  const listScroll = useRef(0);
+  const restoreFrame = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(restoreFrame.current), []);
+  const openEditor = pk => {
+    listScroll.current = document.getElementById('app').scrollTop;
+    setCreateErr('');
+    setShowCreate(pk == null);
+    setSelectedPk(pk == null ? null : String(pk));
+  };
+  const closeEditor = () => {
+    setShowCreate(false);
+    setSelectedPk(null);
+    setCreateErr('');
+    restoreFrame.current = requestAnimationFrame(() => { document.getElementById('app').scrollTop = listScroll.current; });
+  };
 
   const isMaterialized = !!tableMeta?.materialized;
   const isReadOnlyTable = !!tableMeta?.readOnly || archive;
@@ -1019,7 +862,22 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
 
   const cols = useMemo(() => schema ? Object.keys(schema) : (rows.length > 0 ? Object.keys(rows[0]) : []), [schema, rows]);
 
+  const previewCols = useMemo(() => {
+    const preferred = ['title', 'name', 'email', 'status', 'slug', 'description', 'body'];
+    const available = cols.filter(c => c !== cols[0] && !['bcrypt', 'ref', 'refMulti', 'fileSingle', 'fileMulti'].includes(schema?.[c]?.type));
+    const ordered = [...available].sort((a,b) => {
+      const rank = c => preferred.includes(c.toLowerCase()) ? preferred.indexOf(c.toLowerCase()) : preferred.length;
+      return rank(a) - rank(b);
+    });
+    return ordered.length ? ordered.slice(0, 3) : cols.slice(0, 1);
+  }, [cols, schema]);
+
+  const displayCols = useMemo(() => [...previewCols, ...cols.filter(c => !previewCols.includes(c))], [cols, previewCols]);
+
   const loadRows = useCallback(async (p, q) => {
+    const request = ++requestId.current;
+    setLoading(true);
+    setLoadError('');
     const pg = p || page;
     const sq = q !== undefined ? q : searchQuery;
     const params = new URLSearchParams({ limit: 50 });
@@ -1031,14 +889,14 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
     }
     try {
       const data = await api(rowsBasePath + '?' + params);
-      if (data) {
+      if (data && request === requestId.current) {
         setRows(data.rows || []);
-        setTotalPages(data.pages);
+        setTotalPages(data.pages || Math.max(1, Math.ceil((data.total || 0) / 50)));
         setTotal(data.total);
       }
     } catch (err) {
-      if (err && err.message) showToast(err.message, 'error');
-    }
+      if (request === requestId.current) setLoadError(err.message || 'Unable to load rows');
+    } finally { if (request === requestId.current) setLoading(false); }
   }, [tableName, page, searchQuery, archive, rowsBasePath]);
 
   useEffect(() => {
@@ -1183,28 +1041,34 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
   }, [rows, cols, selectedPk]);
 
   return html`
-    <div class="panel">
-      <div class="panel-toolbar">
+    <div class=${"panel data-workspace " + (showCreate || selectedRow ? "editing" : "")} >
+      <div class="panel-toolbar data-toolbar"><div class="data-heading">
         <div class="panel-title">
           <span class="panel-title-icon">${icons.table}</span>
-          ${tableName}
+          <div class="collection-title"><div class="collection-title-line"><h1>${tableName}</h1><span class="panel-meta">${total} rows</span></div></div>
           ${isMaterialized && html`<span class="materialized-badge">materialized</span>`}
-          <span class="panel-meta">${total} rows</span>
-          ${tableMeta?.lastRefreshUnixMilli ? html`<span class="panel-meta">refreshed ${fmtAgo(tableMeta.lastRefreshUnixMilli)} (${fmtTime(tableMeta.lastRefreshUnixMilli)})</span>` : ""}
+          ${isMaterialized && Number(tableMeta?.lastRefreshUnixMilli) > 0 ? html`<span class="panel-meta">refreshed ${fmtAgo(tableMeta.lastRefreshUnixMilli)} (${fmtTime(tableMeta.lastRefreshUnixMilli)})</span>` : ""}
         </div>
-        <div class="panel-actions">
-          <div class="search-box">
+          ${!archive && html`<button class="btn-icon mobile-search-toggle" aria-label="Search records" aria-expanded=${searchOpen} onClick=${() => setSearchOpen(v => !v)}>${icons.search}</button>`}
+          ${!isReadOnlyTable && html`<button class="btn btn-primary" disabled=${!schema} onClick=${() => openEditor(null)}>
+            ${icons.plus} New record
+          </button>`}
+        </div><div class=${"panel-actions record-search "+(searchOpen ? "search-open" : "")}>
+          ${!archive && html`<div class="search-box">
             ${icons.search}
-            <input type="text" placeholder=${archive ? 'Archive search not available' : 'name="..." count>=5'} value=${search} disabled=${archive} onInput=${onSearchInput} onKeyDown=${onSearchKey} />
-            <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search all string fields">?</span>
-            <button class="btn-filter" disabled=${archive} onClick=${applyFilter}>${icons.chevRight}</button>
-          </div>
-          <button class="btn btn-primary" disabled=${isReadOnlyTable} onClick=${() => { setSelectedPk(null); setCreateErr(''); setShowCreate(true); }}>
-            ${icons.plus} New Row
-          </button>
+            <input type="text" aria-label="Search or filter rows" placeholder="Search or filter rows…" value=${search} disabled=${archive} onInput=${onSearchInput} onKeyDown=${onSearchKey} />
+            <button class="btn-filter" aria-label="Apply filter" onClick=${applyFilter}>${icons.chevRight}</button>
+          </div>`}
+          ${!archive && html`<button class="btn-icon" aria-label="Filter help" aria-expanded=${filterHelp} onClick=${() => setFilterHelp(v => !v)}>${icons.help}</button>`}
+
         </div>
       </div>
 
+      ${filterHelp && html`<div class="filter-guide">Search all text fields, or use a filter: <code>name="Alice"</code>, <code>count>=5</code>, <code>name~"ali"</code>. Combine with <code>&&</code> (and) or <code>||</code> (or).</div>`}
+      <div class="data-viewbar"><div class="view-tabs" aria-label="Collection view">${[['records','Records'],['table','Table'],['schema','Structure']].map(([id,label]) => html`<button aria-pressed=${presentation === id} onClick=${() => setPresentation(id)}>${label}</button>`)}</div><span>${archive ? 'Archived · ' : isReadOnlyTable ? 'Read only · ' : ''}${cols.length} fields</span></div>
+      ${searchQuery && html`<div class="active-filter"><span>Filtered: <strong>${searchQuery}</strong></span><button class="btn" onClick=${() => { setSearch(''); setSearchQuery(''); setPage(1); }}>Clear filter</button></div>`}
+      ${presentation === 'table' && html`<div class="table-scroll-hint">Swipe horizontally to see all ${cols.length} fields</div>`}
+      ${presentation === 'schema' && html`<div class="schema-view"><div class="section-heading"><h2>Collection structure</h2><p>Fields and relationships defined by your application.</p></div>${cols.map(c => html`<div class="schema-field"><strong>${c}</strong><code>${schema?.[c]?.type || 'unknown'}</code><span>${schema?.[c]?.refTable ? '→ '+schema[c].refTable : isAutoField(schema,c) ? 'Generated automatically' : isReadOnly(schema,c) ? 'Read only' : 'Editable'}</span></div>`)}</div>`}
       ${isMaterialized && html`<div class=${"materialized-banner" + (tableMeta?.refreshError ? ' error' : '')}>
         <div>
           <strong>Materialized table</strong>
@@ -1214,12 +1078,12 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
         <button class="btn" disabled=${refreshingMaterialized} onClick=${refreshMaterialized}>${icons.refresh} ${refreshingMaterialized ? 'Refreshing...' : 'Refresh now'}</button>
       </div>`}
 
-      <div class="table-layout">
-        <div class="table-container">
-          <table>
+      <div class=${"table-layout presentation-"+presentation} aria-busy=${loading}>
+        <div class="table-container" tabindex=${presentation === "table" ? "0" : undefined} aria-label=${presentation === "table" ? "Record table, scroll horizontally for more fields" : undefined}>
+          <table class=${"records-table " + (presentation === "records" ? "record-list" : "")}>
             <thead>
               <tr>
-                ${cols.map(c => {
+                ${displayCols.map(c => {
                   const f = schema ? schema[c] : null;
                   const typeStr = f ? f.type + (f.refTable ? ' -> ' + f.refTable : '') + (f.cached ? ' (cached)' : '') : '';
                   return html`<th key=${c}>
@@ -1231,15 +1095,18 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
               </tr>
             </thead>
             <tbody>
-              ${rows.length === 0 && html`
-                <tr><td colspan=${cols.length + 1} class="empty-row">No rows found</td></tr>
+              ${(loading || loadError || rows.length === 0) && html`
+                <tr><td colspan=${cols.length + 1} class="empty-row" role=${loadError ? 'alert' : 'status'}>
+                  ${loading ? 'Loading records…' : loadError || (searchQuery ? 'No records match this filter.' : 'This table has no records yet.')}
+                  ${loadError && html`<br/><button class="btn" onClick=${() => loadRows()}>Try again</button>`}
+                </td></tr>
               `}
-              ${rows.map(row => {
+              ${!loadError && rows.map(row => {
                 const pk = row[cols[0]];
                 const isSelected = selectedPk != null && String(selectedPk) === String(pk);
                 return html`
-                  <tr key=${pk} class=${isSelected ? 'selected' : ''} onClick=${() => { setShowCreate(false); setCreateErr(''); setSelectedPk(String(pk)); }}>
-                    ${cols.map(c => {
+                  <tr key=${pk} class=${isSelected ? 'selected' : ''} tabindex="0" aria-label=${'Open ' + tableName + ' record ' + String(row[previewCols[0]] ?? pk)} onKeyDown=${e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openEditor(pk); } }} onClick=${() => { openEditor(pk); }}>
+                    ${displayCols.map(c => {
                       const val = row[c];
                       const ro = isReadOnly(schema, c) || isAutoField(schema, c) || val === '[REDACTED]';
                       const f = schema ? schema[c] : null;
@@ -1260,16 +1127,16 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
                       const rendered = display == null
                         ? html`<span class="null">null</span>`
                         : (typeof display === 'object' ? display : truncate(String(display)));
-                      return html`<td key=${c} class=${ro ? "td-readonly" : ""}>${rendered}</td>`;
+                      return html`<td key=${c} data-label=${c} style=${previewCols.includes(c) ? {order: previewCols.indexOf(c)} : {}} class=${(ro ? "td-readonly " : "") + (previewCols.includes(c) ? "mobile-preview " : "") + (previewCols[0] === c ? "mobile-primary" : "")}>${rendered}</td>`;
                     })}
                     <td class="td-actions">
                       ${archive
                         ? html`
-                            <button class="btn-icon" onClick=${(e) => { e.stopPropagation(); restoreRow(pk); }} title="Restore">${icons.upload}</button>
+                            <button class="btn-icon" onClick=${(e) => { e.stopPropagation(); restoreRow(pk); }} title="Restore">${icons.restore}</button>
                             <button class="btn-icon danger" onClick=${(e) => { e.stopPropagation(); deleteArchivedRow(pk); }} title="Delete Permanently">${icons.trash}</button>
                           `
                         : html`
-                            <button class="btn-icon" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); archiveRow(pk); }} title="Archive">${icons.download}</button>
+                            <button class="btn-icon" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); archiveRow(pk); }} title="Archive">${icons.archive}</button>
                             <button class="btn-icon danger" disabled=${isReadOnlyTable} onClick=${(e) => { e.stopPropagation(); deleteRow(pk); }} title="Delete">${icons.trash}</button>
                           `
                       }
@@ -1286,7 +1153,7 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
           schema=${schema}
           cols=${cols}
           createError=${createErr}
-          onClose=${() => { setShowCreate(false); setCreateErr(''); }}
+          onClose=${closeEditor}
           onCreate=${submitCreate}
           onReload=${loadRows}
         />`}
@@ -1295,20 +1162,21 @@ function DataTable({ tableName, tableMeta, schema, archive = false, onReload, ss
           schema=${schema}
           cols=${cols}
           row=${selectedRow}
-          readOnly=${archive}
-          onClose=${() => setSelectedPk(null)}
+          readOnly=${isReadOnlyTable}
+          onClose=${closeEditor}
           onSave=${saveRow}
           onReload=${loadRows}
         />`}
       </div>
 
-      ${totalPages > 1 && html`
-        <div class="pagination">
-          <button class="btn-icon" disabled=${page <= 1} onClick=${() => setPage(p => p - 1)}>${icons.chevLeft}</button>
+      <div class="pagination">
+          <span class="page-info">${total.toLocaleString()} records</span>
+          <div class="page-controls">
+          <button class="btn-icon" aria-label="Previous page" disabled=${loading || page <= 1} onClick=${() => setPage(p => p - 1)}>${icons.chevLeft}</button>
           <span class="page-info">Page ${page} of ${totalPages}</span>
-          <button class="btn-icon" disabled=${page >= totalPages} onClick=${() => setPage(p => p + 1)}>${icons.chevRight}</button>
+          <button class="btn-icon" aria-label="Next page" disabled=${loading || page >= totalPages} onClick=${() => setPage(p => p + 1)}>${icons.chevRight}</button>
+          </div>
         </div>
-      `}
     </div>
   `;
 }
@@ -1588,6 +1456,7 @@ function buildTraceTimeline(events) {
 }
 
 function AnalyticsPanel({ page = 'volume' }) {
+  const [section,setSection] = useState('overview');
   const isPerformance = page === 'performance';
   const [supported, setSupported] = useState(true);
   const [loaded, setLoaded] = useState(false);
@@ -1735,11 +1604,11 @@ function AnalyticsPanel({ page = 'volume' }) {
   const typeLabelSingle = routeTypeLabel(selectedType, false);
 
   return html`
-    <div class="analytics-panel">
+    <div class=${"analytics-panel analytics-section-"+section}>
       <div class="analytics-toolbar">
         <div class="analytics-title">${icons.chart} ${typeLabelPlural} ${isPerformance ? 'Performance' : 'Volume'}</div>
         <div class="analytics-actions">
-          <select class="analytics-select" value=${windowSize} onChange=${e => { setWindowSize(e.target.value); setLogPage(1); }}>
+          <select aria-label="Time window" class="analytics-select" value=${windowSize} onChange=${e => { setWindowSize(e.target.value); setLogPage(1); }}>
             <option value="1h">Last 1 hour</option>
             <option value="6h">Last 6 hours</option>
             <option value="24h">Last 24 hours</option>
@@ -1748,6 +1617,7 @@ function AnalyticsPanel({ page = 'volume' }) {
         </div>
       </div>
 
+      <div class="data-viewbar"><div class="view-tabs" aria-label="Activity view"><button aria-pressed=${section === 'overview'} onClick=${() => { setSection('overview'); setSelectedLog(null); }}>Overview</button><button aria-pressed=${section === 'events'} onClick=${() => setSection('events')}>Event explorer</button></div><span>${fmtCount(logTotal)} ${logTotal === 1 ? "event" : "events"}</span></div>
       <div class="analytics-body">
         ${routeTypes.length > 1 && html`
           <div class="analytics-route-list">
@@ -1810,16 +1680,16 @@ function AnalyticsPanel({ page = 'volume' }) {
                 <div class="panel-actions">
                   ${isPerformance && html`
                     <div class="search-box">
-                      <span style="color:var(--text-faint);font-size:11px">slow ≥</span>
+                      <span style="color:var(--text-faint);font-size:14px">slow ≥</span>
                       <input type="number" min="1" value=${String(slowMs)} onInput=${e => setSlowMs(Number(e.target.value) || 0)} style="width:80px" />
-                      <span style="color:var(--text-faint);font-size:11px">ms</span>
+                      <span style="color:var(--text-faint);font-size:14px">ms</span>
                     </div>
                   `}
                   <div class="search-box">
                     ${icons.search}
-                    <input type="text" placeholder='routeName~"get_" durationMs>=20' value=${logSearch} onInput=${e => setLogSearch(e.target.value)} onKeyDown=${onLogSearchKey} />
+                    <input type="text" aria-label="Filter events" placeholder='routeName~"get_" durationMs>=20' value=${logSearch} onInput=${e => setLogSearch(e.target.value)} onKeyDown=${onLogSearchKey} />
                     <span class="filter-help" title="= equals  != not equal  ~ contains  !~ not contains&#10;> >= < <= comparisons&#10;&& and  || or  () grouping&#10;&#10;Plain text = search in route/error/details">?</span>
-                    <button class="btn-filter" onClick=${applyLogFilter}>${icons.chevRight}</button>
+                    <button class="btn-filter" aria-label="Apply event filter" onClick=${applyLogFilter}>${icons.chevRight}</button>
                   </div>
                 </div>
               </div>
@@ -1839,7 +1709,7 @@ function AnalyticsPanel({ page = 'volume' }) {
                   <tbody>
                     ${logs.length === 0 && html`<tr><td colspan="6" class="empty-row">No logs found</td></tr>`}
                     ${logs.map(row => html`
-                      <tr key=${row.id} class="log-row" onClick=${() => setSelectedLog(row)}>
+                      <tr key=${row.id} class="log-row" tabindex="0" aria-label=${"Inspect request " + row.routeName} onKeyDown=${e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedLog(row); } }} onClick=${() => setSelectedLog(row)}>
                         <td>${fmtTime(row.ts)}</td>
                         <td>${row.routeType}/${row.routeName}</td>
                         <td>${row.status}</td>
@@ -1872,7 +1742,7 @@ function AnalyticsPanel({ page = 'volume' }) {
                   <div class="analytics-detail-title">${typeLabelSingle} Detail</div>
                   <div class="panel-meta">${selectedLog.routeType}/${selectedLog.routeName}</div>
                 </div>
-                <button class="btn-icon" onClick=${() => setSelectedLog(null)}>&times;</button>
+                <button class="btn-icon" aria-label="Close request details" onClick=${() => setSelectedLog(null)}>${icons.close}</button>
               </div>
               <div class="analytics-detail-body">
                 <div class="detail-row"><div class="detail-key">time</div><div class="detail-val">${fmtTime(selectedLog.ts)}</div></div>
@@ -2117,18 +1987,18 @@ function MediaPanel() {
   }, [applySearch]);
 
   return html`
-    <div class="panel">
+    <div class="panel media-workspace">
       <div class="panel-toolbar">
         <div class="panel-title">
           <span class="panel-title-icon">${icons.image}</span>
-          <span>Media</span>
+          <div><span class="eyebrow">ASSET LIBRARY</span><h1>Media</h1></div>
           <span class="panel-meta">${fmtCount(total)} files</span>
         </div>
         <div class="panel-actions">
           <div class="search-box">
             ${icons.search}
-            <input type="text" placeholder="Search path, name, table, row..." value=${search} onInput=${e => setSearch(e.target.value)} onKeyDown=${onSearchKey} />
-            <button class="btn-filter" onClick=${applySearch}>${icons.chevRight}</button>
+            <input type="text" aria-label="Search media" placeholder="Search files…" value=${search} onInput=${e => setSearch(e.target.value)} onKeyDown=${onSearchKey} />
+            <button class="btn-filter" aria-label="Search media files" onClick=${applySearch}>${icons.chevRight}</button>
           </div>
           <label class="btn" style="gap:6px">
             <input type="checkbox" checked=${orphansOnly} onChange=${e => { setPage(1); setOrphansOnly(e.target.checked); }} />
@@ -2137,47 +2007,11 @@ function MediaPanel() {
           <button class="btn" onClick=${() => loadRows()} disabled=${loading}>${icons.refresh} Refresh</button>
         </div>
       </div>
-      <div class="table-layout">
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>File</th>
-                <th>Location</th>
-                <th>Type</th>
-                <th>Disk</th>
-                <th>Thumbs</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows.length === 0 ? html`
-                <tr><td colspan="5" class="empty-row">${loading ? 'Loading media…' : 'No media files found'}</td></tr>
-              ` : rows.map((row, idx) => {
-                const key = row.path || String(idx);
-                const fileName = row.name || fileDisplayName(row) || row.path || 'file';
-                const location = row.tableName ? `${row.tableName}/${row.rowId || '-'}/${row.fieldName || '-'}` : '-';
-                return html`
-                  <tr key=${key}>
-                    <td>
-                      <span class="file-display">
-                        ${isImageFile(row) && row.url ? html`<img class="file-thumb" src=${row.url} alt=${fileName} />` : ''}
-                        ${row.url ? html`<a class="file-link" href=${row.url} target="_blank">${fileName}</a>` : fileName}
-                        ${row.orphaned ? html`<span class="slow-badge">orphan</span>` : ''}
-                      </span>
-                    </td>
-                    <td title=${row.path || ''}>
-                      <div>${location}</div>
-                      <div class="th-type">${row.path || ''}</div>
-                    </td>
-                    <td>${row.mime || '-'}</td>
-                    <td>${fmtBytes(row.diskSize || row.refSize || 0)}</td>
-                    <td>${fmtCount(row.thumbCount || 0)}${row.thumbBytes ? html`<span class="th-type"> · ${fmtBytes(row.thumbBytes)}</span>` : ''}</td>
-                  </tr>
-                `;
-              })}
-            </tbody>
-          </table>
-        </div>
+      <div class="media-gallery">
+        ${rows.length === 0 ? html`<div class="media-empty"><span class="collection-symbol">${icons.image}</span><h2>${loading ? 'Loading media…' : 'No files yet'}</h2><p>${search || orphansOnly ? 'No files match these filters.' : 'Files attached to your records will appear in this library.'}</p></div>` : rows.map((row,idx) => html`<article class="media-asset" key=${row.path || idx}>
+          <div class="media-preview">${isImageFile(row) && row.url ? html`<img src=${row.url} alt=${row.name || fileDisplayName(row)} loading="lazy" />` : icons.image}</div>
+          <div class="media-asset-info"><strong>${row.url ? html`<a href=${row.url} target="_blank" rel="noopener">${row.name || fileDisplayName(row) || 'File'}</a>` : row.name || row.path}</strong><p>${row.tableName ? row.tableName+' / '+(row.fieldName || '') : 'Unlinked file'}</p><div><span>${fmtBytes(row.diskSize || row.refSize || 0)}</span><span>${row.orphaned ? 'Orphaned' : row.mime || 'File'}</span></div><details><summary>File details</summary><p>${row.path}</p><p>Record: ${row.rowId || 'None'}</p><p>${fmtCount(row.thumbCount || 0)} thumbnails · ${fmtBytes(row.thumbBytes || 0)}</p></details></div>
+        </article>`)}
       </div>
       <div class="pagination">
         <button class="btn" disabled=${page <= 1} onClick=${() => setPage(p => Math.max(1, p - 1))}>${icons.chevLeft} Prev</button>
@@ -2188,9 +2022,9 @@ function MediaPanel() {
   `;
 }
 
-function Toggle({ checked, onChange, disabled = false }) {
+function Toggle({ checked, onChange, disabled = false, label }) {
   return html`
-    <button type="button" class=${"toggle" + (checked ? " on" : "")} disabled=${disabled} onClick=${() => !disabled && onChange(!checked)}>
+    <button type="button" role="switch" aria-checked=${checked} aria-label=${label} class=${"toggle" + (checked ? " on" : "")} disabled=${disabled} onClick=${() => !disabled && onChange(!checked)}>
       <span class="toggle-knob"></span>
     </button>
   `;
@@ -2205,7 +2039,7 @@ function BackupsPage() {
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState('');
   const [testOk, setTestOk] = useState(false);
-  const [showOptions, setShowOptions] = useState(true);
+  const [showOptions, setShowOptions] = useState(false);
   const [settings, setSettings] = useState({ cron: '', cronMaxKeep: 3, s3: { enabled: false, endpoint: '', bucket: '', region: '', accessKey: '', secret: '', forcePathStyle: false } });
   const [originalSettings, setOriginalSettings] = useState({ cron: '', cronMaxKeep: 3, s3: { enabled: false, endpoint: '', bucket: '', region: '', accessKey: '', secret: '', forcePathStyle: false } });
   const [downloadBusy, setDownloadBusy] = useState({});
@@ -2422,9 +2256,9 @@ function BackupsPage() {
     : 'custom';
 
   return html`
-    <div class="backups-page">
+    <div class=${"backups-page " + (showOptions ? "backup-configuration" : "backup-history")}>
       <div class="backups-hero">
-        <div class="backups-title">Backup and restore your Flop data</div>
+        <div><h1 class="backups-title">Backups</h1><p class="workflow-subtitle">Protect your database and restore a previous version.</p></div>
         <div class="backups-actions">
           <button class="btn" onClick=${loadPage} disabled=${loading || creating || saving}>${icons.refresh} Refresh</button>
           <label class="btn file-upload-btn ${busy || loading || uploading ? 'disabled' : ''}">
@@ -2434,6 +2268,7 @@ function BackupsPage() {
         </div>
       </div>
 
+      <div class="view-tabs settings-tabs" aria-label="Backup sections"><button aria-pressed=${!showOptions} onClick=${() => setShowOptions(false)}>Backup history</button><button aria-pressed=${showOptions} onClick=${() => setShowOptions(true)}>Schedule & storage</button></div>
       <div class="backups-card">
         <div class="backups-list">
           ${loading ? html`<div class="backup-empty">Loading backups…</div>` : items.length === 0 ? html`<div class="backup-empty">No backups yet.</div>` : items.map(item => html`
@@ -2454,23 +2289,16 @@ function BackupsPage() {
             </div>
           `)}
           <button class="backup-init" disabled=${busy || creating || loading} onClick=${createBackup}>
-            ${busy || creating ? html`<span class="null">${creating ? 'Creating backup…' : 'Backup/restore in progress…'}</span>` : html`<span>${icons.upload}</span><span>Initialize new backup</span>`}
+            ${busy || creating ? html`<span class="null">${creating ? 'Creating backup…' : 'Backup/restore in progress…'}</span>` : html`<span>${icons.upload}</span><span>Create backup</span>`}
           </button>
         </div>
-      </div>
-
-      <div>
-        <button class="btn backup-settings-toggle" onClick=${() => setShowOptions(v => !v)}>
-          <span>Backups options</span>
-          <span>${showOptions ? icons.chevUp : icons.chevDown}</span>
-        </button>
       </div>
 
       ${showOptions ? html`
         <div class="backups-options">
           <div class="backup-option-block">
             <div class="backup-checkbox">
-              <${Toggle} checked=${autoEnabled} onChange=${setCronEnabled} disabled=${saving || busy} />
+              <${Toggle} label="Enable auto backups" checked=${autoEnabled} onChange=${setCronEnabled} disabled=${saving || busy} />
               <span>Enable auto backups</span>
             </div>
             ${autoEnabled ? html`
@@ -2497,7 +2325,7 @@ function BackupsPage() {
                 </div>
                 <div>
                   <label class="backup-label">Max @auto backups to keep</label>
-                  <input class="backup-input" type="number" min="1" value=${settings.cronMaxKeep} onInput=${e => setSettings(prev => ({ ...prev, cronMaxKeep: Number(e.target.value || 0) }))} />
+                  <input aria-label="Max @auto backups to keep" class="backup-input" type="number" min="1" value=${settings.cronMaxKeep} onInput=${e => setSettings(prev => ({ ...prev, cronMaxKeep: Number(e.target.value || 0) }))} />
                 </div>
               </div>
             ` : null}
@@ -2505,32 +2333,32 @@ function BackupsPage() {
 
           <div class="backup-option-block">
             <div class="backup-checkbox">
-              <${Toggle} checked=${!!settings.s3.enabled} onChange=${setS3Enabled} disabled=${saving || busy} />
+              <${Toggle} label="Store backups in S3 storage" checked=${!!settings.s3.enabled} onChange=${setS3Enabled} disabled=${saving || busy} />
               <span>Store backups in S3 storage</span>
             </div>
             ${settings.s3.enabled ? html`
               <div class="backup-option-row backup-option-row-3">
                 <div>
                   <label class="backup-label">Endpoint</label>
-                  <input class="backup-input" type="text" value=${settings.s3.endpoint} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, endpoint: e.target.value } }))} />
+                  <input aria-label="Endpoint" class="backup-input" type="text" value=${settings.s3.endpoint} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, endpoint: e.target.value } }))} />
                 </div>
                 <div>
                   <label class="backup-label">Bucket</label>
-                  <input class="backup-input" type="text" value=${settings.s3.bucket} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, bucket: e.target.value } }))} />
+                  <input aria-label="Bucket" class="backup-input" type="text" value=${settings.s3.bucket} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, bucket: e.target.value } }))} />
                 </div>
                 <div>
                   <label class="backup-label">Region</label>
-                  <input class="backup-input" type="text" value=${settings.s3.region} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, region: e.target.value } }))} />
+                  <input aria-label="Region" class="backup-input" type="text" value=${settings.s3.region} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, region: e.target.value } }))} />
                 </div>
               </div>
               <div class="backup-option-row">
                 <div>
                   <label class="backup-label">Access key</label>
-                  <input class="backup-input" type="text" value=${settings.s3.accessKey} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, accessKey: e.target.value } }))} />
+                  <input aria-label="Access key" class="backup-input" type="text" value=${settings.s3.accessKey} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, accessKey: e.target.value } }))} />
                 </div>
                 <div>
                   <label class="backup-label">Secret</label>
-                  <input class="backup-input" type="password" value=${settings.s3.secret} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, secret: e.target.value } }))} />
+                  <input aria-label="Secret" class="backup-input" type="password" value=${settings.s3.secret} onInput=${e => setSettings(prev => ({ ...prev, s3: { ...prev.s3, secret: e.target.value } }))} />
                 </div>
               </div>
               <label class="backup-checkbox">
@@ -2556,6 +2384,7 @@ function BackupsPage() {
 }
 
 function MailSettingsPage() {
+  const [section,setSection] = useState('delivery');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -2708,40 +2537,41 @@ function MailSettingsPage() {
   }, []);
 
   return html`
-    <div class="mail-page">
+    <div class=${"mail-page mail-"+section}>
       <div class="backups-hero">
-        <div class="backups-title">Configure common settings for sending emails.</div>
+        <div><h1 class="backups-title">Mail</h1><p class="workflow-subtitle">Manage delivery settings and email templates.</p></div>
         <div class="backups-actions">
           <button class="btn" onClick=${loadPage} disabled=${loading || saving || testing}>${icons.refresh} Refresh</button>
         </div>
       </div>
 
-      <div class="mail-card">
+      <div class="view-tabs settings-tabs" aria-label="Mail sections"><button aria-pressed=${section === 'delivery'} onClick=${() => setSection('delivery')}>Delivery</button><button aria-pressed=${section === 'templates'} onClick=${() => setSection('templates')}>Email templates</button></div>
+      <div class="mail-card mail-delivery">
         <div class="mail-section">
           <div class="mail-grid">
             <div>
               <label class="backup-label">App name</label>
-              <input class="backup-input" type="text" value=${settings.appName} onInput=${e => setSettings(prev => ({ ...prev, appName: e.target.value }))} />
+              <input aria-label="App name" class="backup-input" type="text" value=${settings.appName} onInput=${e => setSettings(prev => ({ ...prev, appName: e.target.value }))} />
             </div>
             <div>
               <label class="backup-label">App URL</label>
-              <input class="backup-input" type="url" placeholder="https://example.com" value=${settings.appURL} onInput=${e => setSettings(prev => ({ ...prev, appURL: e.target.value }))} />
+              <input aria-label="App URL" class="backup-input" type="url" placeholder="https://example.com" value=${settings.appURL} onInput=${e => setSettings(prev => ({ ...prev, appURL: e.target.value }))} />
             </div>
           </div>
 
           <div class="mail-grid">
             <div>
               <label class="backup-label">Sender name</label>
-              <input class="backup-input" type="text" value=${settings.senderName} onInput=${e => setSettings(prev => ({ ...prev, senderName: e.target.value }))} />
+              <input aria-label="Sender name" class="backup-input" type="text" value=${settings.senderName} onInput=${e => setSettings(prev => ({ ...prev, senderName: e.target.value }))} />
             </div>
             <div>
               <label class="backup-label">Sender address</label>
-              <input class="backup-input" type="email" value=${settings.senderAddress} onInput=${e => setSettings(prev => ({ ...prev, senderAddress: e.target.value }))} />
+              <input aria-label="Sender address" class="backup-input" type="email" value=${settings.senderAddress} onInput=${e => setSettings(prev => ({ ...prev, senderAddress: e.target.value }))} />
             </div>
           </div>
 
           <div class="backup-checkbox">
-            <${Toggle} checked=${!!settings.useSMTP} onChange=${value => setSettings(prev => ({ ...prev, useSMTP: value }))} disabled=${loading || saving || testing} />
+            <${Toggle} label="Use SMTP mail server (recommended)" checked=${!!settings.useSMTP} onChange=${value => setSettings(prev => ({ ...prev, useSMTP: value }))} disabled=${loading || saving || testing} />
             <span>Use SMTP mail server (recommended)</span>
           </div>
 
@@ -2749,19 +2579,19 @@ function MailSettingsPage() {
             <div class="mail-grid mail-grid-4">
               <div>
                 <label class="backup-label">SMTP server host</label>
-                <input class="backup-input" type="text" value=${settings.smtp.host} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, host: e.target.value } }))} />
+                <input aria-label="SMTP server host" class="backup-input" type="text" value=${settings.smtp.host} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, host: e.target.value } }))} />
               </div>
               <div>
                 <label class="backup-label">Port</label>
-                <input class="backup-input" type="number" min="1" value=${settings.smtp.port} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, port: Number(e.target.value || 0) } }))} />
+                <input aria-label="Port" class="backup-input" type="number" min="1" value=${settings.smtp.port} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, port: Number(e.target.value || 0) } }))} />
               </div>
               <div>
                 <label class="backup-label">Username</label>
-                <input class="backup-input" type="text" value=${settings.smtp.username} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, username: e.target.value } }))} />
+                <input aria-label="Username" class="backup-input" type="text" value=${settings.smtp.username} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, username: e.target.value } }))} />
               </div>
               <div>
                 <label class="backup-label">Password</label>
-                <input class="backup-input" type="password" value=${settings.smtp.password} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, password: e.target.value } }))} />
+                <input aria-label="Password" class="backup-input" type="password" value=${settings.smtp.password} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, password: e.target.value } }))} />
               </div>
             </div>
 
@@ -2776,7 +2606,7 @@ function MailSettingsPage() {
               <div class="mail-grid">
                 <div>
                   <label class="backup-label">TLS encryption</label>
-                  <select class="backup-select" value=${settings.smtp.tls} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, tls: e.target.value } }))}>
+                  <select aria-label="TLS encryption" class="backup-select" value=${settings.smtp.tls} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, tls: e.target.value } }))}>
                     <option value="auto">Auto (StartTLS)</option>
                     <option value="starttls">StartTLS required</option>
                     <option value="ssl">SSL / TLS</option>
@@ -2785,7 +2615,7 @@ function MailSettingsPage() {
                 </div>
                 <div>
                   <label class="backup-label">AUTH method</label>
-                  <select class="backup-select" value=${settings.smtp.authMethod} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, authMethod: e.target.value } }))}>
+                  <select aria-label="AUTH method" class="backup-select" value=${settings.smtp.authMethod} onChange=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, authMethod: e.target.value } }))}>
                     <option value="plain">PLAIN (default)</option>
                     <option value="login">LOGIN</option>
                     <option value="cram-md5">CRAM-MD5</option>
@@ -2794,7 +2624,7 @@ function MailSettingsPage() {
                 </div>
                 <div>
                   <label class="backup-label">EHLO/HELO domain</label>
-                  <input class="backup-input" type="text" placeholder="Default to localhost" value=${settings.smtp.localName} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, localName: e.target.value } }))} />
+                  <input aria-label="EHLO/HELO domain" class="backup-input" type="text" placeholder="Default to localhost" value=${settings.smtp.localName} onInput=${e => setSettings(prev => ({ ...prev, smtp: { ...prev.smtp, localName: e.target.value } }))} />
                 </div>
               </div>
             ` : null}
@@ -2820,7 +2650,7 @@ function MailSettingsPage() {
         </div>
       </div>
 
-      <div class="mail-card">
+      <div class="mail-card mail-templates">
         <div class="mail-section">
           <div class="backups-title" style="font-size:20px">Email templates</div>
           <div class="backup-help">Available template variables: {{.Email}}, {{.Token}}, {{.URL}}, {{.AppName}}, {{.AppURL}}</div>
@@ -2834,11 +2664,11 @@ function MailSettingsPage() {
               <div class="mail-template-title">${label}</div>
               <div>
                 <label class="backup-label">Subject</label>
-                <input class="backup-input" type="text" value=${settings.templates[name].subject} onInput=${e => updateTemplate(name, 'subject', e.target.value)} />
+                <input aria-label="Subject" class="backup-input" type="text" value=${settings.templates[name].subject} onInput=${e => updateTemplate(name, 'subject', e.target.value)} />
               </div>
               <div>
                 <label class="backup-label">HTML body</label>
-                <textarea class="mail-textarea" value=${settings.templates[name].body} onInput=${e => updateTemplate(name, 'body', e.target.value)}></textarea>
+                <textarea aria-label="HTML body" class="mail-textarea" value=${settings.templates[name].body} onInput=${e => updateTemplate(name, 'body', e.target.value)}></textarea>
               </div>
             </div>
           `)}
@@ -3084,11 +2914,11 @@ function WorkflowPage({ tables }) {
   }, [loadRuns]);
 
   return html`
-    <div class="workflow-page">
+    <div class=${"workflow-page " + (editing ? "workflow-editing" : "")}>
       <div class="workflow-hero">
         <div>
-          <div class="workflow-title">AI Workflows</div>
-          <div class="workflow-subtitle">Connect events, conditions, indexed lookups, structured AI decisions, approvals, and database actions.</div>
+          <div class="workflow-title">Automation</div>
+          <div class="workflow-subtitle">Review runs, approve actions, and build your workflows.</div>
         </div>
         <button class="btn" onClick=${loadAll} disabled=${loading}>${icons.refresh} Refresh</button>
       </div>
@@ -3118,7 +2948,7 @@ function WorkflowPage({ tables }) {
           `)}
         </div>
       ` : tab === 'workflows' ? html`
-        <div style="display:flex;justify-content:flex-end">
+        <div style=${{display: editing ? "none" : "flex", justifyContent: "flex-end"}}>
           <button class="btn btn-primary" onClick=${() => editWorkflow(emptyWorkflow)}>${icons.plus} New workflow</button>
         </div>
         <div class="workflow-grid">
@@ -3143,7 +2973,7 @@ function WorkflowPage({ tables }) {
           `)}
         </div>
       ` : html`
-        <div style="display:flex;justify-content:flex-end;gap:8px">
+        <div style=${{display: editing ? "none" : "flex", justifyContent: "flex-end", gap: "8px"}}>
           <select class="analytics-select" value=${status} onChange=${e => setStatus(e.target.value)}>
             <option value="">All statuses</option>
             ${['pending','running','awaiting_approval','error','completed','cancelled'].map(v => html`<option key=${v} value=${v}>${v.replace('_', ' ')}</option>`)}
@@ -3200,7 +3030,7 @@ function WorkflowPage({ tables }) {
                     : inspectingRun.trigger === 'manual' ? 'Manual input' : 'External event input'}
                 </div>
               </div>
-              <button class="btn-icon" aria-label="Close" onClick=${() => setInspectingRun(null)}>×</button>
+              <button class="btn-icon" aria-label="Close" onClick=${() => setInspectingRun(null)}>${icons.close}</button>
             </div>
             <div class="workflow-source-body">
               <div class="workflow-meta">Captured when this run was created</div>
@@ -3214,7 +3044,7 @@ function WorkflowPage({ tables }) {
           <div class="workflow-form">
             <div class="workflow-card-header">
               <div class="workflow-name">${editing.id ? 'Edit workflow' : 'New workflow'}</div>
-              <button class="btn-icon" onClick=${() => setEditing(null)}>&times;</button>
+              <button class="btn-icon" aria-label="Close workflow editor" onClick=${() => setEditing(null)}>${icons.close}</button>
             </div>
             <div class="workflow-form-grid">
               <div class="row-editor-field">
@@ -3310,6 +3140,8 @@ function WorkflowPage({ tables }) {
 
 // ── Main App ──
 function App() {
+  const [loadingTables, setLoadingTables] = useState(true);
+  const [tablesError, setTablesError] = useState('');
   const [tables, setTables] = useState([]);
   const [archiveTables, setArchiveTables] = useState([]);
   const [currentTable, setCurrentTable] = useState(null);
@@ -3322,10 +3154,15 @@ function App() {
   const evtRef = useRef(null);
 
   const loadTables = useCallback(async () => {
-    const data = await api('/tables');
-    if (data) setTables(data.tables);
-    const archiveData = await api('/archive/tables').catch(() => null);
-    if (archiveData) setArchiveTables(archiveData.tables || []);
+    setLoadingTables(true);
+    setTablesError('');
+    try {
+      const data = await api('/tables');
+      if (data) setTables(data.tables || []);
+      const archiveData = await api('/archive/tables').catch(() => null);
+      if (archiveData) setArchiveTables(archiveData.tables || []);
+    } catch (err) { setTablesError(err.message || 'Unable to load tables'); }
+    finally { setLoadingTables(false); }
   }, []);
 
   // SSE change signal — bumped for the currently viewed table so DataTable can debounce-reload
@@ -3419,8 +3256,9 @@ function App() {
   useEffect(() => {
     function read() {
       const h = window.location.hash.slice(1);
-      if (!h) return;
-      const decoded = decodeURIComponent(h.split('/')[0]);
+      if (!h) { setViewMode('table'); setCurrentTable(null); setCurrentArchive(false); return; }
+      let decoded;
+      try { decoded = decodeURIComponent(h.split('/')[0]); } catch { return; }
       if (decoded === '_analytics' || decoded === '_analytics-volume') {
         setViewMode('analytics-volume');
         return;
@@ -3468,7 +3306,7 @@ function App() {
     setViewMode('table');
     setCurrentArchive(false);
     setCurrentTable(name);
-    window.location.hash = name;
+    window.location.hash = encodeURIComponent(name);
   }, []);
 
   const selectArchive = useCallback((name) => {
@@ -3513,6 +3351,13 @@ function App() {
     window.location.hash = '_workflow';
   }, []);
 
+  useLayoutEffect(() => {
+    const app = document.getElementById('app');
+    app.scrollTop = 0;
+    const frame = requestAnimationFrame(() => { app.scrollTop = 0; });
+    return () => cancelAnimationFrame(frame);
+  }, [viewMode, currentTable, currentArchive]);
+
   const currentSchema = useMemo(() => {
     if (!currentTable) return null;
     const source = currentArchive ? archiveTables : tables;
@@ -3521,28 +3366,9 @@ function App() {
   }, [tables, archiveTables, currentTable, currentArchive]);
 
   return html`
-    <${Sidebar}
-      tables=${tables}
-      archiveTables=${archiveTables}
-      currentTable=${currentTable}
-      currentArchive=${currentArchive}
-      viewMode=${viewMode}
-      analyticsEnabled=${analyticsEnabled}
-      mediaEnabled=${mediaEnabled}
-      observeEnabled=${observeEnabled}
-      workflowEnabled=${workflowEnabled}
-      onSelect=${selectTable}
-      onSelectArchive=${selectArchive}
-      onSelectMedia=${selectMedia}
-      onSelectAnalyticsVolume=${selectAnalyticsVolume}
-      onSelectAnalyticsPerformance=${selectAnalyticsPerformance}
-      onSelectObserve=${selectObserve}
-      onSelectWorkflow=${selectWorkflow}
-      onSelectMail=${selectMail}
-      onSelectBackups=${selectBackups}
-      onLogout=${logout}
-    />
-    <div class="main">
+    <${WorkspaceNavigation} viewMode=${viewMode} analyticsEnabled=${analyticsEnabled} observeEnabled=${observeEnabled} workflowEnabled=${workflowEnabled} mediaEnabled=${mediaEnabled} tables=${tables} archiveTables=${archiveTables} currentTable=${currentTable} currentArchive=${currentArchive} selectTable=${selectTable} selectArchive=${selectArchive} />
+    <div class="workspace-content">
+      <main class="main" id="main-content">
       ${(viewMode === 'analytics-volume' || viewMode === 'analytics-performance') && analyticsEnabled
         ? html`<${AnalyticsPanel} page=${viewMode === 'analytics-performance' ? 'performance' : 'volume'} />`
         : viewMode === 'media' && mediaEnabled
@@ -3557,9 +3383,9 @@ function App() {
         ? html`<${WorkflowPage} tables=${tables} />`
         : currentTable
         ? html`<${DataTable} key=${(currentArchive ? 'archive:' : 'table:') + currentTable} tableName=${currentTable} tableMeta=${(currentArchive ? archiveTables : tables).find(t => t.name === currentTable)} schema=${currentSchema} archive=${currentArchive} onReload=${loadTables} sseSignal=${sseSignal} />`
-        : html`<${EmptyState} />`
+        : html`<${Overview} tables=${tables} archiveTables=${archiveTables} onSelectArchive=${selectArchive} loading=${loadingTables} error=${tablesError} onRetry=${loadTables} onSelect=${selectTable} />`
       }
-    </div>
+    </main></div>
     <${Toasts} />
   `;
 }
