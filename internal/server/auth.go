@@ -493,7 +493,7 @@ func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 	if payload.InstanceID != as.instanceID || payload.PrincipalType != principalTypeUser || payload.SessionID == "" {
 		return "", "", fmt.Errorf("invalid refresh token")
 	}
-	session, err := as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
+	session, err := as.requireRefreshSession(payload.SessionID, payload.Sub)
 	if err != nil {
 		return "", "", err
 	}
@@ -502,14 +502,14 @@ func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 		defer as.providerSessionLocker.Unlock()
 		// Unlink may have won the race after the first read. Revalidate while
 		// holding the shared lock before creating a replacement session.
-		session, err = as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
+		session, err = as.requireRefreshSession(payload.SessionID, payload.Sub)
 		if err != nil {
 			return "", "", err
 		}
 	}
 	as.mu.Lock()
 	defer as.mu.Unlock()
-	session, err = as.requireActiveSession(payload.SessionID, principalTypeUser, payload.Sub)
+	session, err = as.requireRefreshSession(payload.SessionID, payload.Sub)
 	if err != nil {
 		return "", "", err
 	}
@@ -528,12 +528,21 @@ func (as *AuthService) Refresh(refreshToken string) (string, string, error) {
 		_ = as.revokeSession(payload.SessionID, "principal_blocked")
 		return "", "", err
 	}
-	newSessionID, err := as.rotateSession(session, principalTypeUser, payload.Sub)
+	// A retry recovers only the immediate, still-active replacement. Never
+	// follow rotation chains or turn a retry into another rotation.
+	newSessionID := toString(session["replaced_by_session_id"])
+	if newSessionID == "" {
+		newSessionID, err = as.rotateSession(session, principalTypeUser, payload.Sub)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	replacement, err := as.requireActiveSession(newSessionID, principalTypeUser, payload.Sub)
 	if err != nil {
 		return "", "", err
 	}
 	roles := toStringSlice(user["roles"])
-	return as.issueAccessToken(payload.Sub, toString(user["email"]), toString(user["name"]), roles, newSessionID), as.issueRefreshToken(payload.Sub, newSessionID), nil
+	return as.issueAccessToken(payload.Sub, toString(user["email"]), toString(user["name"]), roles, newSessionID), as.issueRefreshTokenAt(payload.Sub, newSessionID, int64(authNumber(replacement["created_at"])), int64(authNumber(replacement["expires_at"]))), nil
 }
 
 func (as *AuthService) ValidateAccessToken(token string) (*schema.AuthContext, error) {
@@ -964,6 +973,10 @@ func (as *AuthService) issueAccessToken(id, email, name string, roles []string, 
 
 func (as *AuthService) issueRefreshToken(id, sessionID string) string {
 	now := time.Now().Unix()
+	return as.issueRefreshTokenAt(id, sessionID, now, now+as.refreshTokenTTL)
+}
+
+func (as *AuthService) issueRefreshTokenAt(id, sessionID string, issued, expires int64) string {
 	return CreateJWT(&JWTPayload{
 		TokenUse:      "refresh",
 		Sub:           id,
@@ -973,8 +986,8 @@ func (as *AuthService) issueRefreshToken(id, sessionID string) string {
 		PrincipalType: principalTypeUser,
 		SessionID:     sessionID,
 		InstanceID:    as.instanceID,
-		Iat:           now,
-		Exp:           now + as.refreshTokenTTL,
+		Iat:           issued,
+		Exp:           expires,
 	}, as.secret)
 }
 
@@ -1303,6 +1316,29 @@ func (as *AuthService) requireActiveSession(sessionID, principalType, principalI
 	return row, nil
 }
 
+// requireRefreshSession permits recovery from a lost renewal response while
+// keeping rotated access tokens invalid. The caller validates the replacement
+// under the rotation lock before issuing any credentials.
+func (as *AuthService) requireRefreshSession(sessionID, principalID string) (map[string]interface{}, error) {
+	if as.sessionTable == nil {
+		return nil, fmt.Errorf("auth sessions not configured")
+	}
+	row, err := as.sessionTable.Get(sessionID)
+	if err != nil || row == nil {
+		return nil, fmt.Errorf("session not found")
+	}
+	if toString(row["principal_type"]) != principalTypeUser || toString(row["principal_id"]) != principalID || toString(row["instance_id"]) != as.instanceID {
+		return nil, fmt.Errorf("invalid session")
+	}
+	if exp := int64(authNumber(row["expires_at"])); exp > 0 && exp <= time.Now().Unix() {
+		return nil, fmt.Errorf("session expired")
+	}
+	if int64(authNumber(row["revoked_at"])) > 0 && (toString(row["reason"]) != "refresh_rotation" || toString(row["replaced_by_session_id"]) == "") {
+		return nil, fmt.Errorf("session revoked")
+	}
+	return row, nil
+}
+
 func (as *AuthService) rotateSession(session map[string]interface{}, principalType, principalID string) (string, error) {
 	newID, err := as.createSession(principalType, principalID, as.refreshTokenTTL, "refresh", toString(session["auth_method"]), toString(session["auth_identity_id"]), nil)
 	if err != nil {
@@ -1311,6 +1347,7 @@ func (as *AuthService) rotateSession(session map[string]interface{}, principalTy
 	_, err = as.sessionTable.Update(toString(session["id"]), map[string]interface{}{
 		"revoked_at":             time.Now().Unix(),
 		"replaced_by_session_id": newID,
+		"reason":                 "refresh_rotation",
 	}, nil)
 	if err != nil {
 		return "", err

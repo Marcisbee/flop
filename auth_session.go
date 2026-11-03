@@ -13,9 +13,11 @@ func (d *Database) CreateSession(accountID string) (token, refreshToken string, 
 	return d.authService.CreateSession(accountID)
 }
 
-// RefreshSession consumes a user refresh token and returns replacement access
-// and refresh tokens. Rotation invalidates both tokens of the previous session.
-// Persist the returned pair together; refresh tokens are single-use.
+// RefreshSession rotates a user session and returns replacement credentials.
+// The previous access token becomes invalid. Retrying an unexpired refresh token
+// recovers the same immediate replacement while that session is active; it does
+// not extend the replacement refresh token's expiry or follow later rotations.
+// Persist the returned pair together. Recovery survives database reopening.
 func (d *Database) RefreshSession(refreshToken string) (token, nextRefreshToken string, err error) {
 	if d == nil || d.authService == nil {
 		return "", "", fmt.Errorf("auth not configured")
