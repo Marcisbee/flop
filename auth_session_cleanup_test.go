@@ -136,6 +136,13 @@ func TestCleanupExpiredAuthSessionsDeletesOnlyOldDeadRows(t *testing.T) {
 			"revoked_at":     now.Unix() - 1800,
 		},
 	}
+	// A rotation is not a logout: retain the recovery link even when the
+	// revocation timestamp is older than the normal retention window.
+	rows = append(rows, map[string]any{
+		"id": "rotation-recoverable", "principal_type": "user", "principal_id": "u6", "instance_id": "i1",
+		"created_at": now.Add(-72 * time.Hour).Unix(), "revoked_at": now.Add(-36 * time.Hour).Unix(),
+		"expires_at": now.Add(time.Hour).Unix(), "reason": "refresh_rotation", "replaced_by_session_id": "active-1",
+	})
 	for _, row := range rows {
 		if _, err := sessions.Insert(row); err != nil {
 			t.Fatalf("insert %s: %v", row["id"], err)
@@ -159,7 +166,7 @@ func TestCleanupExpiredAuthSessionsDeletesOnlyOldDeadRows(t *testing.T) {
 			t.Fatalf("expected %s to be deleted", id)
 		}
 	}
-	for _, id := range []string{"active-1", "expired-recent", "revoked-recent"} {
+	for _, id := range []string{"active-1", "expired-recent", "revoked-recent", "rotation-recoverable"} {
 		row, err := sessions.Get(id)
 		if err != nil {
 			t.Fatalf("get %s: %v", id, err)
@@ -167,5 +174,11 @@ func TestCleanupExpiredAuthSessionsDeletesOnlyOldDeadRows(t *testing.T) {
 		if row == nil {
 			t.Fatalf("expected %s to remain", id)
 		}
+	}
+	if _, err := db.cleanupExpiredAuthSessions(now.Add(26 * time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := sessions.Get("rotation-recoverable"); err != nil || row != nil {
+		t.Fatalf("expired recovery record retained: %v", err)
 	}
 }

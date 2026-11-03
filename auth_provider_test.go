@@ -1069,6 +1069,10 @@ func TestProviderRefreshRotationCannotSurviveConcurrentUnlink(t *testing.T) {
 		t.Fatalf("concurrent unlink: %v", err)
 	}
 
+	if _, _, err := db.RefreshSession(refreshToken); err == nil {
+		t.Fatal("renewal retry survived provider unlink")
+	}
+
 	derived, err := db.Table(systemAuthSessionTableName).FindByIndex("auth_identity_id", identityID)
 	if err != nil || len(derived) < 2 {
 		t.Fatalf("provider-derived sessions=%#v err=%v", derived, err)

@@ -3,6 +3,7 @@ package flop_test
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/marcisbee/flop"
 )
@@ -67,9 +68,7 @@ func TestEmbeddedSessionLifecycle(t *testing.T) {
 	if _, err := db.ValidateAccessToken(token); err == nil {
 		t.Fatal("rotated access remains valid")
 	}
-	if _, _, err := db.RefreshSession(refresh); err == nil {
-		t.Fatal("refresh replay accepted")
-	}
+
 	auth, err = db.ValidateAccessToken(next)
 	if err != nil {
 		t.Fatal(err)
@@ -82,8 +81,32 @@ func TestEmbeddedSessionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.ValidateAccessToken(next); err != nil {
-		t.Fatal("session lost on reopen:", err)
+	// Cross the JWT timestamp resolution so retries cannot accidentally pass
+	// by minting a new refresh token in the same second.
+	time.Sleep(time.Second)
+	// The first renewal response was lost. Only the original refresh token
+	// remains at the client, even after the server has restarted.
+	recovered, recoveredRefresh, err := db.RefreshSession(refresh)
+	if err != nil {
+		t.Fatal("lost renewal response could not be recovered:", err)
+	}
+	recoveredAuth, err := db.ValidateAccessToken(recovered)
+	if err != nil || recoveredAuth.SessionID != auth.SessionID || recoveredRefresh != nextRefresh {
+		t.Fatalf("retry did not recover the same replacement: auth=%+v err=%v", recoveredAuth, err)
+	}
+	// Once the replacement is itself renewed, the original token must not
+	// follow a chain of rotations to regain access.
+	previousRefresh := recoveredRefresh
+	next, nextRefresh, err = db.RefreshSession(recoveredRefresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err = db.ValidateAccessToken(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.RefreshSession(refresh); err == nil {
+		t.Fatal("old refresh followed a second rotation")
 	}
 	for i := 0; i < 2; i++ {
 		if err := db.RevokeSession(auth.ID, auth.SessionID); err != nil {
@@ -92,6 +115,9 @@ func TestEmbeddedSessionLifecycle(t *testing.T) {
 	}
 	if _, err := db.ValidateAccessToken(next); err == nil {
 		t.Fatal("revoked access accepted")
+	}
+	if _, _, err := db.RefreshSession(previousRefresh); err == nil {
+		t.Fatal("retry recovered a revoked replacement")
 	}
 	if _, _, err := db.RefreshSession(nextRefresh); err == nil {
 		t.Fatal("revoked refresh accepted")
@@ -107,6 +133,10 @@ func TestEmbeddedSessionAccountValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, nextRefresh, err := db.RefreshSession(refresh)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Table("users").Update("alice", map[string]any{"disabled": true}); err != nil {
 		t.Fatal(err)
 	}
@@ -115,8 +145,10 @@ func TestEmbeddedSessionAccountValidation(t *testing.T) {
 			t.Fatalf("created session for unavailable account %q", id)
 		}
 	}
-	if _, _, err := db.RefreshSession(refresh); err == nil {
-		t.Fatal("disabled account refreshed")
+	for _, credential := range []string{refresh, nextRefresh} {
+		if _, _, err := db.RefreshSession(credential); err == nil {
+			t.Fatal("disabled account refreshed")
+		}
 	}
 	app := flop.New(flop.Config{DataDir: t.TempDir()})
 	unconfigured, err := app.Open()
@@ -144,20 +176,32 @@ func TestEmbeddedSessionConcurrentRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
-	results := make(chan error, 8)
+	type result struct {
+		token, refresh string
+		err            error
+	}
+	results := make(chan result, 8)
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); _, _, err := db.RefreshSession(refresh); results <- err }()
+		go func() {
+			defer wg.Done()
+			token, next, err := db.RefreshSession(refresh)
+			results <- result{token, next, err}
+		}()
 	}
 	wg.Wait()
 	close(results)
-	successes := 0
-	for err := range results {
-		if err == nil {
-			successes++
+	var replacement string
+	for result := range results {
+		if result.err != nil {
+			t.Fatal("concurrent renewal failed:", result.err)
 		}
-	}
-	if successes != 1 {
-		t.Fatalf("refresh succeeded %d times", successes)
+		if _, err := db.ValidateAccessToken(result.token); err != nil {
+			t.Fatal(err)
+		}
+		if replacement != "" && replacement != result.refresh {
+			t.Fatal("concurrent renewals forked the session")
+		}
+		replacement = result.refresh
 	}
 }

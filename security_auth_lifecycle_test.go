@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -122,33 +121,6 @@ func TestPurposeTokenReplayAndAccountBinding(t *testing.T) {
 			t.Error("old mailbox verified new email")
 		}
 	})
-}
-
-func TestConcurrentRefreshIsSingleUse(t *testing.T) {
-	_, db := securityTestApp(t)
-	_, refresh, _, err := db.authService.Register("race@example.com", "password123", "User", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var wg sync.WaitGroup
-	results := make(chan error, 16)
-	start := make(chan struct{})
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); <-start; _, _, err := db.authService.Refresh(refresh); results <- err }()
-	}
-	close(start)
-	wg.Wait()
-	close(results)
-	successes := 0
-	for err := range results {
-		if err == nil {
-			successes++
-		}
-	}
-	if successes != 1 {
-		t.Fatalf("refresh succeeded %d times, want once", successes)
-	}
 }
 
 func TestProviderFlowCannotMoveBetweenBrowsers(t *testing.T) {

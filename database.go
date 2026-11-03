@@ -731,7 +731,8 @@ func authSessionShouldCleanup(row map[string]any, cutoff int64) bool {
 	if row == nil {
 		return false
 	}
-	if revoked := authSessionTimestamp(row["revoked_at"]); revoked > 0 && revoked <= cutoff {
+	// Rotation records are needed for lost-response recovery until expiry.
+	if revoked := authSessionTimestamp(row["revoked_at"]); revoked > 0 && revoked <= cutoff && toString(row["reason"]) != "refresh_rotation" {
 		return true
 	}
 	if expires := authSessionTimestamp(row["expires_at"]); expires > 0 && expires <= cutoff {
