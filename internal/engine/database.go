@@ -2307,6 +2307,9 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	if err != nil {
 		return nil, err
 	}
+	if err := storage.ValidateRowDataSize(len(serialized)); err != nil {
+		return nil, err
+	}
 
 	txID := ti.wal.BeginTransaction()
 	isTx := txBuf != nil
@@ -2335,7 +2338,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	}
 	oldRaw := page.ReadRow(int(pointer.SlotIndex))
 	_, oldLen := page.GetSlot(int(pointer.SlotIndex))
-	if oldLen == 0 || uint16(len(serialized)) > oldLen {
+	if oldLen == 0 || len(serialized) > int(oldLen) {
 		pageLock.Unlock()
 		unlockUnique()
 		unlockUnique = func() {}

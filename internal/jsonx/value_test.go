@@ -123,3 +123,35 @@ func TestPlainContainersRetainV2Rejections(t *testing.T) {
 		})
 	}
 }
+
+// Compare arbitrary decoded JSON objects with the standard codec. This checks
+// value preservation across nested containers beyond the hand-picked fixtures.
+func FuzzMarshalObjectMatchesV2(f *testing.F) {
+	for _, seed := range []string{`{}`, `{"n":-0,"a":[1,true,null,"é"]}`, `{"nested":{"x":[{},[],1.25]},"large":1e100}`} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var object map[string]any
+		if err := json.Unmarshal(data, &object); err != nil {
+			return
+		}
+		want, wantErr := json.Marshal(object)
+		got, gotErr := MarshalObject(object)
+		if (wantErr == nil) != (gotErr == nil) {
+			t.Fatalf("error mismatch: standard=%v optimized=%v", wantErr, gotErr)
+		}
+		if wantErr != nil {
+			return
+		}
+		a, b := jsontext.Value(want), jsontext.Value(got)
+		if err := a.Canonicalize(); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Canonicalize(); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(a, b) {
+			t.Fatalf("standard=%s optimized=%s", a, b)
+		}
+	})
+}

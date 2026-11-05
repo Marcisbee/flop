@@ -341,3 +341,5 @@ JSON and workflow prompt text; other JSON map ordering is unspecified.
 See [the original migration measurements](benchmarks/json-v2.md) and the
 [JSON-object optimization results](benchmarks/json-v2-optimization.md) for
 performance, allocation counts, methodology, and qualification limits.
+The [reliability follow-up](benchmarks/json-v2-reliability.md) documents the
+oversized-update fix and the remaining upgrade qualification requirements.

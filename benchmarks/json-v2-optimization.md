@@ -1,5 +1,7 @@
 # JSON v2 object encoding optimization
 
+See the [reliability follow-up](json-v2-reliability.md) for the subsequent row-size safety fix, fuzzing, and remaining struct-encoding limitation.
+
 This follow-up removes reflection copies from plain JSON-object encoding. It improves embedded object writes and typed-row reads, but **does not establish a universally faster Flop**. The tables include slower cases and unchanged controls.
 
 Baseline: initial v2 migration `6da073295f6609ca0e1c76d55dd1ae2177c900d3`, Go 1.27.3. Candidate: the source accompanying this report, captured in [candidate.patch](results/json-v2-optimization/candidate.patch). Original v1 comparison: `df1fa8af1a47910f9f490e150c868dc446301a3a`, Go 1.26.10. Same Linux/amd64 host, AMD Ryzen 9 9950X, GOMAXPROCS=32, default build flags. No concurrent benchmark/build/test jobs were run during collection.

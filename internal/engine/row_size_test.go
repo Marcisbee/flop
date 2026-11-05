@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -28,34 +29,37 @@ func TestInsertRejectsOversizedRow(t *testing.T) {
 }
 
 func TestUpdateRejectsOversizedRowWithoutMutatingExistingRow(t *testing.T) {
-	db := openTestDB(t, t.TempDir(), false, true)
-	t.Cleanup(func() { _ = db.Close() })
-	ti := mustTable(t, db)
-
-	if _, err := ti.Insert(map[string]interface{}{
-		"id":    "id-1",
-		"slug":  "slug-1",
-		"title": "small",
-		"genre": "action",
-	}, nil); err != nil {
-		t.Fatalf("seed insert: %v", err)
-	}
-
-	_, err := ti.Update("id-1", map[string]interface{}{
-		"title": strings.Repeat("y", storage.MaxRowDataSize()+1024),
-	}, nil)
-	if !errors.Is(err, storage.ErrRowTooLarge) {
-		t.Fatalf("expected ErrRowTooLarge, got %v", err)
-	}
-
-	row, err := ti.Get("id-1")
-	if err != nil {
-		t.Fatalf("get row after failed update: %v", err)
-	}
-	if row == nil {
-		t.Fatal("expected row to remain after failed oversized update")
-	}
-	if got := toString(row["title"]); got != "small" {
-		t.Fatalf("expected original title to remain, got %q", got)
+	for _, size := range []int{storage.MaxRowDataSize() + 1024, 1 << 16} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			dir := t.TempDir()
+			db := openTestDB(t, dir, false, true)
+			t.Cleanup(func() { _ = db.Close() })
+			ti := mustTable(t, db)
+			for _, id := range []string{"id-1", "neighbor"} {
+				if _, err := ti.Insert(map[string]interface{}{"id": id, "slug": id, "title": "small", "genre": "action"}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := ti.Update("id-1", map[string]interface{}{"title": strings.Repeat("y", size)}, nil)
+			if !errors.Is(err, storage.ErrRowTooLarge) {
+				t.Fatalf("expected ErrRowTooLarge, got %v", err)
+			}
+			check := func() {
+				t.Helper()
+				for _, id := range []string{"id-1", "neighbor"} {
+					row, err := ti.Get(id)
+					if err != nil || row == nil || row["title"] != "small" {
+						t.Fatalf("row %q changed after rejected update: %v, %v", id, row, err)
+					}
+				}
+			}
+			check()
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db = openTestDB(t, dir, false, true)
+			ti = mustTable(t, db)
+			check()
+		})
 	}
 }

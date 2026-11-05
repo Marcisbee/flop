@@ -1,0 +1,62 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/storage
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkArrayRowCodec/Encode-32         	  220597	      1019 ns/op	    3072 B/op	       4 allocs/op
+BenchmarkArrayRowCodec/Encode-32         	  220802	      1008 ns/op	    3072 B/op	       4 allocs/op
+BenchmarkArrayRowCodec/Encode-32         	  231374	      1022 ns/op	    3072 B/op	       4 allocs/op
+BenchmarkArrayRowCodec/Encode-32         	  239560	      1033 ns/op	    3072 B/op	       4 allocs/op
+BenchmarkArrayRowCodec/Encode-32         	  215676	      1017 ns/op	    3072 B/op	       4 allocs/op
+BenchmarkArrayRowCodec/Decode-32         	  110982	      1875 ns/op	    3581 B/op	     134 allocs/op
+BenchmarkArrayRowCodec/Decode-32         	  119654	      1851 ns/op	    3581 B/op	     134 allocs/op
+BenchmarkArrayRowCodec/Decode-32         	  131037	      1890 ns/op	    3581 B/op	     134 allocs/op
+BenchmarkArrayRowCodec/Decode-32         	  131395	      1855 ns/op	    3581 B/op	     134 allocs/op
+BenchmarkArrayRowCodec/Decode-32         	  125517	      1885 ns/op	    3581 B/op	     134 allocs/op
+BenchmarkJSONRowCodec/Encode-32          	  621147	       387.7 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32          	  526876	       380.8 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32          	  625242	       387.9 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32          	  523126	       385.8 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32          	  542853	       387.0 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32    	  902025	       262.0 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32    	  900086	       265.7 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32    	  908906	       264.2 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32    	  902278	       262.6 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32    	  911097	       261.2 ns/op	     336 B/op	       3 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/storage	6.142s
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/engine
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkRowIO/Scalar/Get-32         	  931435	       262.8 ns/op	     421 B/op	       7 allocs/op
+BenchmarkRowIO/Scalar/Get-32         	 1116685	       214.8 ns/op	     421 B/op	       7 allocs/op
+BenchmarkRowIO/Scalar/Get-32         	 1126473	       216.6 ns/op	     421 B/op	       7 allocs/op
+BenchmarkRowIO/Scalar/Get-32         	 1142630	       214.4 ns/op	     421 B/op	       7 allocs/op
+BenchmarkRowIO/Scalar/Get-32         	 1000000	       216.5 ns/op	     421 B/op	       7 allocs/op
+BenchmarkRowIO/Scalar/Insert-32      	   36423	      6553 ns/op	    1779 B/op	      23 allocs/op
+BenchmarkRowIO/Scalar/Insert-32      	   37081	      6464 ns/op	    1776 B/op	      23 allocs/op
+BenchmarkRowIO/Scalar/Insert-32      	   36223	      6404 ns/op	    1780 B/op	      23 allocs/op
+BenchmarkRowIO/Scalar/Insert-32      	   36607	      6411 ns/op	    1777 B/op	      23 allocs/op
+BenchmarkRowIO/Scalar/Insert-32      	   37231	      6397 ns/op	    1775 B/op	      23 allocs/op
+BenchmarkRowIO/Scalar/Update-32      	   64928	      3715 ns/op	    1953 B/op	      29 allocs/op
+BenchmarkRowIO/Scalar/Update-32      	   68176	      3487 ns/op	    1953 B/op	      29 allocs/op
+BenchmarkRowIO/Scalar/Update-32      	   66436	      3479 ns/op	    1953 B/op	      29 allocs/op
+BenchmarkRowIO/Scalar/Update-32      	   69560	      3454 ns/op	    1953 B/op	      29 allocs/op
+BenchmarkRowIO/Scalar/Update-32      	   66837	      3483 ns/op	    1953 B/op	      29 allocs/op
+BenchmarkRowIO/Arrays/Get-32         	   95484	      2655 ns/op	    4637 B/op	     137 allocs/op
+BenchmarkRowIO/Arrays/Get-32         	  112575	      2090 ns/op	    4637 B/op	     137 allocs/op
+BenchmarkRowIO/Arrays/Get-32         	  112150	      2106 ns/op	    4637 B/op	     137 allocs/op
+BenchmarkRowIO/Arrays/Get-32         	  115652	      2066 ns/op	    4637 B/op	     137 allocs/op
+BenchmarkRowIO/Arrays/Get-32         	  108366	      2074 ns/op	    4637 B/op	     137 allocs/op
+BenchmarkRowIO/Arrays/Insert-32      	   33009	      6754 ns/op	    7806 B/op	      26 allocs/op
+BenchmarkRowIO/Arrays/Insert-32      	   32540	      6549 ns/op	    7809 B/op	      26 allocs/op
+BenchmarkRowIO/Arrays/Insert-32      	   39741	      6472 ns/op	    7778 B/op	      26 allocs/op
+BenchmarkRowIO/Arrays/Insert-32      	   38078	      6258 ns/op	    7784 B/op	      26 allocs/op
+BenchmarkRowIO/Arrays/Insert-32      	   38613	      6482 ns/op	    7783 B/op	      26 allocs/op
+BenchmarkRowIO/Arrays/Update-32      	   23434	      9524 ns/op	   12889 B/op	     162 allocs/op
+BenchmarkRowIO/Arrays/Update-32      	   29545	      8488 ns/op	   12889 B/op	     162 allocs/op
+BenchmarkRowIO/Arrays/Update-32      	   27555	      8084 ns/op	   12889 B/op	     162 allocs/op
+BenchmarkRowIO/Arrays/Update-32      	   29643	      8063 ns/op	   12889 B/op	     162 allocs/op
+BenchmarkRowIO/Arrays/Update-32      	   27304	      7962 ns/op	   12889 B/op	     162 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/engine	9.615s

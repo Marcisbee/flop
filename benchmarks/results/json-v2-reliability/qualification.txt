@@ -1,0 +1,195 @@
+GOCACHE=/home/marcis/.kode/runtime/caches/go-build go vet ./...
+GOCACHE=/home/marcis/.kode/runtime/caches/go-build go test ./...
+ok  	github.com/marcisbee/flop	16.941s
+?   	github.com/marcisbee/flop/cmd/flop-gen	[no test files]
+?   	github.com/marcisbee/flop/cmd/pillarbench	[no test files]
+ok  	github.com/marcisbee/flop/cmd/pillargate	(cached)
+?   	github.com/marcisbee/flop/cmd/quickbench	[no test files]
+ok  	github.com/marcisbee/flop/cmd/quickbenchcmp	(cached)
+?   	github.com/marcisbee/flop/gen	[no test files]
+?   	github.com/marcisbee/flop/internal/cron	[no test files]
+ok  	github.com/marcisbee/flop/internal/engine	0.803s
+?   	github.com/marcisbee/flop/internal/failpoint	[no test files]
+?   	github.com/marcisbee/flop/internal/images	[no test files]
+ok  	github.com/marcisbee/flop/internal/jsonx	0.005s
+?   	github.com/marcisbee/flop/internal/quickbenchreport	[no test files]
+ok  	github.com/marcisbee/flop/internal/reqtrace	(cached)
+?   	github.com/marcisbee/flop/internal/schema	[no test files]
+ok  	github.com/marcisbee/flop/internal/server	0.264s
+ok  	github.com/marcisbee/flop/internal/storage	0.011s
+?   	github.com/marcisbee/flop/internal/util	[no test files]
+GOCACHE=/home/marcis/.kode/runtime/caches/go-build go test -race ./...
+ok  	github.com/marcisbee/flop	92.044s
+?   	github.com/marcisbee/flop/cmd/flop-gen	[no test files]
+?   	github.com/marcisbee/flop/cmd/pillarbench	[no test files]
+ok  	github.com/marcisbee/flop/cmd/pillargate	(cached)
+?   	github.com/marcisbee/flop/cmd/quickbench	[no test files]
+ok  	github.com/marcisbee/flop/cmd/quickbenchcmp	(cached)
+?   	github.com/marcisbee/flop/gen	[no test files]
+?   	github.com/marcisbee/flop/internal/cron	[no test files]
+ok  	github.com/marcisbee/flop/internal/engine	16.439s
+?   	github.com/marcisbee/flop/internal/failpoint	[no test files]
+?   	github.com/marcisbee/flop/internal/images	[no test files]
+ok  	github.com/marcisbee/flop/internal/jsonx	1.020s
+?   	github.com/marcisbee/flop/internal/quickbenchreport	[no test files]
+ok  	github.com/marcisbee/flop/internal/reqtrace	(cached)
+?   	github.com/marcisbee/flop/internal/schema	[no test files]
+ok  	github.com/marcisbee/flop/internal/server	3.709s
+ok  	github.com/marcisbee/flop/internal/storage	1.037s
+?   	github.com/marcisbee/flop/internal/util	[no test files]
+GOCACHE=/home/marcis/.kode/runtime/caches/go-build go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+=== Symbol Results ===
+
+No vulnerabilities found.
+
+Your code is affected by 0 vulnerabilities.
+This scan also found 0 vulnerabilities in packages you import and 1
+vulnerability in modules you require, but your code doesn't appear to call these
+vulnerabilities.
+Use '-show verbose' for more details.
+Running pillarbench gate sample 1/3 -> .pillarbench/results/gate-20261105T095007Z-run1-full-r2000-o4000.json
+INFO report_file=.pillarbench/results/gate-20261105T095007Z-run1-full-r2000-o4000.json
+RESULT seed_ms=16.000 ms
+RESULT seed_rows_per_sec=120670.668 rows/s
+RESULT workload_ms=44.000 ms
+RESULT workload_tps=90593.531 ops/s
+RESULT workload_alloc_bytes=12131248.000 bytes
+RESULT workload_alloc_per_op=3032.812 bytes/op
+RESULT ops_get=1797.000 ops
+RESULT ops_update=1007.000 ops
+RESULT ops_insert=604.000 ops
+RESULT ops_delete=414.000 ops
+RESULT ops_scan=178.000 ops
+RESULT get_count=1797.000 ops
+RESULT get_avg_us=0.779 us
+RESULT get_p50_us=0.000 us
+RESULT get_p95_us=2.000 us
+RESULT get_p99_us=6.000 us
+RESULT update_count=1007.000 ops
+RESULT update_avg_us=131.678 us
+RESULT update_p50_us=33.000 us
+RESULT update_p95_us=645.000 us
+RESULT update_p99_us=1109.000 us
+RESULT insert_count=604.000 ops
+RESULT insert_avg_us=31.636 us
+RESULT insert_p50_us=12.000 us
+RESULT insert_p95_us=112.000 us
+RESULT insert_p99_us=195.000 us
+RESULT delete_count=414.000 ops
+RESULT delete_avg_us=23.572 us
+RESULT delete_p50_us=5.000 us
+RESULT delete_p95_us=96.000 us
+RESULT delete_p99_us=178.000 us
+RESULT scan_count=178.000 ops
+RESULT scan_avg_us=19.865 us
+RESULT scan_p50_us=16.000 us
+RESULT scan_p95_us=33.000 us
+RESULT scan_p99_us=86.000 us
+RESULT checkpoint_ms=0.000 ms
+RESULT close_ms=0.000 ms
+RESULT recovery_open_ms=3.000 ms
+RESULT recovery_consistent=1.000 bool
+RESULT recovery_rows=2190.000 rows
+CRASH scenario=insert_after_wal_record run=1 exit=197 recovery_ms=2 rows=200 status=ok
+CRASH scenario=insert_after_page_write run=1 exit=197 recovery_ms=1 rows=200 status=ok
+CRASH scenario=insert_after_index_update run=1 exit=197 recovery_ms=1 rows=200 status=ok
+CRASH scenario=insert_before_commit run=1 exit=197 recovery_ms=1 rows=200 status=ok
+CRASH scenario=update_after_wal_record run=1 exit=197 recovery_ms=1 rows=200 status=ok
+CRASH scenario=update_after_page_write run=1 exit=197 recovery_ms=1 rows=200 status=ok
+CRASH scenario=update_after_index_update run=1 exit=197 recovery_ms=1 rows=200 status=ok
+CRASH scenario=update_before_commit run=1 exit=197 recovery_ms=1 rows=200 status=ok
+CRASH scenario=delete_after_wal_record run=1 exit=197 recovery_ms=1 rows=201 status=ok
+CRASH scenario=delete_after_page_write run=1 exit=197 recovery_ms=1 rows=201 status=ok
+CRASH scenario=delete_after_index_update run=1 exit=197 recovery_ms=1 rows=201 status=ok
+CRASH scenario=delete_before_commit run=1 exit=197 recovery_ms=1 rows=201 status=ok
+CRASH scenario=checkpoint_after_table_flush run=1 exit=197 recovery_ms=1 rows=201 status=ok
+CRASH scenario=checkpoint_after_index_write run=1 exit=197 recovery_ms=1 rows=201 status=ok
+CRASH scenario=checkpoint_after_wal_fsync run=1 exit=197 recovery_ms=1 rows=200 status=ok
+Running pillarbench gate sample 2/3 -> .pillarbench/results/gate-20261105T095007Z-run2-full-r2000-o4000.json
+INFO report_file=.pillarbench/results/gate-20261105T095007Z-run2-full-r2000-o4000.json
+RESULT seed_ms=13.000 ms
+RESULT seed_rows_per_sec=144743.073 rows/s
+RESULT workload_ms=42.000 ms
+RESULT workload_tps=94957.250 ops/s
+RESULT workload_alloc_bytes=12469608.000 bytes
+RESULT workload_alloc_per_op=3117.402 bytes/op
+RESULT ops_get=1797.000 ops
+RESULT ops_update=1007.000 ops
+RESULT ops_insert=604.000 ops
+RESULT ops_delete=414.000 ops
+RESULT ops_scan=178.000 ops
+RESULT get_count=1797.000 ops
+RESULT get_avg_us=0.545 us
+RESULT get_p50_us=0.000 us
+RESULT get_p95_us=2.000 us
+RESULT get_p99_us=6.000 us
+RESULT update_count=1007.000 ops
+RESULT update_avg_us=126.824 us
+RESULT update_p50_us=25.000 us
+RESULT update_p95_us=592.000 us
+RESULT update_p99_us=1203.000 us
+RESULT insert_count=604.000 ops
+RESULT insert_avg_us=27.846 us
+RESULT insert_p50_us=10.000 us
+RESULT insert_p95_us=109.000 us
+RESULT insert_p99_us=164.000 us
+RESULT delete_count=414.000 ops
+RESULT delete_avg_us=25.109 us
+RESULT delete_p50_us=5.000 us
+RESULT delete_p95_us=104.000 us
+RESULT delete_p99_us=158.000 us
+RESULT scan_count=178.000 ops
+RESULT scan_avg_us=21.051 us
+RESULT scan_p50_us=15.000 us
+RESULT scan_p95_us=33.000 us
+RESULT scan_p99_us=82.000 us
+RESULT checkpoint_ms=0.000 ms
+RESULT close_ms=0.000 ms
+RESULT recovery_open_ms=2.000 ms
+RESULT recovery_consistent=1.000 bool
+RESULT recovery_rows=2190.000 rows
+Running pillarbench gate sample 3/3 -> .pillarbench/results/gate-20261105T095007Z-run3-full-r2000-o4000.json
+INFO report_file=.pillarbench/results/gate-20261105T095007Z-run3-full-r2000-o4000.json
+RESULT seed_ms=13.000 ms
+RESULT seed_rows_per_sec=148285.010 rows/s
+RESULT workload_ms=41.000 ms
+RESULT workload_tps=95820.150 ops/s
+RESULT workload_alloc_bytes=12307776.000 bytes
+RESULT workload_alloc_per_op=3076.944 bytes/op
+RESULT ops_get=1797.000 ops
+RESULT ops_update=1007.000 ops
+RESULT ops_insert=604.000 ops
+RESULT ops_delete=414.000 ops
+RESULT ops_scan=178.000 ops
+RESULT get_count=1797.000 ops
+RESULT get_avg_us=0.570 us
+RESULT get_p50_us=0.000 us
+RESULT get_p95_us=2.000 us
+RESULT get_p99_us=8.000 us
+RESULT update_count=1007.000 ops
+RESULT update_avg_us=126.791 us
+RESULT update_p50_us=28.000 us
+RESULT update_p95_us=581.000 us
+RESULT update_p99_us=1039.000 us
+RESULT insert_count=604.000 ops
+RESULT insert_avg_us=28.424 us
+RESULT insert_p50_us=11.000 us
+RESULT insert_p95_us=108.000 us
+RESULT insert_p99_us=136.000 us
+RESULT delete_count=414.000 ops
+RESULT delete_avg_us=21.461 us
+RESULT delete_p50_us=5.000 us
+RESULT delete_p95_us=96.000 us
+RESULT delete_p99_us=128.000 us
+RESULT scan_count=178.000 ops
+RESULT scan_avg_us=22.000 us
+RESULT scan_p50_us=16.000 us
+RESULT scan_p95_us=33.000 us
+RESULT scan_p99_us=152.000 us
+RESULT checkpoint_ms=0.000 ms
+RESULT close_ms=0.000 ms
+RESULT recovery_open_ms=3.000 ms
+RESULT recovery_consistent=1.000 bool
+RESULT recovery_rows=2190.000 rows
+Validating gate thresholds
+PILLAR_GATE_OK samples=3

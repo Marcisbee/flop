@@ -16,6 +16,9 @@ func TestJSONWriteRejectsInvalidValueWithoutChangingStoredRow(t *testing.T) {
 		{"invalid_utf8", string([]byte{0xff})},
 		{"duplicate_raw_member", json.RawMessage(`{"a":1,"a":2}`)},
 		{"non_finite_number", math.NaN()},
+		{"object_invalid_utf8", map[string]any{"value": string([]byte{0xff})}},
+		{"object_duplicate_raw_member", map[string]any{"value": json.RawMessage(`{"a":1,"a":2}`)}},
+		{"object_non_finite_number", map[string]any{"value": math.NaN()}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

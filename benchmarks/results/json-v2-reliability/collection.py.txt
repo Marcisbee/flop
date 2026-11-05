@@ -1,0 +1,8 @@
+from pathlib import Path
+import os,subprocess
+root=Path.cwd();out=root/'.quickbench/results/jsonv2-reliability/matched';env={**os.environ,'GOTOOLCHAIN':'go1.27.3'}
+for label,revision in [('baseline',root.parent/'flop-jsonv2-reliability-baseline'),('candidate',root),('candidate-reverse',root),('baseline-reverse',root.parent/'flop-jsonv2-reliability-baseline')]:
+ with (out/(label+'.txt')).open('w') as f:
+  p=subprocess.run(['go','test','./internal/storage','./internal/engine','-run','^$','-bench','^BenchmarkJSONFieldShapes/TopStruct$|^BenchmarkJSONRowCodec/Encode$|^BenchmarkRowIO$|^BenchmarkArrayRowCodec$','-benchmem','-benchtime=200ms','-count=5'],cwd=revision,env=env,stdout=f,stderr=subprocess.STDOUT)
+ print(label,p.returncode,flush=True)
+ if p.returncode:raise SystemExit(p.returncode)
