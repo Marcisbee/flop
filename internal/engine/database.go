@@ -1893,7 +1893,10 @@ func (ti *TableInstance) Insert(data map[string]interface{}, txBuf map[string]*w
 	}
 
 	// Serialize
-	serialized := storage.SerializeRow(row, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	serialized, err := storage.SerializeRow(row, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	if err != nil {
+		return nil, err
+	}
 	if err := storage.ValidateRowDataSize(len(serialized)); err != nil {
 		return nil, err
 	}
@@ -2300,7 +2303,10 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
 	}
 
 	// Serialize
-	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	serialized, err := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	if err != nil {
+		return nil, err
+	}
 
 	txID := ti.wal.BeginTransaction()
 	isTx := txBuf != nil
@@ -2451,7 +2457,10 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 		return nil, err
 	}
 
-	serialized := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	serialized, err := storage.SerializeRow(newRow, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	if err != nil {
+		return nil, err
+	}
 	if err := storage.ValidateRowDataSize(len(serialized)); err != nil {
 		return nil, err
 	}
@@ -2466,7 +2475,11 @@ func (ti *TableInstance) updateSlowLocked(key string, updates map[string]interfa
 	}
 	failpoint.Hit("update_slow_after_wal_record")
 	pendingAdded := false
-	ti.addPendingRow(key, storage.SerializeRow(existing, ti.def.CompiledSchema, uint16(ti.currentVersion)))
+	previous, err := storage.SerializeRow(existing, ti.def.CompiledSchema, uint16(ti.currentVersion))
+	if err != nil {
+		return nil, err
+	}
+	ti.addPendingRow(key, previous)
 	pendingAdded = true
 	defer func() {
 		if pendingAdded {

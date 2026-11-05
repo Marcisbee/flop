@@ -1,7 +1,6 @@
 package flop
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/server"
 )
 

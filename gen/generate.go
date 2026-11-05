@@ -1,7 +1,6 @@
 package gen
 
 import (
-	"encoding/json"
 	"fmt"
 	"go/format"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/marcisbee/flop"
+	json "github.com/marcisbee/flop/internal/jsonx"
 )
 
 type Options struct {

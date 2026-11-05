@@ -1,0 +1,31 @@
+examples/movies-go-react
+?   	github.com/marcisbee/flop/examples/movies-go-react/app	[no test files]
+?   	github.com/marcisbee/flop/examples/movies-go-react/cmd/gen	[no test files]
+?   	github.com/marcisbee/flop/examples/movies-go-react/cmd/seed	[no test files]
+?   	github.com/marcisbee/flop/examples/movies-go-react/cmd/server	[no test files]
+exit 0
+examples/blog-go-react
+?   	github.com/marcisbee/flop/examples/blog-go-react/app	[no test files]
+?   	github.com/marcisbee/flop/examples/blog-go-react/cmd/gen	[no test files]
+?   	github.com/marcisbee/flop/examples/blog-go-react/cmd/server	[no test files]
+exit 0
+examples/twitter-go-react
+?   	github.com/marcisbee/flop/examples/twitter-go-react/app	[no test files]
+?   	github.com/marcisbee/flop/examples/twitter-go-react/cmd/seed	[no test files]
+?   	github.com/marcisbee/flop/examples/twitter-go-react/cmd/server	[no test files]
+exit 0
+benchmarks/finance-mongodb-go
+?   	github.com/marcisbee/flop/benchmarks/finance-mongodb-go	[no test files]
+exit 0
+benchmarks/finance-sqlite-go
+?   	github.com/marcisbee/flop/benchmarks/finance-sqlite-go	[no test files]
+exit 0
+benchmarks/finance-go
+?   	github.com/marcisbee/flop/benchmarks/finance-go	[no test files]
+?   	github.com/marcisbee/flop/benchmarks/finance-go/appschema	[no test files]
+?   	github.com/marcisbee/flop/benchmarks/finance-go/appschema/gen	[no test files]
+?   	github.com/marcisbee/flop/benchmarks/finance-go/cmd/gen	[no test files]
+exit 0
+benchmarks/finance-turso-go
+?   	github.com/marcisbee/flop/benchmarks/finance-turso-go	[no test files]
+exit 0

@@ -1,7 +1,6 @@
 package flop
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/marcisbee/flop/internal/images"
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/storage"
 )

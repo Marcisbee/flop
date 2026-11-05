@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	json "github.com/marcisbee/flop/internal/jsonx"
 )
 
 const (
@@ -164,7 +165,7 @@ func (p *OAuth2AuthProvider) ExchangeGrant(ctx context.Context, request AuthProv
 		return AuthProviderExchangeResult{}, fmt.Errorf("provider user-info status %d", response.StatusCode)
 	}
 	var claims map[string]any
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&claims); err != nil {
+	if err := json.UnmarshalRead(io.LimitReader(response.Body, 1<<20), &claims); err != nil {
 		return AuthProviderExchangeResult{}, err
 	}
 	if claimString(claims[p.Definition.UserInfoSubjectClaim]) == "" {
@@ -214,7 +215,7 @@ func (p *OAuth2AuthProvider) tokenRequest(ctx context.Context, form url.Values, 
 		var payload struct {
 			Error string `json:"error"`
 		}
-		_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&payload)
+		_ = json.UnmarshalRead(io.LimitReader(response.Body, 4096), &payload)
 		return AuthProviderTokenSet{}, &AuthProviderUpstreamError{Code: payload.Error, Terminal: payload.Error == "invalid_grant"}
 	}
 	var payload struct {
@@ -225,7 +226,7 @@ func (p *OAuth2AuthProvider) tokenRequest(ctx context.Context, form url.Values, 
 		Scope        any    `json:"scope"`
 		IDToken      string `json:"id_token"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+	if err := json.UnmarshalRead(io.LimitReader(response.Body, 1<<20), &payload); err != nil {
 		return AuthProviderTokenSet{}, err
 	}
 	if payload.AccessToken == "" {
@@ -534,7 +535,7 @@ func (p *DraugiemPassportProvider) ExchangeGrant(ctx context.Context, request Au
 		return AuthProviderExchangeResult{}, fmt.Errorf("Draugiem API status %d", response.StatusCode)
 	}
 	var payload map[string]any
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+	if err := json.UnmarshalRead(io.LimitReader(response.Body, 1<<20), &payload); err != nil {
 		return AuthProviderExchangeResult{}, err
 	}
 	profile := firstProviderProfile(payload["users"])

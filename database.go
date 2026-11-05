@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/marcisbee/flop/internal/jsonx"
@@ -753,7 +752,7 @@ func authSessionTimestamp(v any) int64 {
 		return int64(n)
 	case float64:
 		return int64(n)
-	case json.Number:
+	case jsonx.Number:
 		if i, err := n.Int64(); err == nil {
 			return i
 		}
@@ -3736,7 +3735,7 @@ func adminCollectMediaRefs(value interface{}, kind schema.FieldKind) []schema.Fi
 		if value == nil {
 			return nil
 		}
-		data, err := json.Marshal(value)
+		data, err := jsonx.Marshal(value)
 		if err != nil {
 			return nil
 		}
@@ -4131,7 +4130,7 @@ func (p *EngineAdminProvider) AdminSSE(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_ = jsonx.NewEncoder(w).Encode(map[string]any{"error": "SSE not supported"})
+		_ = jsonx.MarshalWrite(w, map[string]any{"error": "SSE not supported"})
 		return
 	}
 

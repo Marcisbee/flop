@@ -2,16 +2,16 @@ package storage
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"math"
 
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/schema"
 )
 
 // SerializeRow encodes a row into binary format.
 // Format: schemaVersion:u16, fieldCount:u8, fields...
-func SerializeRow(row map[string]interface{}, cs *schema.CompiledSchema, schemaVersion uint16) []byte {
+func SerializeRow(row map[string]interface{}, cs *schema.CompiledSchema, schemaVersion uint16) ([]byte, error) {
 	// Header: schemaVersion(2) + fieldCount(1)
 	buf := make([]byte, 3, 256)
 	binary.LittleEndian.PutUint16(buf[0:2], schemaVersion)
@@ -19,14 +19,18 @@ func SerializeRow(row map[string]interface{}, cs *schema.CompiledSchema, schemaV
 
 	for _, field := range cs.Fields {
 		val := row[field.Name]
-		buf = appendField(buf, val, field.Kind)
+		var err error
+		buf, err = appendField(buf, val, field.Kind)
+		if err != nil {
+			return nil, fmt.Errorf("field %q: %w", field.Name, err)
+		}
 	}
-	return buf
+	return buf, nil
 }
 
-func appendField(buf []byte, value interface{}, kind schema.FieldKind) []byte {
+func appendField(buf []byte, value interface{}, kind schema.FieldKind) ([]byte, error) {
 	if value == nil {
-		return append(buf, byte(schema.TagNull))
+		return append(buf, byte(schema.TagNull)), nil
 	}
 
 	tag := schema.FieldTypeTag(kind)
@@ -56,7 +60,10 @@ func appendField(buf []byte, value interface{}, kind schema.FieldKind) []byte {
 		}
 
 	case schema.KindJson, schema.KindFileSingle, schema.KindFileMulti:
-		jsonBytes, _ := json.Marshal(value)
+		jsonBytes, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
 		buf = append(buf, byte(tag))
 		buf = appendUint32(buf, uint32(len(jsonBytes)))
 		buf = append(buf, jsonBytes...)
@@ -95,7 +102,7 @@ func appendField(buf []byte, value interface{}, kind schema.FieldKind) []byte {
 		buf = append(buf, byte(schema.TagNull))
 	}
 
-	return buf
+	return buf, nil
 }
 
 // DeserializeRow decodes a binary row into a map.
