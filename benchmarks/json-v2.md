@@ -1,5 +1,7 @@
 # Flop JSON v2 measurements
 
+Historical migration baseline. The [follow-up object encoding optimization](json-v2-optimization.md) removes the JSON-row encoding regression measured below; it includes fresh results and remaining tradeoffs.
+
 Baseline: `df1fa8af1a47910f9f490e150c868dc446301a3a`. Candidate: the JSON v2 migration accompanying this report. No benchmark is a claim about Strike, Kodē, or Baby production latency.
 
 Three configurations: original Flop on Go 1.26.10 (`legacy`); unchanged codec on Go 1.27.3 (`baseline`); migrated v2 on Go 1.27.3 (`final`). The original code was measured in a separate checkout. Linux/amd64, AMD Ryzen 9 9950X, GOMAXPROCS=32. Default build tags; Sonic was not enabled.

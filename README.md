@@ -338,5 +338,6 @@ JSON are read using v2's stricter validation. Invalid embedded JSON-field writes
 before storing a row. Deterministic ordering is retained for generated/indented
 JSON and workflow prompt text; other JSON map ordering is unspecified.
 
-See [the measured before/after results](benchmarks/json-v2.md) for performance,
-allocation counts, methodology, and qualification limits.
+See [the original migration measurements](benchmarks/json-v2.md) and the
+[JSON-object optimization results](benchmarks/json-v2-optimization.md) for
+performance, allocation counts, methodology, and qualification limits.

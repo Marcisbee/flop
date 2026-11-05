@@ -1,0 +1,20 @@
+from pathlib import Path
+import subprocess,os
+root=Path.cwd();out=root/'.quickbench/results/jsonv2-opt/retained'
+base=root.parent/'flop-jsonv2-opt-baseline'
+env={**os.environ,'GOTOOLCHAIN':'go1.27.3'}
+def run(cwd,name,args,toolchain=None):
+ with (out/name).open('w') as log:
+  p=subprocess.run(args,cwd=cwd,env=env if toolchain is None else {**env,'GOTOOLCHAIN':toolchain},stdout=log,stderr=subprocess.STDOUT)
+ print(name,p.returncode,flush=True)
+ if p.returncode:raise SystemExit(p.returncode)
+def bench(label,cwd,reverse=False):
+ specs=[('json',['.','./internal/storage'],'BenchmarkTypedJSONConversion|BenchmarkJSONRowCodec','300ms'),('shapes',['./internal/storage'],'^BenchmarkJSONFieldShapes','200ms')]
+ if True:specs += [('server',['./internal/server'],'BenchmarkHTTPJSON|BenchmarkSSE','300ms'),('engine',['./internal/engine','./internal/storage'],'BenchmarkRowIO|BenchmarkArrayRowCodec','200ms'),('archive',['./internal/engine'],'^BenchmarkArchiveRecovery$','5x')]
+ for name,packages,pattern,duration in specs:
+  run(cwd,label+('-reverse' if reverse else '')+'-'+name+'.txt',['go','test',*packages,'-run','^$','-bench',pattern,'-benchmem','-benchtime='+duration,'-count=5'])
+ if not reverse:
+  run(cwd,label+'-quick.log',['make','quickbench-series','QB_SERIES_DIR='+str(out/(label+'-quick')),'QB_ROWS=10000','QB_LOOKUPS=5000','QB_SEARCHES=1000','QB_BATCH=1000','QB_SYNC_MODE=full'])
+for label,cwd in [('before',base),('after',root)]:bench(label,cwd)
+for label,cwd in [('after',root),('before',base)]:bench(label,cwd,True)
+run(root.parent/'flop-jsonv2-baseline','legacy-json.txt',['go','test','.','./internal/storage','-run','^$','-bench','BenchmarkTypedJSONConversion|BenchmarkJSONRowCodec','-benchmem','-benchtime=300ms','-count=5'],'go1.26.10')

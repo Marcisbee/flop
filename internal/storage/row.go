@@ -60,7 +60,13 @@ func appendField(buf []byte, value interface{}, kind schema.FieldKind) ([]byte, 
 		}
 
 	case schema.KindJson, schema.KindFileSingle, schema.KindFileMulti:
-		jsonBytes, err := json.Marshal(value)
+		var jsonBytes []byte
+		var err error
+		if object, ok := value.(map[string]any); ok {
+			jsonBytes, err = json.MarshalObject(object)
+		} else {
+			jsonBytes, err = json.Marshal(value)
+		}
 		if err != nil {
 			return nil, err
 		}

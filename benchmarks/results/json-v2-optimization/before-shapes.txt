@@ -1,0 +1,71 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/storage
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkJSONFieldShapes/EmptyObject-32         	 1568407	       154.0 ns/op	     272 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyObject-32         	 1521649	       153.6 ns/op	     272 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyObject-32         	 1525267	       155.1 ns/op	     272 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyObject-32         	 1551806	       153.5 ns/op	     272 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyObject-32         	 1564381	       156.0 ns/op	     272 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyArray-32          	 1524513	       160.0 ns/op	     288 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyArray-32          	 1520050	       158.3 ns/op	     288 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyArray-32          	 1547017	       158.8 ns/op	     288 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyArray-32          	 1530036	       156.7 ns/op	     288 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/EmptyArray-32          	 1500109	       158.1 ns/op	     288 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/Array1-32              	 1127899	       213.1 ns/op	     304 B/op	       4 allocs/op
+BenchmarkJSONFieldShapes/Array1-32              	 1123862	       210.0 ns/op	     304 B/op	       4 allocs/op
+BenchmarkJSONFieldShapes/Array1-32              	 1115551	       210.5 ns/op	     304 B/op	       4 allocs/op
+BenchmarkJSONFieldShapes/Array1-32              	 1123672	       211.8 ns/op	     304 B/op	       4 allocs/op
+BenchmarkJSONFieldShapes/Array1-32              	  952195	       212.0 ns/op	     304 B/op	       4 allocs/op
+BenchmarkJSONFieldShapes/Array4-32              	  683212	       353.9 ns/op	     344 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/Array4-32              	  687592	       345.6 ns/op	     344 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/Array4-32              	  687237	       349.6 ns/op	     344 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/Array4-32              	  698655	       344.9 ns/op	     344 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/Array4-32              	  684922	       347.9 ns/op	     344 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/Array8-32              	  308497	       708.5 ns/op	     432 B/op	      19 allocs/op
+BenchmarkJSONFieldShapes/Array8-32              	  311316	       714.5 ns/op	     432 B/op	      19 allocs/op
+BenchmarkJSONFieldShapes/Array8-32              	  304969	       706.2 ns/op	     432 B/op	      19 allocs/op
+BenchmarkJSONFieldShapes/Array8-32              	  290607	       712.7 ns/op	     432 B/op	      19 allocs/op
+BenchmarkJSONFieldShapes/Array8-32              	  305133	       708.7 ns/op	     432 B/op	      19 allocs/op
+BenchmarkJSONFieldShapes/Scalars-32             	  296764	       693.7 ns/op	     408 B/op	      10 allocs/op
+BenchmarkJSONFieldShapes/Scalars-32             	  306434	       689.0 ns/op	     408 B/op	      10 allocs/op
+BenchmarkJSONFieldShapes/Scalars-32             	  318375	       691.3 ns/op	     408 B/op	      10 allocs/op
+BenchmarkJSONFieldShapes/Scalars-32             	  321346	       688.8 ns/op	     408 B/op	      10 allocs/op
+BenchmarkJSONFieldShapes/Scalars-32             	  313782	       691.2 ns/op	     408 B/op	      10 allocs/op
+BenchmarkJSONFieldShapes/Rows64-32              	   15375	     15518 ns/op	   11631 B/op	      71 allocs/op
+BenchmarkJSONFieldShapes/Rows64-32              	   15190	     15483 ns/op	   11643 B/op	      71 allocs/op
+BenchmarkJSONFieldShapes/Rows64-32              	   15560	     15376 ns/op	   11633 B/op	      71 allocs/op
+BenchmarkJSONFieldShapes/Rows64-32              	   15361	     15501 ns/op	   11630 B/op	      71 allocs/op
+BenchmarkJSONFieldShapes/Rows64-32              	   15189	     15441 ns/op	   11637 B/op	      71 allocs/op
+BenchmarkJSONFieldShapes/Array64-32             	   13341	     17894 ns/op	   12116 B/op	     132 allocs/op
+BenchmarkJSONFieldShapes/Array64-32             	   13326	     18035 ns/op	   12097 B/op	     132 allocs/op
+BenchmarkJSONFieldShapes/Array64-32             	   13494	     17937 ns/op	   12112 B/op	     132 allocs/op
+BenchmarkJSONFieldShapes/Array64-32             	   13366	     17841 ns/op	   12104 B/op	     132 allocs/op
+BenchmarkJSONFieldShapes/Array64-32             	   13383	     18042 ns/op	   12111 B/op	     132 allocs/op
+BenchmarkJSONFieldShapes/TypedLeaf-32           	  430953	       502.3 ns/op	     424 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/TypedLeaf-32           	  439122	       506.3 ns/op	     424 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/TypedLeaf-32           	  432921	       501.0 ns/op	     424 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/TypedLeaf-32           	  472242	       501.3 ns/op	     424 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/TypedLeaf-32           	  433749	       498.2 ns/op	     424 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/RawLeaf-32             	  385041	       548.9 ns/op	     408 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/RawLeaf-32             	  379849	       546.7 ns/op	     408 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/RawLeaf-32             	  387277	       546.6 ns/op	     408 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/RawLeaf-32             	  368479	       549.3 ns/op	     408 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/RawLeaf-32             	  388522	       548.1 ns/op	     408 B/op	       7 allocs/op
+BenchmarkJSONFieldShapes/Deep-32                	   38978	      6208 ns/op	    3890 B/op	      15 allocs/op
+BenchmarkJSONFieldShapes/Deep-32                	   38458	      6162 ns/op	    3889 B/op	      15 allocs/op
+BenchmarkJSONFieldShapes/Deep-32                	   38403	      6169 ns/op	    3887 B/op	      15 allocs/op
+BenchmarkJSONFieldShapes/Deep-32                	   38721	      6168 ns/op	    3891 B/op	      15 allocs/op
+BenchmarkJSONFieldShapes/Deep-32                	   38392	      6154 ns/op	    3890 B/op	      15 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32           	  999504	       241.3 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32           	  994712	       241.1 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32           	  984255	       241.5 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32           	  992504	       241.3 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32           	  987739	       238.6 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopString-32           	 1385464	       172.4 ns/op	     296 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopString-32           	 1390416	       172.7 ns/op	     296 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopString-32           	 1394620	       173.7 ns/op	     296 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopString-32           	 1397419	       174.2 ns/op	     296 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopString-32           	 1382361	       170.7 ns/op	     296 B/op	       3 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/storage	22.619s
