@@ -258,7 +258,11 @@ func TestWALReplaySkipsCheckpointedTransactions(t *testing.T) {
 			"title": "title-" + id,
 			"value": float64(1),
 		}
-		return storage.SerializeRow(row, replayTestDefs()["items"].CompiledSchema, 1)
+		raw, err := storage.SerializeRow(row, replayTestDefs()["items"].CompiledSchema, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
 	}
 
 	tx1 := wal.BeginTransaction()
@@ -360,7 +364,10 @@ func TestWALReplaySkipsWhenPageLSNAhead(t *testing.T) {
 	row := map[string]interface{}{
 		"id": "id-1", "slug": "id-1", "title": "new", "value": float64(2),
 	}
-	serialized := storage.SerializeRow(row, replayTestDefs()["items"].CompiledSchema, 1)
+	serialized, err := storage.SerializeRow(row, replayTestDefs()["items"].CompiledSchema, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tx := wal.BeginTransaction()
 	begin := wal.BuildBeginRecord(tx)

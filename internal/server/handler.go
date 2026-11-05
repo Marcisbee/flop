@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	jsonstd "encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -401,7 +400,10 @@ func (h *Handler) handleAuthEndpoint(w http.ResponseWriter, r *http.Request, pat
 	var body map[string]interface{}
 	if r.Method == "POST" {
 		defer r.Body.Close()
-		jsonx.NewDecoder(r.Body).Decode(&body)
+		if err := jsonx.UnmarshalRead(r.Body, &body); err != nil && err != io.EOF {
+			jsonError(w, "invalid json", http.StatusBadRequest)
+			return
+		}
 	}
 
 	switch path {
@@ -661,7 +663,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, route *Route
 			batchCount := 0
 		drainChanges:
 			for {
-				data, _ := jsonstd.Marshal(event)
+				data, _ := jsonx.Marshal(event)
 				sseEventBytes(w, "change", data)
 				batchCount++
 				pendingChangeFlush = true
@@ -832,7 +834,7 @@ func (h *Handler) handleMultiplexedSSE(w http.ResponseWriter, r *http.Request) {
 			batchCount := 0
 		drainChanges:
 			for {
-				data, _ := jsonstd.Marshal(event)
+				data, _ := jsonx.Marshal(event)
 				sseEventBytes(w, "change", data)
 				batchCount++
 				pendingChangeFlush = true
@@ -934,7 +936,10 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		var body map[string]interface{}
-		jsonx.NewDecoder(r.Body).Decode(&body)
+		if err := jsonx.UnmarshalRead(r.Body, &body); err != nil {
+			jsonError(w, "invalid json", http.StatusBadRequest)
+			return
+		}
 		token, _ := body["token"].(string)
 		if token != h.setupToken {
 			jsonError(w, "Invalid setup token", 403)
@@ -975,7 +980,10 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		var body map[string]interface{}
-		jsonx.NewDecoder(r.Body).Decode(&body)
+		if err := jsonx.UnmarshalRead(r.Body, &body); err != nil {
+			jsonError(w, "invalid json", http.StatusBadRequest)
+			return
+		}
 		email, _ := body["email"].(string)
 		password, _ := body["password"].(string)
 		token, refresh, user, err := h.authService.Login(email, password)
@@ -1005,7 +1013,10 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		var body map[string]interface{}
-		jsonx.NewDecoder(r.Body).Decode(&body)
+		if err := jsonx.UnmarshalRead(r.Body, &body); err != nil {
+			jsonError(w, "invalid json", http.StatusBadRequest)
+			return
+		}
 		refreshToken, _ := body["refreshToken"].(string)
 		if refreshToken == "" {
 			jsonError(w, "Refresh token required", 400)
@@ -1126,7 +1137,10 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 			}
 			if r.Method == "POST" {
 				var body map[string]interface{}
-				jsonx.NewDecoder(r.Body).Decode(&body)
+				if err := jsonx.UnmarshalRead(r.Body, &body); err != nil {
+					jsonError(w, "invalid json", http.StatusBadRequest)
+					return
+				}
 				h.handleCreateRow(w, match[1], body)
 				return
 			}
@@ -1158,7 +1172,10 @@ func (h *Handler) handleAdmin(w http.ResponseWriter, r *http.Request, path strin
 				return
 			case "PUT":
 				var body map[string]interface{}
-				jsonx.NewDecoder(r.Body).Decode(&body)
+				if err := jsonx.UnmarshalRead(r.Body, &body); err != nil {
+					jsonError(w, "invalid json", http.StatusBadRequest)
+					return
+				}
 				h.handleUpdateRow(w, match[1], match[2], body)
 				return
 			case "DELETE":
@@ -1924,7 +1941,7 @@ func (h *Handler) handleAdminSSE(w http.ResponseWriter, r *http.Request) {
 	for name, table := range h.db.Tables {
 		tableCounts[name] = table.Count()
 	}
-	data, _ := jsonstd.Marshal(sseAdminSnapshotPayload{TableCounts: tableCounts})
+	data, _ := jsonx.Marshal(sseAdminSnapshotPayload{TableCounts: tableCounts})
 	sseEventBytes(w, "snapshot", data)
 	flusher.Flush()
 
@@ -1953,7 +1970,7 @@ func (h *Handler) handleAdminSSE(w http.ResponseWriter, r *http.Request) {
 			batchCount := 0
 		drainChanges:
 			for {
-				data, _ := jsonstd.Marshal(event)
+				data, _ := jsonx.Marshal(event)
 				sseEventBytes(w, "change", data)
 				batchCount++
 				pendingChangeFlush = true
@@ -2180,20 +2197,20 @@ func (h *Handler) serveStatic(w http.ResponseWriter, r *http.Request, path strin
 
 func jsonResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	jsonx.NewEncoder(w).Encode(data)
+	jsonx.MarshalWrite(w, data)
 }
 
 func jsonError(w http.ResponseWriter, msg string, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	jsonx.NewEncoder(w).Encode(map[string]string{"error": msg})
+	jsonx.MarshalWrite(w, map[string]string{"error": msg})
 }
 
 func marshalSSEError(err error) string {
 	if err == nil {
 		return `{"error":"unknown"}`
 	}
-	b, mErr := jsonstd.Marshal(sseErrorPayload{Error: err.Error()})
+	b, mErr := jsonx.Marshal(sseErrorPayload{Error: err.Error()})
 	if mErr != nil {
 		return `{"error":"marshal failed"}`
 	}

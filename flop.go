@@ -1,7 +1,6 @@
 package flop
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -14,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/storage"
 )
 
@@ -1443,7 +1443,7 @@ func valueToRowMap(v any) (map[string]any, error) {
 }
 
 func rowMapToValue(row map[string]any, out any) error {
-	raw, err := json.Marshal(row)
+	raw, err := json.MarshalObject(row)
 	if err != nil {
 		return err
 	}

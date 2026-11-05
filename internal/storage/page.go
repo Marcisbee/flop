@@ -254,7 +254,7 @@ func (p *Page) UpdateRow(slotIndex int, newData []byte) bool {
 		return false
 	}
 	off, length := p.getSlot(slotIndex)
-	if uint16(len(newData)) <= length {
+	if len(newData) <= int(length) {
 		copy(p.Data[off:], newData)
 		if uint16(len(newData)) < length {
 			// Zero remaining bytes

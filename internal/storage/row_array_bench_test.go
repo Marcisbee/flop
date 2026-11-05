@@ -14,11 +14,18 @@ func BenchmarkArrayRowCodec(b *testing.B) {
 		refs[i] = fmt.Sprintf("reference-%03d", i)
 	}
 	row := map[string]interface{}{"id": "row-1", "refs": refs}
-	raw := SerializeRow(row, cs, 1)
+	raw, err := SerializeRow(row, cs, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.Run("Encode", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			if got := SerializeRow(row, cs, 1); len(got) != len(raw) {
+			got, err := SerializeRow(row, cs, 1)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(got) != len(raw) {
 				b.Fatal("row length changed")
 			}
 		}

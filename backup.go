@@ -3,7 +3,6 @@ package flop
 import (
 	"archive/zip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +25,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/marcisbee/flop/internal/cron"
+	json "github.com/marcisbee/flop/internal/jsonx"
 )
 
 const (

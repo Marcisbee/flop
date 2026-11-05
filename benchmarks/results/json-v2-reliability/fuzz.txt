@@ -1,0 +1,20 @@
+fuzz: elapsed: 0s, gathering baseline coverage: 0/3 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 3/3 completed, now fuzzing with 4 workers
+fuzz: elapsed: 3s, execs: 286512 (95497/sec), new interesting: 163 (total: 166)
+fuzz: elapsed: 6s, execs: 607523 (106992/sec), new interesting: 239 (total: 242)
+fuzz: elapsed: 9s, execs: 932759 (108409/sec), new interesting: 249 (total: 252)
+fuzz: elapsed: 12s, execs: 1137548 (68270/sec), new interesting: 286 (total: 289)
+fuzz: elapsed: 15s, execs: 1298131 (53532/sec), new interesting: 324 (total: 327)
+fuzz: elapsed: 18s, execs: 1435454 (45767/sec), new interesting: 329 (total: 332)
+fuzz: elapsed: 21s, execs: 1512489 (25682/sec), new interesting: 329 (total: 332)
+fuzz: elapsed: 24s, execs: 1593589 (27027/sec), new interesting: 330 (total: 333)
+fuzz: elapsed: 27s, execs: 2038238 (148212/sec), new interesting: 333 (total: 336)
+fuzz: elapsed: 30s, execs: 2179725 (47169/sec), new interesting: 343 (total: 346)
+fuzz: elapsed: 33s, execs: 2683417 (167922/sec), new interesting: 376 (total: 379)
+fuzz: elapsed: 36s, execs: 2916667 (77724/sec), new interesting: 383 (total: 386)
+fuzz: elapsed: 39s, execs: 3156402 (79911/sec), new interesting: 384 (total: 387)
+fuzz: elapsed: 42s, execs: 4088106 (310655/sec), new interesting: 390 (total: 393)
+fuzz: elapsed: 45s, execs: 4404184 (105360/sec), new interesting: 424 (total: 427)
+fuzz: elapsed: 45s, execs: 4404184 (0/sec), new interesting: 424 (total: 427)
+PASS
+ok  	github.com/marcisbee/flop/internal/jsonx	45.089s

@@ -70,9 +70,12 @@ func testRecoveryCrossTableDecision(t *testing.T, state string, wantRows bool) {
 			t.Fatalf("open %s WAL: %v", tableName, err)
 		}
 		txID := wal.BeginTransaction()
-		row := storage.SerializeRow(map[string]interface{}{
+		row, err := storage.SerializeRow(map[string]interface{}{
 			"id": "row-1", "value": tableName,
 		}, defs[tableName].CompiledSchema, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := wal.FlushBatch([][]byte{
 			wal.BuildBeginRecord(txID),
 			wal.BuildRecord(txID, storage.WALOpInsert, row),

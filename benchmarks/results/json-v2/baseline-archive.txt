@@ -1,0 +1,26 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/engine
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkArchiveRecovery/archive/100-32         	       5	   1004746 ns/op	 1443635 B/op	    1022 allocs/op
+BenchmarkArchiveRecovery/archive/100-32         	       5	    985214 ns/op	 1440691 B/op	    1002 allocs/op
+BenchmarkArchiveRecovery/archive/100-32         	       5	   1042680 ns/op	 1444689 B/op	    1011 allocs/op
+BenchmarkArchiveRecovery/archive/100-32         	       5	    969667 ns/op	 1447292 B/op	    1049 allocs/op
+BenchmarkArchiveRecovery/archive/100-32         	       5	   1010039 ns/op	 1446078 B/op	    1038 allocs/op
+BenchmarkArchiveRecovery/archive/10000-32       	       5	   8190149 ns/op	 7240011 B/op	   50711 allocs/op
+BenchmarkArchiveRecovery/archive/10000-32       	       5	   7787253 ns/op	 7237459 B/op	   50709 allocs/op
+BenchmarkArchiveRecovery/archive/10000-32       	       5	   8058916 ns/op	 7245249 B/op	   50714 allocs/op
+BenchmarkArchiveRecovery/archive/10000-32       	       5	   7854220 ns/op	 7240396 B/op	   50710 allocs/op
+BenchmarkArchiveRecovery/archive/10000-32       	       5	   8370583 ns/op	 7236054 B/op	   50705 allocs/op
+BenchmarkArchiveRecovery/restore/100-32         	       5	    861604 ns/op	 1451963 B/op	    1090 allocs/op
+BenchmarkArchiveRecovery/restore/100-32         	       5	    871926 ns/op	 1447449 B/op	    1075 allocs/op
+BenchmarkArchiveRecovery/restore/100-32         	       5	   1085008 ns/op	 1444072 B/op	    1039 allocs/op
+BenchmarkArchiveRecovery/restore/100-32         	       5	   1034078 ns/op	 1450483 B/op	    1089 allocs/op
+BenchmarkArchiveRecovery/restore/100-32         	       5	    975322 ns/op	 1448060 B/op	    1068 allocs/op
+BenchmarkArchiveRecovery/restore/10000-32       	       5	   8086006 ns/op	 7232953 B/op	   50736 allocs/op
+BenchmarkArchiveRecovery/restore/10000-32       	       5	   7825133 ns/op	 7241734 B/op	   50742 allocs/op
+BenchmarkArchiveRecovery/restore/10000-32       	       5	   7856806 ns/op	 7242329 B/op	   50740 allocs/op
+BenchmarkArchiveRecovery/restore/10000-32       	       5	   7876931 ns/op	 7237844 B/op	   50737 allocs/op
+BenchmarkArchiveRecovery/restore/10000-32       	       5	   7893876 ns/op	 7246412 B/op	   50743 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/engine	3.313s

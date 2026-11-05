@@ -1,11 +1,11 @@
 package storage
 
 import (
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/util"
 )
 
