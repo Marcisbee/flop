@@ -1,5 +1,7 @@
 # JSON v2 reliability follow-up
 
+The later [consumer compatibility qualification](json-v2-consumers.md) restores HTTP wire semantics and records revised response performance.
+
 The remaining struct-encoding regression has not been safely removed. Two experiments were discarded because they made that case slower. The existing object optimization is unchanged. This follow-up fixes a reproduced, pre-existing oversized-update corruption risk and strengthens validation; it is not a claim that the engine cannot fail.
 
 ## Reproduced row-size bug

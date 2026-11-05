@@ -327,9 +327,12 @@ codec. Applications embedding Flop must build with Go 1.27.3 or a newer patched 
 This is a behavioral breaking change for consumers even though public Go method
 signatures are unchanged. JSON member matching is case-sensitive; duplicate
 members, invalid UTF-8, and trailing data in single-value request bodies are
-rejected. Nil slices and maps encode as empty arrays and objects. `omitempty`
-follows JSON-value emptiness, so zero numbers and false booleans are no longer
-omitted by that tag. Use explicit tags/options in consumer types where needed;
+rejected. Internal encoding and typed conversions use v2 defaults: nil slices
+and maps encode as empty arrays and objects, and `omitempty` follows JSON-value
+emptiness, so zero numbers and false booleans are no longer omitted by that tag.
+HTTP response writers explicitly preserve the previous null-container, zero-value
+omission, escaping and deterministic map-ordering behavior. A filtered-out row
+therefore remains `null`, preserving consumer privacy and missing-row contracts. Use explicit tags/options in consumer types where needed;
 `time.Duration` needs an explicit representation under v2.
 
 Typed records, reducer/view parameters, and HTTP payloads use these new semantics.

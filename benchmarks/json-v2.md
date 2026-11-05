@@ -1,5 +1,7 @@
 # Flop JSON v2 measurements
 
+The later [consumer compatibility qualification](json-v2-consumers.md) restores HTTP wire semantics and records revised response performance.
+
 Historical migration baseline. The [follow-up object encoding optimization](json-v2-optimization.md) removes the JSON-row encoding regression measured below; it includes fresh results and remaining tradeoffs.
 
 Baseline: `df1fa8af1a47910f9f490e150c868dc446301a3a`. Candidate: the JSON v2 migration accompanying this report. No benchmark is a claim about Strike, Kodē, or Baby production latency.

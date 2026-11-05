@@ -1,5 +1,7 @@
 # JSON v2 object encoding optimization
 
+The later [consumer compatibility qualification](json-v2-consumers.md) restores HTTP wire semantics and records revised response performance.
+
 See the [reliability follow-up](json-v2-reliability.md) for the subsequent row-size safety fix, fuzzing, and remaining struct-encoding limitation.
 
 This follow-up removes reflection copies from plain JSON-object encoding. It improves embedded object writes and typed-row reads, but **does not establish a universally faster Flop**. The tables include slower cases and unchanged controls.

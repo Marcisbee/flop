@@ -19,10 +19,11 @@ func MarshalIndent(v any, prefix, indent string) ([]byte, error) {
 }
 func Unmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }
 
-// MarshalWrite preserves the HTTP response newline while using v2's pooled
-// writer implementation instead of allocating a streaming encoder per request.
+// MarshalWrite preserves the established HTTP wire contract. In particular, a
+// filtered-out typed nil row must remain null, not an empty visible object.
+// Storage and typed conversion keep their explicit v2 semantics separately.
 func MarshalWrite(w io.Writer, v any) error {
-	if err := json.MarshalWrite(w, v); err != nil {
+	if err := json.MarshalWrite(w, v, json.FormatNilMapAsNull(true), json.FormatNilSliceAsNull(true), json.Deterministic(true), stdjson.OmitEmptyWithLegacySemantics(true), jsontext.EscapeForHTML(true), jsontext.EscapeForJS(true)); err != nil {
 		return err
 	}
 	_, err := io.WriteString(w, "\n")
