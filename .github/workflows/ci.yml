@@ -13,6 +13,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  admin-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: shared/admin/package-lock.json
+      - run: npm ci
+        working-directory: shared/admin
+      - run: npm run build
+        working-directory: shared/admin
+      - name: Verify committed admin assets
+        run: |
+          sh sync_shared.sh
+          git diff --exit-code -- shared/admin/*.html internal/server/*.html
+
   release-check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
