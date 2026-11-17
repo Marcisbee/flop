@@ -65,7 +65,7 @@ func main() {
 	addr := ":1985"
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      withDemoLogin(mux),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,

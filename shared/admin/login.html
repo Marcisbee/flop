@@ -4,96 +4,30 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flop Admin - Login</title>
 <style>
-:root {
-  --accent: #0078d4;
-  --accent-hover: #006cbd;
-  --error: #f48771;
+/* Console foundation. One token set, one desktop layout, one compact layout. */
+:root{color-scheme:dark;--accent:#64d8a2;--accent-hover:#83e2b6;--bg:#141414;--bg-surface:#181818;--bg-elevated:#202020;--bg-input:#1b1b1b;--bg-hover:#252525;--bg-active:#20362b;--border:#303030;--border-input:#424242;--row-border:#2b2b2b;--text:#dedede;--text-heading:#f3f3f3;--text-muted:#a9a9a9;--text-faint:#a9a9a9;--text-dimmed:#a9a9a9;--text-ghost:#999;--danger:#ffa0a0;--error:#ffa0a0;--danger-hover-bg:#3c2222;--danger-hover-text:#ffb7b7;--scrollbar-thumb:#444;--scrollbar-thumb-hover:#666;--panel-2:var(--bg-elevated);--shadow:0 16px 48px #0005;--page-gutter:24px}
+*{box-sizing:border-box;margin:0;padding:0}body{font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}button,input,select,textarea{font:inherit}button,a,input,select,textarea{touch-action:manipulation}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}a{color:inherit;text-decoration:none}small{font-size:14px}h1,h2,h3{color:var(--text-heading)}h1{font-size:22px;font-weight:600;letter-spacing:-.5px}h2{font-size:17px;font-weight:600;letter-spacing:-.2px}svg.icon-tabler{display:block;flex:0 0 auto;width:18px;height:18px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:active:not(:disabled){transform:translateY(1px)}input::placeholder,textarea::placeholder{color:var(--text-faint);opacity:1}input:not([type=checkbox]):not([type=file]),select,textarea{font-size:16px;min-height:38px}input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}.btn,.btn-icon,.btn-filter{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;line-height:20px;border-radius:5px;font-size:14px;flex-shrink:0}.btn{padding:7px 12px;font-weight:500;border:1px solid var(--border-input);background:var(--bg-input);color:var(--text);white-space:nowrap}.btn:hover{background:var(--bg-hover)}.btn-primary,.row-editor-field label.btn-primary{background:#52c18c;border-color:#52c18c;color:#0c2618}.btn-primary:hover{background:#6cd29f;border-color:#6cd29f;color:#0c2618}.btn-icon{width:36px;height:36px;padding:0;background:none;border:1px solid transparent;color:var(--text-muted)}.btn-icon:hover,.btn-icon.active{background:var(--bg-hover);color:var(--text-heading)}.btn-icon.danger:hover{color:var(--danger);background:var(--danger-hover-bg)}.btn-filter{width:32px;height:32px;min-height:32px;padding:0;background:none;border:0;color:var(--text-muted)}.btn-filter:hover{background:var(--bg-hover)}.btn-sm{min-height:32px;padding:5px 8px}
 
-  /* Dark theme (default) */
-  --bg: #1e1e1e;
-  --bg-surface: #252526;
-  --bg-hover: #2a2d2e;
-  --bg-active: #37373d;
-  --bg-input: #3c3c3c;
-  --border: #3c3c3c;
-  --border-input: #4a4a4a;
-  --text: #cccccc;
-  --text-heading: #ffffff;
-  --text-muted: #999999;
-  --text-faint: #888888;
-  --text-dimmed: #666666;
-  --text-ghost: #555555;
-  --row-border: #2a2a2a;
-  --danger: #cc6666;
-  --danger-hover-bg: #2d1f1f;
-  --danger-hover-text: #f48771;
-  --scrollbar-thumb: #424242;
-  --scrollbar-thumb-hover: #4a4a4a;
-}
+body{overflow:auto;min-height:100dvh}.auth-shell{min-height:100dvh;display:flex;flex-direction:column}.auth-intro{height:56px;min-height:56px;padding:0 24px;display:flex;align-items:center;border-bottom:1px solid var(--border)}.auth-intro>div,.auth-intro>small{display:none}.auth-brand{font-size:22px;font-weight:650;letter-spacing:-.8px}.auth-brand span{font-size:14px;letter-spacing:0;font-weight:400;color:var(--text-muted);margin-left:16px}.login-container{width:100%;max-width:400px;margin:clamp(40px,12vh,120px) auto;padding:0 24px}.auth-title{font-size:24px;line-height:1.3;font-weight:600;letter-spacing:-.6px;margin-bottom:10px}.auth-description{color:var(--text-muted);margin-bottom:28px}.field{margin-bottom:20px}.field label{display:block;font-size:14px;color:var(--text);margin-bottom:7px}.field input,.field select{width:100%;font-size:16px;min-height:44px;line-height:22px;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:5px;color:var(--text)}.login-container button[type=submit]{display:flex;align-items:center;justify-content:center;min-height:44px;width:100%;padding:10px 16px;border:1px solid #52c18c;border-radius:5px;background:#52c18c;color:#0c2618;font-size:16px;font-weight:550;cursor:pointer}.login-container button[type=submit]:hover{background:#6cd29f}.error{font-size:14px;color:var(--error);padding:12px;background:var(--danger-hover-bg);border-radius:5px;margin-bottom:16px}.hidden{display:none}.hint{font-size:14px;color:var(--text-muted);margin-top:6px}.subtitle{color:var(--text-muted)}.logo{display:none}@media(max-width:640px){.auth-intro{padding:0 20px;height:48px;min-height:48px}.login-container{margin:40px auto;padding:0 20px}.auth-title{font-size:24px}}
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --accent: #0078d4;
-    --accent-hover: #106ebe;
-    --error: #d32f2f;
-
-    --bg: #f3f3f3;
-    --bg-surface: #ffffff;
-    --bg-hover: #e8e8e8;
-    --bg-active: #d6ebff;
-    --bg-input: #ffffff;
-    --border: #e0e0e0;
-    --border-input: #cecece;
-    --text: #333333;
-    --text-heading: #1e1e1e;
-    --text-muted: #666666;
-    --text-faint: #888888;
-    --text-dimmed: #999999;
-    --text-ghost: #aaaaaa;
-    --row-border: #f0f0f0;
-    --danger: #d32f2f;
-    --danger-hover-bg: #fdecea;
-    --danger-hover-text: #c62828;
-    --scrollbar-thumb: #c1c1c1;
-    --scrollbar-thumb-hover: #a8a8a8;
-  }
-}
-
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.login-container{width:100%;max-width:320px;padding:32px}
-.logo{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:32px}
-.logo-text{font-size:24px;font-weight:700;color:var(--text-heading);letter-spacing:-0.5px}
-.subtitle{text-align:center;color:var(--text-faint);font-size:13px;margin-bottom:20px}
-.field{margin-bottom:16px}
-.field label{display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
-.field input{width:100%;padding:8px 10px;background:var(--bg-input);border:1px solid var(--border-input);border-radius:4px;color:var(--text);font-size:14px;outline:none}
-.field input:focus{border-color:var(--accent)}
-button[type="submit"]{width:100%;padding:10px;background:var(--accent);border:none;border-radius:4px;color:#ffffff;font-size:14px;font-weight:500;cursor:pointer;margin-top:4px}
-button[type="submit"]:hover{background:var(--accent-hover)}
-.error{color:var(--error);font-size:13px;margin-top:12px;text-align:center}
-.hidden{display:none}
 </style>
 </head>
-<body>
+<body><div class="auth-shell"><header class="auth-intro"><a class="auth-brand" href="/_">flop<span>Console</span></a></header>
 <div class="login-container">
-  <div class="logo">
-    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M8 10h16v2H8zm0 5h12v2H8zm0 5h14v2H8z" fill="#fff" opacity=".9"/></svg>
-    <span class="logo-text">flop</span>
-  </div>
+  <h1 class="auth-title">Sign in to Flop</h1><p class="auth-description">Sign in to manage your Flop database.</p>
   <form id="login-form">
     <div class="field">
       <label for="email">Email</label>
-      <input type="email" id="email" required autofocus>
+      <input type="email" id="email" autocomplete="username" required autofocus>
     </div>
     <div class="field">
       <label for="password">Password</label>
-      <input type="password" id="password" required>
+      <input type="password" id="password" autocomplete="current-password" required>
     </div>
     <button type="submit">Sign In</button>
-    <div id="error" class="error hidden"></div>
+    <div id="error" role="alert" class="error hidden"></div>
   </form>
-</div>
+</div></div>
 <script>
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -101,6 +35,8 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   const password = document.getElementById('password').value;
   const errEl = document.getElementById('error');
   errEl.classList.add('hidden');
+  const submit = e.currentTarget.querySelector('button[type=submit]');
+  submit.disabled = true;
   try {
     const res = await fetch('/_/api/login', {
       method: 'POST',
@@ -115,7 +51,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   } catch(err) {
     errEl.textContent = err.message;
     errEl.classList.remove('hidden');
-  }
+  } finally { submit.disabled = false; }
 });
 </script>
 </body></html>
