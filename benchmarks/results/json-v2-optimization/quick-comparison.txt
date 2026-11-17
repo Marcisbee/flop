@@ -1,0 +1,24 @@
+INFO old commit=6da0732 dirty=true n=5; new commit=6da0732 dirty=true n=5
+INFO ranges are observed min/max, not confidence intervals; signals require >=5 samples per side and non-overlapping ranges. Recheck signals in reverse run order. This is not a release gate.
+CMP async_warmup_ms old=0.000 [0.000,0.000] new=0.000 [0.000,0.000] unit=ms pct=n/a inconclusive
+CMP lookup_async_avg_us old=0.707 [0.533,0.767] new=0.611 [0.413,0.667] unit=us/op pct=-13.53% inconclusive
+CMP lookup_async_first_us old=1.000 [1.000,1.000] new=1.000 [1.000,1.000] unit=us pct=+0.00% inconclusive
+CMP lookup_async_total_ms old=3.000 [2.000,3.000] new=3.000 [2.000,3.000] unit=ms pct=+0.00% inconclusive
+CMP lookup_sync_avg_us old=0.609 [0.511,0.787] new=0.553 [0.423,0.701] unit=us/op pct=-9.23% inconclusive
+CMP lookup_sync_over_async_ratio old=0.861 [0.775,1.475] new=1.026 [0.693,1.273] unit=x pct=+19.21% descriptive-ratio
+CMP lookup_sync_total_ms old=3.000 [2.000,3.000] new=2.000 [2.000,3.000] unit=ms pct=-33.33% inconclusive
+CMP open_async_ms old=8.000 [8.000,9.000] new=8.000 [7.000,9.000] unit=ms pct=+0.00% inconclusive
+CMP open_sync_ms old=8.000 [8.000,9.000] new=8.000 [8.000,9.000] unit=ms pct=+0.00% inconclusive
+CMP open_sync_over_async_ratio old=1.003 [0.951,1.086] new=1.089 [0.872,1.123] unit=x pct=+8.53% descriptive-ratio
+CMP search_async_avg_us old=341.606 [340.517,345.108] new=341.372 [340.318,342.596] unit=us/op pct=-0.07% inconclusive
+CMP search_async_first_hits old=8.000 [8.000,8.000] new=8.000 [8.000,8.000] unit=rows pct=+0.00% unchanged-count
+CMP search_async_first_us old=621.000 [601.000,646.000] new=606.000 [596.000,621.000] unit=us pct=-2.42% inconclusive
+CMP search_async_total_hits old=8000.000 [8000.000,8000.000] new=8000.000 [8000.000,8000.000] unit=rows pct=+0.00% unchanged-count
+CMP search_async_total_ms old=341.000 [340.000,345.000] new=341.000 [340.000,342.000] unit=ms pct=+0.00% inconclusive
+CMP search_sync_avg_us old=343.331 [340.377,345.948] new=344.727 [340.290,345.497] unit=us/op pct=+0.41% inconclusive
+CMP search_sync_over_async_ratio old=1.003 [0.991,1.016] new=1.010 [0.999,1.013] unit=x pct=+0.68% descriptive-ratio
+CMP search_sync_total_hits old=8000.000 [8000.000,8000.000] new=8000.000 [8000.000,8000.000] unit=rows pct=+0.00% unchanged-count
+CMP search_sync_total_ms old=343.000 [340.000,345.000] new=344.000 [340.000,345.000] unit=ms pct=+0.29% inconclusive
+CMP seed_insert_ms old=60.000 [58.000,63.000] new=59.000 [57.000,61.000] unit=ms pct=-1.67% inconclusive
+CMP seed_insert_rows_per_sec old=166305.894 [157760.408,171661.434] new=168646.324 [163199.445,174032.412] unit=rows/s pct=+1.41% inconclusive
+CMP seed_open_ms old=0.000 [0.000,0.000] new=0.000 [0.000,0.000] unit=ms pct=n/a inconclusive

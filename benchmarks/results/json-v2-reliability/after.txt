@@ -1,0 +1,20 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/storage
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkJSONRowCodec/Encode-32         	  900945	       399.1 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  913708	       397.3 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  751572	       399.2 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  778622	       398.9 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  787002	       399.4 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  905130	       394.3 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  906810	       400.7 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32   	 1392192	       259.2 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32   	 1385978	       257.2 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32   	 1389738	       258.0 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32   	 1375204	       258.8 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32   	 1387801	       260.9 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32   	 1381620	       259.2 ns/op	     336 B/op	       3 allocs/op
+BenchmarkJSONFieldShapes/TopStruct-32   	 1386654	       258.7 ns/op	     336 B/op	       3 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/storage	7.947s

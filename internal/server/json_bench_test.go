@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	jsonstd "encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,7 +15,7 @@ var benchSinkBytes int
 func benchJSONRoundTripHandler(response any) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
-		if err := jsonx.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := jsonx.UnmarshalRead(r.Body, &body); err != nil {
 			jsonError(w, "invalid json", http.StatusBadRequest)
 			return
 		}
@@ -118,7 +117,7 @@ func BenchmarkSSEChangeBatchMarshal(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rec := httptest.NewRecorder()
 		for j := 0; j < 128; j++ {
-			data, _ := jsonstd.Marshal(event)
+			data, _ := jsonx.Marshal(event)
 			sseEventBytes(rec, "change", data)
 		}
 		benchSinkBytes += rec.Body.Len()
@@ -142,7 +141,7 @@ func BenchmarkSSEChangeBatchMarshalOnly(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		total := 0
 		for j := 0; j < 128; j++ {
-			data, _ := jsonstd.Marshal(event)
+			data, _ := jsonx.Marshal(event)
 			total += len(data)
 		}
 		benchSinkBytes += total
@@ -191,7 +190,7 @@ func BenchmarkSSEEngineChangeEventMarshalOnly(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		total := 0
 		for j := 0; j < 128; j++ {
-			data, _ := jsonstd.Marshal(event)
+			data, _ := jsonx.Marshal(event)
 			total += len(data)
 		}
 		benchSinkBytes += total
@@ -205,7 +204,7 @@ func BenchmarkSSEEngineChangeEventMarshal(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rec := httptest.NewRecorder()
 		for j := 0; j < 128; j++ {
-			data, _ := jsonstd.Marshal(event)
+			data, _ := jsonx.Marshal(event)
 			sseEventBytes(rec, "change", data)
 		}
 		benchSinkBytes += rec.Body.Len()

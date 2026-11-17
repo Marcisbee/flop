@@ -1,0 +1,32 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkTypedJSONConversion/Read-32         	  190042	      1817 ns/op	     771 B/op	      12 allocs/op
+BenchmarkTypedJSONConversion/Read-32         	  196686	      1804 ns/op	     771 B/op	      12 allocs/op
+BenchmarkTypedJSONConversion/Read-32         	  192681	      1811 ns/op	     771 B/op	      12 allocs/op
+BenchmarkTypedJSONConversion/Read-32         	  194836	      1820 ns/op	     771 B/op	      12 allocs/op
+BenchmarkTypedJSONConversion/Read-32         	  197731	      1823 ns/op	     771 B/op	      12 allocs/op
+BenchmarkTypedJSONConversion/Write-32        	  138010	      2444 ns/op	    1397 B/op	      31 allocs/op
+BenchmarkTypedJSONConversion/Write-32        	  141627	      2434 ns/op	    1397 B/op	      31 allocs/op
+BenchmarkTypedJSONConversion/Write-32        	  146354	      2448 ns/op	    1397 B/op	      31 allocs/op
+BenchmarkTypedJSONConversion/Write-32        	  144616	      2452 ns/op	    1398 B/op	      31 allocs/op
+BenchmarkTypedJSONConversion/Write-32        	  144259	      2472 ns/op	    1398 B/op	      31 allocs/op
+PASS
+ok  	github.com/marcisbee/flop	3.769s
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/storage
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkJSONRowCodec/Encode-32         	  922108	       390.3 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  920540	       393.8 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  921925	       392.4 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  816054	       389.8 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Encode-32         	  929865	       391.3 ns/op	     344 B/op	       3 allocs/op
+BenchmarkJSONRowCodec/Decode-32         	  394783	       802.4 ns/op	     946 B/op	      20 allocs/op
+BenchmarkJSONRowCodec/Decode-32         	  416332	       803.9 ns/op	     946 B/op	      20 allocs/op
+BenchmarkJSONRowCodec/Decode-32         	  397940	       803.7 ns/op	     946 B/op	      20 allocs/op
+BenchmarkJSONRowCodec/Decode-32         	  385782	       810.5 ns/op	     946 B/op	      20 allocs/op
+BenchmarkJSONRowCodec/Decode-32         	  406702	       817.9 ns/op	     946 B/op	      20 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/storage	4.636s

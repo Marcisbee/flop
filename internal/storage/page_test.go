@@ -84,3 +84,16 @@ func TestPageInsertCompactsTombstones(t *testing.T) {
 		t.Fatalf("inserted row mismatch after compaction")
 	}
 }
+
+func TestPageUpdateRejectsLengthOverflowWithoutChangingPage(t *testing.T) {
+	p := CreatePage(0)
+	slot := p.InsertRow([]byte("original"))
+	p.InsertRow([]byte("neighbor"))
+	before := bytes.Clone(p.Data[:])
+	if p.UpdateRow(slot, bytes.Repeat([]byte("x"), 1<<16)) {
+		t.Fatal("accepted oversized update whose length wraps to zero")
+	}
+	if !bytes.Equal(before, p.Data[:]) {
+		t.Fatal("rejected update mutated page bytes")
+	}
+}

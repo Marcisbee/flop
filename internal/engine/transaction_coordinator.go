@@ -1,11 +1,11 @@
 package engine
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/storage"
 )
 

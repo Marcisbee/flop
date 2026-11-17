@@ -1,0 +1,190 @@
+diff --git a/internal/engine/database.go b/internal/engine/database.go
+index 714b5dd..b804c99 100644
+--- a/internal/engine/database.go
++++ b/internal/engine/database.go
+@@ -2307,6 +2307,9 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	if err := storage.ValidateRowDataSize(len(serialized)); err != nil {
++		return nil, err
++	}
+ 
+ 	txID := ti.wal.BeginTransaction()
+ 	isTx := txBuf != nil
+@@ -2335,7 +2338,7 @@ func (ti *TableInstance) update(key string, updates map[string]interface{}, txBu
+ 	}
+ 	oldRaw := page.ReadRow(int(pointer.SlotIndex))
+ 	_, oldLen := page.GetSlot(int(pointer.SlotIndex))
+-	if oldLen == 0 || uint16(len(serialized)) > oldLen {
++	if oldLen == 0 || len(serialized) > int(oldLen) {
+ 		pageLock.Unlock()
+ 		unlockUnique()
+ 		unlockUnique = func() {}
+diff --git a/internal/engine/json_write_test.go b/internal/engine/json_write_test.go
+index 40209b2..d0fe66c 100644
+--- a/internal/engine/json_write_test.go
++++ b/internal/engine/json_write_test.go
+@@ -16,6 +16,9 @@ func TestJSONWriteRejectsInvalidValueWithoutChangingStoredRow(t *testing.T) {
+ 		{"invalid_utf8", string([]byte{0xff})},
+ 		{"duplicate_raw_member", json.RawMessage(`{"a":1,"a":2}`)},
+ 		{"non_finite_number", math.NaN()},
++		{"object_invalid_utf8", map[string]any{"value": string([]byte{0xff})}},
++		{"object_duplicate_raw_member", map[string]any{"value": json.RawMessage(`{"a":1,"a":2}`)}},
++		{"object_non_finite_number", map[string]any{"value": math.NaN()}},
+ 	} {
+ 		t.Run(tc.name, func(t *testing.T) {
+ 			dir := t.TempDir()
+diff --git a/internal/engine/row_size_test.go b/internal/engine/row_size_test.go
+index d3c6a62..d5059fe 100644
+--- a/internal/engine/row_size_test.go
++++ b/internal/engine/row_size_test.go
+@@ -2,6 +2,7 @@ package engine
+ 
+ import (
+ 	"errors"
++	"fmt"
+ 	"strings"
+ 	"testing"
+ 
+@@ -28,34 +29,37 @@ func TestInsertRejectsOversizedRow(t *testing.T) {
+ }
+ 
+ func TestUpdateRejectsOversizedRowWithoutMutatingExistingRow(t *testing.T) {
+-	db := openTestDB(t, t.TempDir(), false, true)
+-	t.Cleanup(func() { _ = db.Close() })
+-	ti := mustTable(t, db)
+-
+-	if _, err := ti.Insert(map[string]interface{}{
+-		"id":    "id-1",
+-		"slug":  "slug-1",
+-		"title": "small",
+-		"genre": "action",
+-	}, nil); err != nil {
+-		t.Fatalf("seed insert: %v", err)
+-	}
+-
+-	_, err := ti.Update("id-1", map[string]interface{}{
+-		"title": strings.Repeat("y", storage.MaxRowDataSize()+1024),
+-	}, nil)
+-	if !errors.Is(err, storage.ErrRowTooLarge) {
+-		t.Fatalf("expected ErrRowTooLarge, got %v", err)
+-	}
+-
+-	row, err := ti.Get("id-1")
+-	if err != nil {
+-		t.Fatalf("get row after failed update: %v", err)
+-	}
+-	if row == nil {
+-		t.Fatal("expected row to remain after failed oversized update")
+-	}
+-	if got := toString(row["title"]); got != "small" {
+-		t.Fatalf("expected original title to remain, got %q", got)
++	for _, size := range []int{storage.MaxRowDataSize() + 1024, 1 << 16} {
++		t.Run(fmt.Sprint(size), func(t *testing.T) {
++			dir := t.TempDir()
++			db := openTestDB(t, dir, false, true)
++			t.Cleanup(func() { _ = db.Close() })
++			ti := mustTable(t, db)
++			for _, id := range []string{"id-1", "neighbor"} {
++				if _, err := ti.Insert(map[string]interface{}{"id": id, "slug": id, "title": "small", "genre": "action"}, nil); err != nil {
++					t.Fatal(err)
++				}
++			}
++			_, err := ti.Update("id-1", map[string]interface{}{"title": strings.Repeat("y", size)}, nil)
++			if !errors.Is(err, storage.ErrRowTooLarge) {
++				t.Fatalf("expected ErrRowTooLarge, got %v", err)
++			}
++			check := func() {
++				t.Helper()
++				for _, id := range []string{"id-1", "neighbor"} {
++					row, err := ti.Get(id)
++					if err != nil || row == nil || row["title"] != "small" {
++						t.Fatalf("row %q changed after rejected update: %v, %v", id, row, err)
++					}
++				}
++			}
++			check()
++			if err := db.Close(); err != nil {
++				t.Fatal(err)
++			}
++			db = openTestDB(t, dir, false, true)
++			ti = mustTable(t, db)
++			check()
++		})
+ 	}
+ }
+diff --git a/internal/jsonx/value_test.go b/internal/jsonx/value_test.go
+index 5971e12..5fa7410 100644
+--- a/internal/jsonx/value_test.go
++++ b/internal/jsonx/value_test.go
+@@ -123,3 +123,35 @@ func TestPlainContainersRetainV2Rejections(t *testing.T) {
+ 		})
+ 	}
+ }
++
++// Compare arbitrary decoded JSON objects with the standard codec. This checks
++// value preservation across nested containers beyond the hand-picked fixtures.
++func FuzzMarshalObjectMatchesV2(f *testing.F) {
++	for _, seed := range []string{`{}`, `{"n":-0,"a":[1,true,null,"é"]}`, `{"nested":{"x":[{},[],1.25]},"large":1e100}`} {
++		f.Add([]byte(seed))
++	}
++	f.Fuzz(func(t *testing.T, data []byte) {
++		var object map[string]any
++		if err := json.Unmarshal(data, &object); err != nil {
++			return
++		}
++		want, wantErr := json.Marshal(object)
++		got, gotErr := MarshalObject(object)
++		if (wantErr == nil) != (gotErr == nil) {
++			t.Fatalf("error mismatch: standard=%v optimized=%v", wantErr, gotErr)
++		}
++		if wantErr != nil {
++			return
++		}
++		a, b := jsontext.Value(want), jsontext.Value(got)
++		if err := a.Canonicalize(); err != nil {
++			t.Fatal(err)
++		}
++		if err := b.Canonicalize(); err != nil {
++			t.Fatal(err)
++		}
++		if !bytes.Equal(a, b) {
++			t.Fatalf("standard=%s optimized=%s", a, b)
++		}
++	})
++}
+diff --git a/internal/storage/page.go b/internal/storage/page.go
+index e10f169..bc72b89 100644
+--- a/internal/storage/page.go
++++ b/internal/storage/page.go
+@@ -254,7 +254,7 @@ func (p *Page) UpdateRow(slotIndex int, newData []byte) bool {
+ 		return false
+ 	}
+ 	off, length := p.getSlot(slotIndex)
+-	if uint16(len(newData)) <= length {
++	if len(newData) <= int(length) {
+ 		copy(p.Data[off:], newData)
+ 		if uint16(len(newData)) < length {
+ 			// Zero remaining bytes
+diff --git a/internal/storage/page_test.go b/internal/storage/page_test.go
+index 4c48e18..50c5f1b 100644
+--- a/internal/storage/page_test.go
++++ b/internal/storage/page_test.go
+@@ -84,3 +84,16 @@ func TestPageInsertCompactsTombstones(t *testing.T) {
+ 		t.Fatalf("inserted row mismatch after compaction")
+ 	}
+ }
++
++func TestPageUpdateRejectsLengthOverflowWithoutChangingPage(t *testing.T) {
++	p := CreatePage(0)
++	slot := p.InsertRow([]byte("original"))
++	p.InsertRow([]byte("neighbor"))
++	before := bytes.Clone(p.Data[:])
++	if p.UpdateRow(slot, bytes.Repeat([]byte("x"), 1<<16)) {
++		t.Fatal("accepted oversized update whose length wraps to zero")
++	}
++	if !bytes.Equal(before, p.Data[:]) {
++		t.Fatal("rejected update mutated page bytes")
++	}
++}

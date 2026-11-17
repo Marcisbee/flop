@@ -2,11 +2,11 @@ package storage
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/util"
 )

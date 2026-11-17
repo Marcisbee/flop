@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/schema"
 )
 
@@ -389,7 +390,7 @@ func (s *workflowService) askOpenRouter(workflow Workflow, content map[string]an
 	if strings.TrimSpace(s.config.OpenRouterAPIKey) == "" {
 		return nil, errors.New("OpenRouter API key is not configured")
 	}
-	contentJSON, err := json.Marshal(content)
+	contentJSON, err := jsonv2.Marshal(content, jsonv2.Deterministic(true))
 	if err != nil {
 		return nil, err
 	}
@@ -608,7 +609,7 @@ func (s *workflowService) openRouterModelSupportsImages(model string) bool {
 			} `json:"architecture"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&response); err != nil {
+	if err := json.UnmarshalRead(io.LimitReader(resp.Body, 1<<20), &response); err != nil {
 		return false
 	}
 	for _, modality := range response.Data.Architecture.InputModalities {

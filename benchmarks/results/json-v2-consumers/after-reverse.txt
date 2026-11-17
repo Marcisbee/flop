@@ -1,0 +1,41 @@
+goos: linux
+goarch: amd64
+pkg: github.com/marcisbee/flop/internal/server
+cpu: AMD Ryzen 9 9950X 16-Core Processor            
+BenchmarkHTTPJSONRoundTripSmall-32             	   61730	      3700 ns/op	  16.76 MB/s	    6771 B/op	      35 allocs/op
+BenchmarkHTTPJSONRoundTripSmall-32             	   63512	      3712 ns/op	  16.70 MB/s	    6774 B/op	      35 allocs/op
+BenchmarkHTTPJSONRoundTripSmall-32             	   64575	      3732 ns/op	  16.62 MB/s	    6772 B/op	      35 allocs/op
+BenchmarkHTTPJSONRoundTripSmall-32             	   66680	      3665 ns/op	  16.92 MB/s	    6772 B/op	      35 allocs/op
+BenchmarkHTTPJSONRoundTripSmall-32             	   65361	      3719 ns/op	  16.67 MB/s	    6771 B/op	      35 allocs/op
+BenchmarkHTTPJSONRoundTripMedium-32            	    2094	     99894 ns/op	  78.04 MB/s	   70080 B/op	    2157 allocs/op
+BenchmarkHTTPJSONRoundTripMedium-32            	    2364	     99293 ns/op	  78.51 MB/s	   70191 B/op	    2157 allocs/op
+BenchmarkHTTPJSONRoundTripMedium-32            	    2300	     99150 ns/op	  78.63 MB/s	   70178 B/op	    2157 allocs/op
+BenchmarkHTTPJSONRoundTripMedium-32            	    2388	     98554 ns/op	  79.10 MB/s	   70146 B/op	    2157 allocs/op
+BenchmarkHTTPJSONRoundTripMedium-32            	    2403	     98634 ns/op	  79.04 MB/s	   70139 B/op	    2157 allocs/op
+BenchmarkSSEChangeBatchMarshal-32              	    2046	    112000 ns/op	   76012 B/op	    1170 allocs/op
+BenchmarkSSEChangeBatchMarshal-32              	    2168	    112588 ns/op	   76008 B/op	    1170 allocs/op
+BenchmarkSSEChangeBatchMarshal-32              	    2172	    111847 ns/op	   76009 B/op	    1170 allocs/op
+BenchmarkSSEChangeBatchMarshal-32              	    2073	    114318 ns/op	   76015 B/op	    1170 allocs/op
+BenchmarkSSEChangeBatchMarshal-32              	    1897	    112603 ns/op	   76015 B/op	    1170 allocs/op
+BenchmarkSSEChangeBatchMarshalOnly-32          	    2416	     91826 ns/op	   31795 B/op	    1152 allocs/op
+BenchmarkSSEChangeBatchMarshalOnly-32          	    2377	     90874 ns/op	   31794 B/op	    1152 allocs/op
+BenchmarkSSEChangeBatchMarshalOnly-32          	    2377	     91335 ns/op	   31793 B/op	    1152 allocs/op
+BenchmarkSSEChangeBatchMarshalOnly-32          	    2468	     91267 ns/op	   31794 B/op	    1152 allocs/op
+BenchmarkSSEChangeBatchMarshalOnly-32          	    2559	     91042 ns/op	   31794 B/op	    1152 allocs/op
+BenchmarkSSEChangeBatchWriteOnly-32            	   16518	     15139 ns/op	   44120 B/op	      18 allocs/op
+BenchmarkSSEChangeBatchWriteOnly-32            	   15854	     15286 ns/op	   44120 B/op	      18 allocs/op
+BenchmarkSSEChangeBatchWriteOnly-32            	   15793	     14736 ns/op	   44120 B/op	      18 allocs/op
+BenchmarkSSEChangeBatchWriteOnly-32            	   15843	     15111 ns/op	   44120 B/op	      18 allocs/op
+BenchmarkSSEChangeBatchWriteOnly-32            	   15916	     15108 ns/op	   44120 B/op	      18 allocs/op
+BenchmarkSSEEngineChangeEventMarshalOnly-32    	    1215	    185620 ns/op	   82067 B/op	    2048 allocs/op
+BenchmarkSSEEngineChangeEventMarshalOnly-32    	    1272	    183944 ns/op	   82065 B/op	    2048 allocs/op
+BenchmarkSSEEngineChangeEventMarshalOnly-32    	    1294	    183867 ns/op	   82054 B/op	    2048 allocs/op
+BenchmarkSSEEngineChangeEventMarshalOnly-32    	    1260	    183035 ns/op	   82061 B/op	    2048 allocs/op
+BenchmarkSSEEngineChangeEventMarshalOnly-32    	    1291	    184242 ns/op	   82060 B/op	    2048 allocs/op
+BenchmarkSSEEngineChangeEventMarshal-32        	    1068	    220639 ns/op	  181030 B/op	    2066 allocs/op
+BenchmarkSSEEngineChangeEventMarshal-32        	    1082	    223530 ns/op	  181016 B/op	    2066 allocs/op
+BenchmarkSSEEngineChangeEventMarshal-32        	    1044	    223046 ns/op	  181008 B/op	    2066 allocs/op
+BenchmarkSSEEngineChangeEventMarshal-32        	    1054	    222346 ns/op	  181016 B/op	    2066 allocs/op
+BenchmarkSSEEngineChangeEventMarshal-32        	    1065	    222349 ns/op	  181023 B/op	    2066 allocs/op
+PASS
+ok  	github.com/marcisbee/flop/internal/server	9.566s

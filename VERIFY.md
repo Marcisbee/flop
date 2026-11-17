@@ -7,7 +7,7 @@ from the repository root unless a command explicitly changes directories.
 ## Setup and run
 
 Install Git, Make, a POSIX shell, and Go. `go.mod` declares the module minimum;
-use the latest patched Go **1.26.x**, as CI does, for release qualification.
+use the latest patched Go **1.27.x**, as CI does, for release qualification.
 The Go installation must put both `go` and `gofmt` on `PATH`. Check:
 
 ```sh

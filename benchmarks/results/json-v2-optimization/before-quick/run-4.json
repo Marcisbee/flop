@@ -1,0 +1,141 @@
+{
+  "createdAt": "2026-11-05T04:11:49Z",
+  "goVersion": "go1.27.3",
+  "git": {
+    "commit": "6da0732",
+    "branch": "HEAD",
+    "dirty": true
+  },
+  "dataDir": "/tmp/flop-quickbench-787229969/data",
+  "rows": 10000,
+  "lookups": 5000,
+  "searches": 1000,
+  "syncMode": "full",
+  "comparison": {
+    "version": 1,
+    "batch": 1000,
+    "searchLimit": 8,
+    "seed": 42,
+    "warmTimeout": "45s",
+    "host": "DESKTOP-0EO78UN",
+    "os": "linux",
+    "arch": "amd64",
+    "cpus": 32,
+    "procs": 32,
+    "tempDir": "/tmp",
+    "goFlags": "",
+    "goDebug": ""
+  },
+  "metrics": [
+    {
+      "name": "seed_open_ms",
+      "value": 0,
+      "unit": "ms"
+    },
+    {
+      "name": "seed_insert_ms",
+      "value": 60,
+      "unit": "ms"
+    },
+    {
+      "name": "seed_insert_rows_per_sec",
+      "value": 165561.74894464732,
+      "unit": "rows/s"
+    },
+    {
+      "name": "open_sync_ms",
+      "value": 8,
+      "unit": "ms"
+    },
+    {
+      "name": "lookup_sync_total_ms",
+      "value": 3,
+      "unit": "ms"
+    },
+    {
+      "name": "lookup_sync_avg_us",
+      "value": 0.7574,
+      "unit": "us/op"
+    },
+    {
+      "name": "search_sync_total_ms",
+      "value": 340,
+      "unit": "ms"
+    },
+    {
+      "name": "search_sync_avg_us",
+      "value": 340.377,
+      "unit": "us/op"
+    },
+    {
+      "name": "search_sync_total_hits",
+      "value": 8000,
+      "unit": "rows"
+    },
+    {
+      "name": "open_async_ms",
+      "value": 8,
+      "unit": "ms"
+    },
+    {
+      "name": "lookup_async_first_us",
+      "value": 1,
+      "unit": "us"
+    },
+    {
+      "name": "search_async_first_us",
+      "value": 607,
+      "unit": "us"
+    },
+    {
+      "name": "search_async_first_hits",
+      "value": 8,
+      "unit": "rows"
+    },
+    {
+      "name": "async_warmup_ms",
+      "value": 0,
+      "unit": "ms"
+    },
+    {
+      "name": "lookup_async_total_ms",
+      "value": 3,
+      "unit": "ms"
+    },
+    {
+      "name": "lookup_async_avg_us",
+      "value": 0.7666,
+      "unit": "us/op"
+    },
+    {
+      "name": "search_async_total_ms",
+      "value": 340,
+      "unit": "ms"
+    },
+    {
+      "name": "search_async_avg_us",
+      "value": 340.847,
+      "unit": "us/op"
+    },
+    {
+      "name": "search_async_total_hits",
+      "value": 8000,
+      "unit": "rows"
+    },
+    {
+      "name": "open_sync_over_async_ratio",
+      "value": 1.0030549508170192,
+      "unit": "x"
+    },
+    {
+      "name": "lookup_sync_over_async_ratio",
+      "value": 0.9879996890962508,
+      "unit": "x"
+    },
+    {
+      "name": "search_sync_over_async_ratio",
+      "value": 0.9986201599531859,
+      "unit": "x"
+    }
+  ]
+}

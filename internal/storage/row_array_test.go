@@ -34,7 +34,11 @@ func TestRowArrayWireCompatibility(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if got := SerializeRow(map[string]interface{}{"items": tc.input}, cs, 7); !bytes.Equal(got, wire) {
+					got, err := SerializeRow(map[string]interface{}{"items": tc.input}, cs, 7)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(got, wire) {
 						t.Fatalf("wire: %x, want %x", got, wire)
 					}
 					raw := append([]byte{99}, wire...)

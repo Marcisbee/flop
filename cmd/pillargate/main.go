@@ -1,12 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+
+	json "github.com/marcisbee/flop/internal/jsonx"
 )
 
 type report struct {

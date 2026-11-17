@@ -1,6 +1,6 @@
 package storage
 
-import "encoding/json"
+import json "github.com/marcisbee/flop/internal/jsonx"
 
 // ArchivedRow stores a soft-deleted row plus metadata required for restore.
 type ArchivedRow struct {

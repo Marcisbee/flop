@@ -1481,7 +1481,7 @@ func clampInt(v, minV, maxV int) int {
 func adminJSONResp(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = jsonx.NewEncoder(w).Encode(payload)
+	_ = jsonx.MarshalWrite(w, payload)
 }
 
 func adminJSONError(w http.ResponseWriter, message string, status int) {

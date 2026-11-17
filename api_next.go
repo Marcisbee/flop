@@ -2,7 +2,6 @@ package flop
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marcisbee/flop/internal/engine"
+	json "github.com/marcisbee/flop/internal/jsonx"
 	"github.com/marcisbee/flop/internal/reqtrace"
 	"github.com/marcisbee/flop/internal/schema"
 	"github.com/marcisbee/flop/internal/server"
@@ -106,16 +106,7 @@ func decodeStrictJSON(raw []byte, out any) error {
 	if len(trimmed) == 0 {
 		trimmed = []byte("{}")
 	}
-	dec := json.NewDecoder(bytes.NewReader(trimmed))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(out); err != nil {
-		return err
-	}
-	var extra json.RawMessage
-	if err := dec.Decode(&extra); err != io.EOF {
-		return fmt.Errorf("invalid json payload")
-	}
-	return nil
+	return json.UnmarshalStrict(trimmed, out)
 }
 
 func decodeQueryValues(values url.Values, out any) error {
@@ -2046,7 +2037,7 @@ func writeJSONBodyError(w http.ResponseWriter, err error) {
 func jsonResponse(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	_ = json.MarshalWrite(w, payload)
 }
 
 func jsonError(w http.ResponseWriter, message string, status int) {

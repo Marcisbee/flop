@@ -1,6 +1,6 @@
 module github.com/marcisbee/flop
 
-go 1.26.10
+go 1.27.3
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.5
@@ -8,7 +8,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.1.12
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
 	github.com/aws/smithy-go v1.24.2
-	github.com/bytedance/sonic v1.15.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/image v0.45.0
 	golang.org/x/sys v0.47.0
@@ -23,10 +22,4 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.21 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.21 // indirect
-	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic/loader v0.5.0 // indirect
-	github.com/cloudwego/base64x v0.1.6 // indirect
-	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
-	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 )
